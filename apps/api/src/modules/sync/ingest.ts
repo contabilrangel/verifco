@@ -1,4 +1,5 @@
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
+import { z } from 'zod';
 import {
   SYNC_FILE_CATEGORY,
   SYNC_FILE_TYPE_LIST,
@@ -6,13 +7,16 @@ import {
   isValidCpfCnpj,
   onlyDigits,
   parseIrpfFileName,
+  todayIso,
+  type IrpfFileNameInfo,
   type SyncFileType,
 } from '@verifco/shared';
 import type { AppContext } from '../../context';
+import type { DbOrTx } from '../../db/client';
 import { auditLogs, customers, declarations, documents, files } from '../../db/schema';
 import { HttpError, badRequest, notFound } from '../../lib/errors';
 import { sha256 } from '../../lib/crypto';
-import { getOrCreateDeclaration, syncDeclarationStage } from '../../services/declarations';
+import { getOrCreateDeclaration, syncDeclarationStage, transmittedAtOfDay, type DeclarationRow } from '../../services/declarations';
 import type { CustomerRow } from '../../services/customers';
 import { isExtractable, refreshElaborationStatus } from '../elaboration/service';
 import type { MachineAuth } from './tokens';
@@ -63,10 +67,12 @@ export function resolveFileTarget(file: UploadedFile, fields: Record<string, str
  * e, para a declaração (.DEC) ou a cópia de segurança (.DBK, se ainda não houver arquivo de
  * origem), atualiza `declarations.sourceFileId`. O mesmo conteúdo não é gravado duas vezes.
  * O recibo de entrega (.REC) fica guardado como documento "recibo" da declaração (categoria
- * `irpf_receipt`) e marca a declaração como transmitida: grava a data da transmissão (a do
- * recebimento do arquivo, se ainda não houver) e aplica a regra de etapa do resumo da declaração
- * (`syncDeclarationStage`). O número do recibo não aparece no nome do arquivo e o conteúdo não é
- * lido, então ele não é preenchido aqui (vem do eCAC ou da digitação).
+ * `irpf_receipt`, devolvido no GET da declaração) e marca a declaração como transmitida
+ * (`markTransmittedByReceipt`): grava a data da transmissão, se ainda não houver (o dia, em
+ * Brasília, da data do arquivo enviada pelo sincronizador em `modificadoEm`; sem ela, o do
+ * recebimento), marca a retificadora pelo nome (`RETIF`) e aplica a regra de etapa do resumo da
+ * declaração (`syncDeclarationStage`). O número do recibo não aparece no nome do arquivo e o
+ * conteúdo não é lido, então ele não é preenchido aqui (vem do eCAC ou da digitação).
  *
  * PONTO DE EXTENSÃO: o conteúdo de .DEC/.REC/.DBK não é lido porque o layout desses arquivos
  * não é público. Um leitor validado com arquivos oficiais entraria logo depois de gravar o
@@ -114,18 +120,101 @@ export async function ingestSyncFile(ctx: AppContext, auth: MachineAuth, file: U
   if (type === 'dec' || (type === 'dbk' && !decl.sourceFileId)) {
     await db.update(declarations).set({ sourceFileId: saved.id, updatedAt: new Date() }).where(eq(declarations.id, decl.id));
   }
-  let transmitted = false;
+  let receipt: Awaited<ReturnType<typeof markTransmittedByReceipt>> | null = null;
   if (type === 'rec') {
     // recibo de entrega: a declaração foi transmitida (mesma regra do resumo da declaração)
-    const [updated] = decl.transmittedAt
-      ? [decl]
-      : await db.update(declarations).set({ transmittedAt: new Date(), updatedAt: new Date() }).where(eq(declarations.id, decl.id)).returning();
-    const row = await syncDeclarationStage(db, decl, updated);
-    transmitted = row.stage !== decl.stage;
+    receipt = await markTransmittedByReceipt(db, decl, {
+      fileDate: fileModifiedAt(fields, year),
+      rectification: isRectificationReceiptName(file.filename, info),
+    });
   }
   const elaborationStatus = await refreshElaborationStatus(db, decl.id);
-  await machineAudit(ctx, auth, 'sync_file', 'document', doc.id, { customerId: customer.id, year, type, filename: file.filename, ...(transmitted ? { transmitted } : {}) });
+  await machineAudit(ctx, auth, 'sync_file', 'document', doc.id, {
+    customerId: customer.id,
+    year,
+    type,
+    filename: file.filename,
+    ...(receipt?.transmitted ? { transmitted: true } : {}),
+    ...(receipt?.transmittedAtFrom ? { transmittedAtFrom: receipt.transmittedAtFrom } : {}),
+    ...(receipt?.rectification ? { rectification: true } : {}),
+  });
   return { ...base, duplicate: false, documentId: doc.id, fileId: saved.id, elaborationStatus };
+}
+
+/** Folga para o relógio do computador do sincronizador adiantado em relação ao servidor. */
+export const FILE_DATE_CLOCK_SKEW_MS = 10 * 60_000;
+
+const isoDateTime = z.iso.datetime({ offset: true });
+
+/**
+ * Data do arquivo enviada pelo sincronizador (`modificadoEm`, data e hora ISO 8601 com fuso;
+ * sincronizadores antigos não enviam). Vale só uma data plausível para o recibo do exercício:
+ * - formato inválido ou sem fuso: ignorada;
+ * - no futuro além da folga de relógio (`FILE_DATE_CLOCK_SKEW_MS`): ignorada; dentro da folga,
+ *   vale o instante do recebimento (a transmissão nunca fica no futuro);
+ * - antes de 1º de janeiro do ano-exercício (dia de Brasília): ignorada, porque o programa do
+ *   exercício só transmite a partir desse ano (cópia de arquivo com data errada).
+ * Ignorada, vale a data do recebimento, como antes.
+ */
+export function fileModifiedAt(fields: Record<string, string>, exerciseYear: number, now: Date = new Date()): Date | null {
+  const raw = fields.modificadoEm?.trim();
+  if (!raw || raw.length > 40 || !isoDateTime.safeParse(raw).success) return null;
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return null;
+  if (date.getTime() > now.getTime() + FILE_DATE_CLOCK_SKEW_MS) return null;
+  if (todayIso(date) < `${exerciseYear}-01-01`) return null;
+  return date.getTime() > now.getTime() ? now : date;
+}
+
+/** "RETIF" como palavra no nome (RETIF, RETIFICADORA, retificação...), sem pegar trechos de outras palavras. */
+const RETIF_TOKEN = /(?:^|[^\p{L}\p{N}])RETIF\p{L}*(?=$|[^\p{L}\p{N}])/iu;
+
+/**
+ * Recibo de retificadora pelo nome do arquivo. No padrão do programa IRPF, o sufixo decide
+ * (`-RETIF` = retificadora, `-ORIGI` = original); fora dele, só a palavra "RETIF..." no nome.
+ */
+export function isRectificationReceiptName(filename: string, info: Pick<IrpfFileNameInfo, 'rectification'>): boolean {
+  if (info.rectification !== null) return info.rectification;
+  const base = filename.split(/[\\/]/).pop() ?? '';
+  return RETIF_TOKEN.test(base.replace(/\.[^.]*$/, ''));
+}
+
+/**
+ * .REC recebido: a declaração foi transmitida.
+ * - Data da transmissão: só se ainda não houver (a digitada no resumo ou vinda do eCAC fica),
+ *   com o dia de Brasília da data do arquivo (`fileDate`) ou, sem ela, do recebimento.
+ * - Retificadora: o recibo "RETIF" marca a declaração como retificadora; um recibo original não
+ *   desmarca (pode ser o .REC antigo da original chegando depois).
+ * - Etapa: `syncDeclarationStage` (finalizada não regride).
+ */
+export async function markTransmittedByReceipt(
+  db: DbOrTx,
+  decl: DeclarationRow,
+  opts: { fileDate: Date | null; rectification: boolean; now?: Date },
+) {
+  const day = todayIso(opts.fileDate ?? opts.now ?? new Date());
+  const setDate = !decl.transmittedAt;
+  const setRectification = opts.rectification && !decl.isRectification;
+  let updated = decl;
+  if (setDate || setRectification) {
+    [updated] = await db
+      .update(declarations)
+      .set({
+        // coalesce: uma data gravada ao mesmo tempo (resumo, eCAC) não é sobrescrita
+        ...(setDate ? { transmittedAt: sql`coalesce(${declarations.transmittedAt}, ${transmittedAtOfDay(day).toISOString()}::timestamptz)` } : {}),
+        ...(setRectification ? { isRectification: true } : {}),
+        updatedAt: new Date(),
+      })
+      .where(eq(declarations.id, decl.id))
+      .returning();
+  }
+  const row = await syncDeclarationStage(db, decl, updated);
+  return {
+    row,
+    transmitted: row.stage !== decl.stage,
+    transmittedAtFrom: setDate ? (opts.fileDate ? ('file' as const) : ('received' as const)) : null,
+    rectification: setRectification,
+  };
 }
 
 /** Auditoria de ações feitas por token de máquina (sem usuário). */

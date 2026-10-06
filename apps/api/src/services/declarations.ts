@@ -19,6 +19,15 @@ import { assertDeclarationQuota } from './plan';
 
 export type DeclarationRow = typeof declarations.$inferSelect;
 
+/**
+ * Instante gravado em `declarations.transmittedAt` para o dia (AAAA-MM-DD) da transmissão:
+ * meio-dia em Brasília, para o dia não mudar em nenhum fuso (o resumo e o Kanban mostram só a
+ * data). Usado pelo resumo da declaração e pelo recibo (.REC) do sincronizador.
+ */
+export function transmittedAtOfDay(day: string): Date {
+  return new Date(`${day}T12:00:00-03:00`);
+}
+
 /** Situação eCAC → subestado da etapa "Transmitida". */
 export const ECAC_TO_SUBSTATUS: Record<EcacDeclarationStatus, DeclarationSubstatus> = {
   unknown: 'ecac_unknown',

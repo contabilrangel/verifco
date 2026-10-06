@@ -1,15 +1,15 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Pencil, Plus, ReceiptText, Save, Trash2 } from 'lucide-react';
+import { Download, FileCheck2, Pencil, Plus, ReceiptText, Save, Trash2 } from 'lucide-react';
 import { DECLARATION_SUBSTATUS, ECAC_DECLARATION_STATUS, ITEM_KINDS, stageOfSubstatus, type ItemKind } from '@verifco/shared';
 import { Alert, Button, Card, Checkbox, ConfirmDialog, IconButton, Input, Loading, Modal, MoneyInput, Select, Tag, Textarea } from '../../ds';
 import { api } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { fieldErrors, useAction, useApi } from '../../lib/hooks';
-import { formatMoney, stageLabel, stageTone } from '../../lib/format';
+import { formatDateTime, formatMoney, stageLabel, stageTone } from '../../lib/format';
 import { useYear } from '../../lib/year';
 import { useCustomer } from '../customers/customerContext';
-import { dateOnly, declarationKey, useDeclaration, type Declaration, type ItemRow } from './data';
+import { dateOnly, declarationKey, useDeclaration, type Declaration, type ItemRow, type ReceiptFile } from './data';
 import { FICHAS, type FieldDef, type Ficha } from './fichas';
 import './declarations.css';
 
@@ -36,7 +36,8 @@ export function DeclarationStep() {
 
   /** Atualiza o cache depois de qualquer mudança (painel, Kanban e dashboard dependem dela). */
   const afterChange = (d?: Declaration) => {
-    if (d) qc.setQueryData(declarationKey(customer.id, year), d);
+    // as respostas de gravação não trazem o recibo (.REC): mantém o que veio no GET
+    if (d) qc.setQueryData<Declaration>(declarationKey(customer.id, year), (old) => ({ ...d, receiptFile: d.receiptFile ?? old?.receiptFile ?? null }));
     void qc.invalidateQueries({ queryKey: ['declaration-items'] });
     void qc.invalidateQueries({ queryKey: ['cash'] });
     void qc.invalidateQueries({ queryKey: ['customer-dashboard', customer.id] });
@@ -167,9 +168,31 @@ function SummaryCard({ declaration, canEdit, ensure, onSaved }: { declaration: D
         </div>
       </fieldset>
       <p className="vf-rule" style={{ marginTop: 12 }}>
-        Ao informar a data de transmissão ou o recibo, a declaração passa para “Transmitida” no Kanban, com o status da situação no eCAC.
+        Ao informar a data de transmissão ou o recibo, a declaração passa para “Transmitida” no Kanban, com o status da situação no eCAC. O mesmo vale
+        para o recibo (.REC) recebido do sincronizador, que traz a data do arquivo.
       </p>
+      {declaration.receiptFile && <ReceiptFileRow receipt={declaration.receiptFile} />}
     </Card>
+  );
+}
+
+/** Recibo de entrega (.REC) guardado na declaração, com o link para baixar (rota do documento). */
+function ReceiptFileRow({ receipt }: { receipt: ReceiptFile }) {
+  const download = useAction(() => api.download(`/documents/${receipt.documentId}/file`, receipt.filename));
+  return (
+    <div className="vf-dec-receipt">
+      <FileCheck2 aria-hidden />
+      <div className="vf-dec-receipt__text">
+        <strong>Recibo de entrega (.REC)</strong>
+        <span className="vf-dec-receipt__name">{receipt.filename}</span>
+        <span className="vf-muted">
+          {receipt.uploadedBy === 'sync' ? 'Recebido do sincronizador' : 'Guardado'} em {formatDateTime(receipt.receivedAt)}. O número do recibo é informado acima.
+        </span>
+      </div>
+      <Button kind="tertiary" size="sm" icon={<Download />} loading={download.isPending} onClick={() => download.mutate(undefined)}>
+        Baixar recibo
+      </Button>
+    </div>
   );
 }
 
