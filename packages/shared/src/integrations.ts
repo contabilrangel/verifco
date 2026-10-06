@@ -368,6 +368,10 @@ export const INTEGRATION_CATALOG: IntegrationDef[] = [
         text: 'Cadastre os modelos aprovados no campo Modelos aprovados: fora da janela, o Verifco envia o modelo do tipo de envio; sem modelo, envia texto livre, que a Meta não entrega fora da janela.',
         when: whatsappMeta,
       },
+      {
+        text: 'A mensagem de teste segue a mesma regra: para um número que não escreveu ao escritório nas últimas 24 h, vai o modelo de “mensagem” (ou “padrao”), sem documento no cabeçalho.',
+        when: whatsappMeta,
+      },
     ],
     docsUrl: 'https://developers.facebook.com/docs/whatsapp/cloud-api/reference/messages',
     webhook: true,
