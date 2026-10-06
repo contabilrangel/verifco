@@ -63,6 +63,7 @@ export const PERMISSION_CATEGORIES: PermissionCategory[] = [
       p('pre_declaration.create', 'Criação da pré-declaração'),
       p('pre_declaration.edit', 'Edição da pré-declaração'),
       p('elaboration.export', 'Exportação na elaboração'),
+      p('elaboration.process', 'Processamento e validação de documentos na elaboração'),
       p('prefilled.download', 'Download das pré-preenchidas'),
       p('darf.view', 'Visualização das quotas do DARF'),
       p('darf.edit', 'Gestão das quotas do DARF'),
@@ -129,6 +130,7 @@ export const PERMISSION_CATEGORIES: PermissionCategory[] = [
       p('ecac.credentials', 'Edição das credenciais eCAC/gov.br'),
       p('ecac.sync', 'Solicitar sincronização eCAC'),
       p('ecac.actions', 'Ações eCAC pela extensão'),
+      p('ecac.robot', 'Gestão dos tokens do robô (extensão e sincronizador)'),
     ],
   },
   {

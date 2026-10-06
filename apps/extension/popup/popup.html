@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <title>Verifco</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <img src="../icons/icon-32.png" alt="" width="24" height="24" />
+      <strong>Verifco</strong>
+      <span id="version" class="muted"></span>
+    </header>
+    <form id="form" autocomplete="off">
+      <label>
+        Endereço do Verifco (web)
+        <input id="webUrl" type="url" placeholder="https://app.seuescritorio.com.br" required />
+        <small>Onde você abre o Verifco. A extensão conversa com essa página para abrir o eCAC.</small>
+      </label>
+      <label>
+        Endereço da API <span class="muted">(opcional)</span>
+        <input id="apiUrl" type="url" placeholder="Em branco = mesmo endereço do Verifco" />
+      </label>
+      <label>
+        Token da extensão
+        <input id="token" type="password" placeholder="vfk_..." />
+        <small>Crie em Administração › Robô, escopo “Extensão”. Fica só neste navegador.</small>
+      </label>
+      <fieldset>
+        <legend>Captura de dados do eCAC <span class="muted">(experimental)</span></legend>
+        <label class="check"><input id="captureEnabled" type="checkbox" /> Enviar ao Verifco os dados das páginas do eCAC</label>
+        <div id="parsers" class="parsers"></div>
+        <small>Cada leitor de página começa desligado. Os leitores incluídos são pontos de extensão: veja o README.</small>
+      </fieldset>
+      <div class="actions">
+        <button type="button" id="test" class="secondary">Testar conexão</button>
+        <button type="submit">Salvar</button>
+      </div>
+      <p id="status" class="status" role="status"></p>
+    </form>
+    <script src="../lib/config.js"></script>
+    <script src="../content/capture-core.js"></script>
+    <script src="../content/parsers.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

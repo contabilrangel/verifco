@@ -12,3 +12,4 @@ export * from './imports';
 export * from './darf';
 export * from './customer-documents';
 export * from './checklist';
+export * from './ecac';
