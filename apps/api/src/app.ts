@@ -54,7 +54,7 @@ export async function buildApp(ctx: AppContext, opts: { logger?: boolean } = {})
   const app = Fastify({
     logger: opts.logger ?? false,
     bodyLimit: JSON_BODY_LIMIT,
-    // atrás de proxy reverso, o IP real do cliente vem do X-Forwarded-For (limite por IP)
+    // atrás de proxy reverso (TRUST_PROXY=true, obrigatório nesse caso), o IP real do cliente vem do X-Forwarded-For (limite por IP)
     trustProxy: ctx.config.TRUST_PROXY,
     ajv: { customOptions: { coerceTypes: true } },
   });
@@ -67,6 +67,20 @@ export async function buildApp(ctx: AppContext, opts: { logger?: boolean } = {})
   });
   await app.register(multipart, { limits: { fileSize: MAX_UPLOAD_MB * 1024 * 1024, files: 20 } });
   await app.register(authPlugin);
+
+  // X-Forwarded-For sem TRUST_PROXY em produção: há um proxy na frente e o req.ip é o dele, então o
+  // limite por IP junta todos os clientes (e bloqueia todo mundo junto). Avisa uma vez no console.
+  if (ctx.config.NODE_ENV === 'production' && !ctx.config.TRUST_PROXY) {
+    let warned = false;
+    app.addHook('onRequest', async (req) => {
+      if (warned || !req.headers['x-forwarded-for']) return;
+      warned = true;
+      console.warn(
+        `[verifco] Chegou X-Forwarded-For, mas TRUST_PROXY está desligado: a API está atrás de um proxy reverso e enxerga só o IP dele (${req.ip}). ` +
+          'O limite de tentativas por IP passa a valer para todos os clientes juntos. Defina TRUST_PROXY=true (veja docs/ARQUITETURA.md, "Implantação").',
+      );
+    });
+  }
 
   // limite de tentativas por IP nas rotas públicas (contador no banco, vale entre instâncias)
   app.addHook('onRequest', async (req, reply) => {

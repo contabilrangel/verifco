@@ -2,11 +2,11 @@ import { useRef, useState, type CSSProperties } from 'react';
 import { FileText, History, MoreHorizontal, Paperclip, Pencil, Plus, RotateCcw, Trash2, Upload } from 'lucide-react';
 import { CHECKLIST_FILLABLE_SECTIONS, CHECKLIST_ITEM_STATUS, CHECKLIST_SECTIONS, CHECKLIST_SECTION_STATUS, CHECKLIST_UPLOAD_ACCEPT } from '@verifco/shared';
 import { Button, Card, ConfirmDialog, IconButton, Input, Menu, MenuItem, Modal, Select, Tag, Textarea, useToast, type Tone } from '../../ds';
-import { ApiError, api } from '../../lib/api';
+import { ApiError, api, isViewableType } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { fieldErrors, useAction } from '../../lib/hooks';
 import { formatCpfCnpj, formatDateTime } from '../../lib/format';
-import { checkFiles, formatBytes, isViewable } from './customerApi';
+import { checkFiles, formatBytes } from './customerApi';
 import type { ChecklistFile, ChecklistItem, ChecklistSectionView, OfficeChecklistResponse } from './types';
 
 export const sectionTone = (s: string): Tone => (s === 'done' ? 'success' : s === 'pending_documents' ? 'warning' : s === 'no_documents' ? 'neutral' : 'primary');
@@ -56,7 +56,7 @@ function SectionCard({
 
   const openFile = (f: ChecklistFile) => {
     const path = `/checklists/${checklistId}/files/${f.id}`;
-    const p = isViewable(f.mimeType) ? api.open(`${path}?inline=1`) : api.download(path, f.filename);
+    const p = isViewableType(f.mimeType) ? api.open(`${path}?inline=1`) : api.download(path, f.filename);
     p.catch((e) => toast.error(e instanceof ApiError ? e.message : 'Não foi possível abrir o arquivo.'));
   };
 

@@ -9,6 +9,7 @@ import { badRequest, conflict, forbidden, notFound } from '../../lib/errors';
 import { exposeDevSecrets } from '../../config';
 import { audit, can, guard, optionalText, parse, requirePermission, requireUser, uuidParam } from '../../lib/http';
 import { DEFAULT_SETTINGS, getOfficeSettings } from '../../services/settings';
+import { EMAIL_CHANGED_JOB, type EmailChangedPayload } from '../auth/jobs';
 
 const settingsSchema = z
   .object({
@@ -284,17 +285,10 @@ export async function adminRoutes(app: FastifyInstance) {
     }
   }
 
-  /** Avisa o endereço antigo de que o e-mail de acesso mudou. */
-  async function notifyEmailChange(req: Parameters<typeof requireUser>[0], by: AuthUser, target: { name: string; email: string }, newEmail: string) {
-    const office = await db.query.offices.findFirst({ where: eq(offices.id, by.officeId) });
-    await app.ctx.providers.email
-      .send(by.officeId, {
-        to: target.email,
-        toName: target.name,
-        subject: 'Seu e-mail de acesso ao Verifco foi alterado',
-        html: `<p>Olá, ${escapeHtml(target.name)}.</p><p>${escapeHtml(by.name)} alterou o e-mail de acesso da sua conta no Verifco (escritório ${escapeHtml(office?.name ?? '')}) de ${escapeHtml(target.email)} para ${escapeHtml(newEmail)}.</p><p>Se você não reconhece esta alteração, fale com o dono da conta do escritório.</p>`,
-      })
-      .catch((err) => req.log.warn({ err }, 'falha ao avisar a troca de e-mail'));
+  /** Avisa o endereço antigo de que o e-mail de acesso mudou (pela fila, com repetição se o envio falhar). */
+  async function notifyEmailChange(by: AuthUser, target: { id: string; email: string }, newEmail: string) {
+    const payload: EmailChangedPayload = { userId: target.id, oldEmail: target.email, newEmail, changedBy: by.name };
+    await app.ctx.jobs.enqueue(EMAIL_CHANGED_JOB, payload, { officeId: by.officeId, userId: by.userId });
   }
 
   app.put('/employees/:id', { preHandler: guard('employee.edit') }, async (req) => {
@@ -336,7 +330,7 @@ export async function adminRoutes(app: FastifyInstance) {
       .returning();
     if (emailChanged) {
       await db.update(passwordResets).set({ usedAt: new Date() }).where(and(eq(passwordResets.userId, target.id), isNull(passwordResets.usedAt)));
-      await notifyEmailChange(req, user, target, email);
+      await notifyEmailChange(user, target, email);
     }
     await audit(req, 'update', 'employee', id, emailChanged ? { emailChanged: true, from: target.email, to: email } : undefined);
     return { id: row.id, name: row.name, email: row.email, roleId: row.roleId, isActive: row.isActive };

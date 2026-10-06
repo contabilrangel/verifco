@@ -19,6 +19,7 @@ CREATE TABLE "rate_limits" (
 	"window_started_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
+ALTER TABLE "checklists" ADD COLUMN "access_expires_at" timestamp with time zone;--> statement-breakpoint
 ALTER TABLE "notifications" ADD COLUMN "customer_id" uuid;--> statement-breakpoint
 ALTER TABLE "ai_attachments" ADD CONSTRAINT "ai_attachments_file_id_files_id_fk" FOREIGN KEY ("file_id") REFERENCES "public"."files"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "ai_attachments" ADD CONSTRAINT "ai_attachments_office_id_offices_id_fk" FOREIGN KEY ("office_id") REFERENCES "public"."offices"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -27,4 +28,6 @@ ALTER TABLE "notification_reads" ADD CONSTRAINT "notification_reads_notification
 ALTER TABLE "notification_reads" ADD CONSTRAINT "notification_reads_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "ai_attachments_customer_idx" ON "ai_attachments" USING btree ("customer_id");--> statement-breakpoint
 CREATE INDEX "notification_reads_user_idx" ON "notification_reads" USING btree ("user_id");--> statement-breakpoint
-ALTER TABLE "notifications" ADD CONSTRAINT "notifications_customer_id_customers_id_fk" FOREIGN KEY ("customer_id") REFERENCES "public"."customers"("id") ON DELETE cascade ON UPDATE no action;
+ALTER TABLE "notifications" ADD CONSTRAINT "notifications_customer_id_customers_id_fk" FOREIGN KEY ("customer_id") REFERENCES "public"."customers"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+-- links do checklist já enviados continuam valendo por 30 dias a partir desta versão
+UPDATE "checklists" SET "access_expires_at" = now() + interval '30 days' WHERE "access_expires_at" IS NULL;

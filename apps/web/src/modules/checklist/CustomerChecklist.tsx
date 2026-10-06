@@ -3,9 +3,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, CheckCircle2, ChevronDown, Clock, FileText, History, MessageSquareText, Paperclip, PartyPopper, Plus, RotateCcw, Trash2, Undo2, Upload, X } from 'lucide-react';
 import { CHECKLIST_FINISH_OPTIONS, CHECKLIST_ITEM_STATUS_CUSTOMER, CHECKLIST_UPLOAD_ACCEPT } from '@verifco/shared';
 import { Alert, Button, Card, IconButton, Input, Loading, Modal, Progress, Tag, Textarea, useToast, type Tone } from '../../ds';
-import { ApiError } from '../../lib/api';
+import { ApiError, isViewableType } from '../../lib/api';
 import { formatDateTime } from '../../lib/format';
-import { checkFiles, formatBytes, isViewable, type CustomerClient } from './customerApi';
+import { checkFiles, formatBytes, type CustomerClient } from './customerApi';
 import type { ChecklistFile, ChecklistItem, ChecklistSectionView, CustomerChecklistView } from './types';
 
 const SECTION_STATUS_CUSTOMER: Record<string, string> = {
@@ -56,7 +56,7 @@ export function CustomerChecklist({ checklistId, client }: { checklistId: string
     },
     removeFile: (f) => run.mutate(() => client.del(`${base}/files/${f.id}`)),
     removeItem: (item) => run.mutate(() => client.del(`${base}/items/${item.id}`)),
-    openFile: (f) => client.open(`${base}/files/${f.id}`, f.filename, isViewable(f.mimeType)).catch((e) => toast.error(errMsg(e))),
+    openFile: (f) => client.open(`${base}/files/${f.id}`, f.filename, isViewableType(f.mimeType)).catch((e) => toast.error(errMsg(e))),
   };
 
   const sectionsDone = c.sections.filter((s) => s.status !== 'open').length;

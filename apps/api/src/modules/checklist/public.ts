@@ -17,7 +17,7 @@ import { emptyToNull, parse } from '../../lib/http';
 import { signCustomerToken } from '../../plugins/auth';
 import { setDeclarationSubstatus } from '../../services/declarations';
 import { loginLimiter, requireChecklistAccess } from '../portal/access';
-import { attachFiles, checklistCodeHash, customerView, loadBundle, lockOf, notifyOffice, refreshFinished, removeDocument } from './service';
+import { attachFiles, checklistAccessValid, checklistCodeHash, customerView, loadBundle, lockOf, notifyOffice, refreshFinished, removeDocument } from './service';
 import { readChecklistUploads, sendStoredFile } from './uploads';
 
 const sectionEnum = z.enum(CHECKLIST_FILLABLE_SECTIONS as [ChecklistSection, ...ChecklistSection[]]);
@@ -40,7 +40,8 @@ export async function checklistPublicRoutes(app: FastifyInstance) {
 
   async function byLinkToken(token: string) {
     const c = await db.query.checklists.findFirst({ where: eq(checklists.accessTokenHash, sha256(token)) });
-    if (!c) return null;
+    // link vencido vale como inexistente: o escritório precisa enviar um novo acesso
+    if (!c || !checklistAccessValid(c)) return null;
     const declaration = await db.query.declarations.findFirst({ where: eq(declarations.id, c.declarationId) });
     const customer = declaration ? await db.query.customers.findFirst({ where: eq(customers.id, declaration.customerId) }) : null;
     if (!declaration || !customer || customer.deletedAt) return null;
@@ -58,6 +59,10 @@ export async function checklistPublicRoutes(app: FastifyInstance) {
       .where(and(eq(checklists.id, checklistId), eq(checklists.officeId, auth.officeId), eq(declarations.customerId, auth.customerId)))
       .limit(1);
     if (!row) throw notFound('Checklist');
+    // sessão aberta pelo link: termina junto com a validade do link (o portal tem acesso próprio)
+    if (auth.scope !== 'portal' && !checklistAccessValid(row.checklist)) {
+      throw unauthorized('O link do checklist venceu. Peça um novo acesso ao escritório.');
+    }
     const lock = await lockOf(db, row.checklist.officeId, row.declaration);
     return { ...row, lock };
   }

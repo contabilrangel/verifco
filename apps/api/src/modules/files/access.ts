@@ -29,6 +29,7 @@ const DOCUMENT_PERMS = ['declaration.view', 'customer.download_documents', 'chec
 const ELABORATION_PERMS = ['elaboration.export', 'elaboration.process', 'pre_declaration.view'];
 const RECEIPT_PERMS = ['budget.list', 'billing.edit', 'billing.receive', 'billing.receipt_generate', 'billing.receipt_send'];
 const AI_PERMS = ['ai.use', 'irpfm.view', 'copilot.use'];
+const DARF_PERMS = ['darf.view', 'darf.edit', 'darf.send', 'ecac.view'];
 
 interface Owner {
   /** Permissões que dão acesso (basta uma); vazio = qualquer usuário do escritório. */
@@ -56,8 +57,10 @@ async function ownersOf(ctx: AppContext, officeId: string, fileId: string): Prom
   for (const d of await db.select({ customerId: documents.customerId, category: documents.category }).from(documents).where(and(eq(documents.officeId, officeId), eq(documents.fileId, fileId)))) {
     owners.push({ perms: d.category === 'copilot' ? [...DOCUMENT_PERMS, 'copilot.use'] : DOCUMENT_PERMS, customerId: d.customerId });
   }
+  // a aba eCAC do cliente (ecac.view) lista todas as DARFs, inclusive as geradas ou enviadas
+  // pelo escritório, com o botão "Abrir PDF"
   for (const d of await db.select({ customerId: darfs.customerId }).from(darfs).where(and(eq(darfs.officeId, officeId), eq(darfs.fileId, fileId)))) {
-    owners.push({ perms: ['darf.view', 'darf.edit', 'darf.send'], customerId: d.customerId });
+    owners.push({ perms: DARF_PERMS, customerId: d.customerId });
   }
   const receipts = await db
     .select({ customerId: billings.customerId })

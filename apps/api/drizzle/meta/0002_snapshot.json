@@ -1,5 +1,5 @@
 {
-  "id": "41c97251-4ccb-4dda-b553-ae0bb92d3e91",
+  "id": "e9111614-31a8-49c3-ad75-550c636f157e",
   "prevId": "cdc786cc-0fc5-49cd-836d-d61390fa4b7b",
   "version": "7",
   "dialect": "postgresql",
@@ -1537,6 +1537,12 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "access_expires_at": {
+          "name": "access_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         },
         "sent_at": {
           "name": "sent_at",

@@ -41,7 +41,7 @@ export function ChecklistLinkPage() {
           <EmptyState
             icon={<ListChecks />}
             title={notFound ? 'Este link não vale mais' : 'Não foi possível abrir o checklist'}
-            description={notFound ? 'O escritório pode ter enviado um link mais novo. Procure a mensagem mais recente ou peça um novo link ao escritório.' : 'Verifique sua conexão e tente de novo.'}
+            description={notFound ? 'O link vale 30 dias e o escritório pode ter enviado um mais novo. Procure a mensagem mais recente ou peça um novo link ao escritório.' : 'Verifique sua conexão e tente de novo.'}
           />
         </Card>
       </PublicFrame>

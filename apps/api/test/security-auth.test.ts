@@ -2,7 +2,7 @@
  * Regressões de segurança do acesso: limite de tentativas no banco (vale entre instâncias),
  * "esqueci minha senha" pela fila, configuração de produção, mensagens de erro em português.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { buildApp } from '../src/app';
 import { createContext } from '../src/bootstrap';
@@ -150,6 +150,39 @@ describe('configuração de produção (SEG-11, DAD-15)', () => {
       expect(emp.body.inviteLink).toBeUndefined();
     } finally {
       await dev.close();
+    }
+  });
+});
+
+describe('TRUST_PROXY atrás de proxy reverso (SEG-7)', () => {
+  /** App com a configuração de produção pedida, sobre o mesmo banco dos testes. */
+  async function prodApp(trustProxy: boolean, nodeEnv: Config['NODE_ENV'] = 'production') {
+    const app = await buildApp({ ...env.ctx, config: { ...env.ctx.config, NODE_ENV: nodeEnv, TRUST_PROXY: trustProxy } });
+    await app.ready();
+    return app;
+  }
+  const viaProxy = (app: Awaited<ReturnType<typeof prodApp>>, ip: string) =>
+    app.inject({ method: 'GET', url: '/health', headers: { 'x-forwarded-for': ip }, remoteAddress: '10.0.0.2' });
+
+  it('avisa uma vez no console quando chega X-Forwarded-For com TRUST_PROXY desligado em produção', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const apps = [await prodApp(false), await prodApp(true), await prodApp(false, 'development')];
+    try {
+      const [untrusted, trusted, dev] = apps;
+      expect((await untrusted.inject({ method: 'GET', url: '/health' })).statusCode).toBe(200);
+      expect(warn).not.toHaveBeenCalled();
+      expect((await viaProxy(untrusted, '203.0.113.7')).statusCode).toBe(200);
+      await viaProxy(untrusted, '203.0.113.8');
+      const proxyWarnings = () => warn.mock.calls.filter((c) => String(c[0]).includes('TRUST_PROXY'));
+      expect(proxyWarnings()).toHaveLength(1);
+      expect(String(proxyWarnings()[0][0])).toContain('10.0.0.2');
+      // com TRUST_PROXY=true o IP vem do cabeçalho; fora de produção não há aviso
+      await viaProxy(trusted, '203.0.113.9');
+      await viaProxy(dev, '203.0.113.9');
+      expect(proxyWarnings()).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+      for (const app of apps) await app.close();
     }
   });
 });

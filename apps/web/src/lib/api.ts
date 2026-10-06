@@ -39,8 +39,14 @@ export function errorMessage(e: unknown, fallback = 'Não foi possível concluir
   return fallback;
 }
 
-/** Tipos que podem abrir numa aba do navegador sem rodar script (PDF e imagens; nunca HTML/SVG). */
-const VIEWABLE_TYPES = new Set(['application/pdf', 'image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+/**
+ * Tipos que podem abrir numa aba do navegador sem rodar script (PDF e imagens; nunca HTML/SVG).
+ * É a única lista do app: botões de "Visualizar" e aberturas de arquivo usam {@link isViewableType}.
+ */
+export const VIEWABLE_TYPES: ReadonlySet<string> = new Set(['application/pdf', 'image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+
+/** O tipo (com ou sem parâmetros, como `; charset=...`) pode abrir no navegador? */
+export const isViewableType = (mime: string | null | undefined) => VIEWABLE_TYPES.has((mime ?? '').split(';')[0].trim().toLowerCase());
 
 const filenameOf = (res: Response, fallback: string) => {
   const cd = res.headers.get('content-disposition') ?? '';
@@ -125,7 +131,7 @@ export const api = {
     const res = await request<Response>('GET', path, undefined, { raw: true });
     const type = (res.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
     const data = await res.arrayBuffer();
-    if (!VIEWABLE_TYPES.has(type)) return saveBlob(data, filenameOf(res, fallbackName));
+    if (!isViewableType(type)) return saveBlob(data, filenameOf(res, fallbackName));
     const url = URL.createObjectURL(new Blob([data], { type }));
     window.open(url, '_blank', 'noopener');
     setTimeout(() => URL.revokeObjectURL(url), 60_000);

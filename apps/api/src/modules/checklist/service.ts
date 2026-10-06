@@ -78,12 +78,24 @@ export async function createChecklist(db: Db, input: { officeId: string; custome
   });
 }
 
-/** Gera um novo link e código (os anteriores deixam de valer). */
+/** Por quantos dias o link e o código do checklist valem depois de gerados. */
+export const CHECKLIST_ACCESS_TTL_DAYS = 30;
+
+/** O link e o código atuais ainda valem? Sem validade gravada, o link nunca foi enviado. */
+export function checklistAccessValid(c: { accessExpiresAt: Date | null }, now = new Date()): boolean {
+  return Boolean(c.accessExpiresAt && c.accessExpiresAt.getTime() > now.getTime());
+}
+
+/** Gera um novo link e código, válidos por {@link CHECKLIST_ACCESS_TTL_DAYS} dias (os anteriores deixam de valer). */
 export async function rotateAccess(db: Db, checklistId: string) {
   const token = randomToken(24);
   const code = randomCode(6);
-  await db.update(checklists).set({ accessTokenHash: sha256(token), accessCodeHash: checklistCodeHash(checklistId, code) }).where(eq(checklists.id, checklistId));
-  return { token, code };
+  const expiresAt = new Date(Date.now() + CHECKLIST_ACCESS_TTL_DAYS * 86_400_000);
+  await db
+    .update(checklists)
+    .set({ accessTokenHash: sha256(token), accessCodeHash: checklistCodeHash(checklistId, code), accessExpiresAt: expiresAt })
+    .where(eq(checklists.id, checklistId));
+  return { token, code, expiresAt };
 }
 
 export interface ChecklistDoc {
@@ -169,6 +181,7 @@ export function officeView(c: ChecklistRow, bundle: Awaited<ReturnType<typeof lo
     id: c.id,
     createdAt: c.createdAt,
     sentAt: c.sentAt,
+    accessExpiresAt: c.accessExpiresAt,
     lastCustomerAccessAt: c.lastCustomerAccessAt,
     finishedAt: c.finishedAt,
     progress: checklistProgress(bundle.items),

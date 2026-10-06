@@ -35,6 +35,8 @@ const schema = z.object({
   /**
    * A API está atrás de proxy reverso / balanceador? Com `true`, o IP do cliente vem do
    * `X-Forwarded-For` (necessário para o limite de tentativas por IP não juntar todo mundo no IP do proxy).
+   * Obrigatório atrás de proxy; em produção, a API avisa no console se receber `X-Forwarded-For` com ele desligado.
+   * Só ligue com proxy na frente: exposta direto, o cliente poderia forjar o cabeçalho e escapar do limite.
    */
   TRUST_PROXY: flag(false),
   /** Limite de tentativas (login, senha, cadastro e links públicos). Desligado por padrão só nos testes. */

@@ -6,8 +6,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { currentExerciseYear } from '@verifco/shared';
-import { customers, deliveries, documents, ecacRecords, jobs, messages, passwordResets, procurators, users } from '../src/db/schema';
+import { checklists, customers, darfs, deliveries, documents, ecacRecords, importBatches, jobs, messages, passwordResets, procurators, users } from '../src/db/schema';
+import { signCustomerToken } from '../src/plugins/auth';
 import { notify } from '../src/services/notify';
+import { buildWorkbook } from '../src/services/xlsx';
 import { guessMimeType } from '../src/modules/sync/multipart';
 import { VALID_CPFS, createEmployee, createTestEnv, registerOffice, type TestEnv } from './helpers';
 import { PDF } from './portal-helpers';
@@ -137,6 +139,24 @@ describe('GET /files/:id (SEG-1, INT-4)', () => {
     expect((await mailing.api.get(`/api/files/${rec.id}`)).status).toBe(403);
   });
 
+  it('DARF gerada pelo escritório abre para quem vê a aba eCAC (ecac.view), sem precisar de darf.*', async () => {
+    const o = await officeWithCustomer(VALID_CPFS[3]);
+    const pdf = await env.ctx.files.save({ officeId: o.officeId, data: PDF, filename: 'darf-quota-1.pdf', mimeType: 'application/pdf' });
+    await env.ctx.db.insert(darfs).values({ officeId: o.officeId, customerId: o.customerId, valueCents: 12_345, dueDate: `${YEAR}-05-29`, source: 'office', fileId: pdf.id });
+    const ecac = await createEmployee(env, o.api, ['customer.list', 'ecac.view']);
+    // a aba eCAC devolve a DARF com o fileId usado pelo botão "Abrir PDF"
+    const panel = await ecac.api.get(`/api/customers/${o.customerId}/ecac`);
+    expect(panel.status).toBe(200);
+    expect(JSON.stringify(panel.body)).toContain(pdf.id);
+    const opened = await ecac.api.get(`/api/files/${pdf.id}?inline=1`);
+    expect(opened.status).toBe(200);
+    expect(opened.raw.headers['content-type']).toContain('application/pdf');
+    const darfReader = await createEmployee(env, o.api, ['darf.view']);
+    expect((await darfReader.api.get(`/api/files/${pdf.id}`)).status).toBe(200);
+    const none = await createEmployee(env, o.api, ['customer.list', 'mailing.list']);
+    expect((await none.api.get(`/api/files/${pdf.id}`)).status).toBe(403);
+  });
+
   it('não aceita o token de sessão na URL (CON-14)', async () => {
     const o = await registerOffice(env);
     const res = await env.app.inject({ method: 'GET', url: `/api/auth/me?token=${o.token}` });
@@ -179,6 +199,29 @@ describe('tipos de arquivo e entrega segura (SEG-3, CON-3)', () => {
     expect(res.status).toBe(200);
     expect(res.raw.headers['content-type']).toBe('application/octet-stream');
     expect(String(res.raw.headers['content-disposition'])).toMatch(/^attachment;/);
+  });
+
+  it('importação de orçamentos grava o tipo da planilha, não o informado pelo navegador', async () => {
+    const o = await officeWithCustomer(VALID_CPFS[5]);
+    const sheet = await buildWorkbook([{ name: 'Orçamentos', columns: [{ header: 'CPF/CNPJ', key: 'cpf' }, { header: 'Valor', key: 'valor' }], rows: [{ cpf: VALID_CPFS[5], valor: '500,00' }] }]);
+    const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    const ok = await uploadAs(o.token, '/api/finance/budget-import', [{ name: 'orcamentos.xlsx', data: sheet, type: 'text/html' }], { year: String(YEAR) });
+    expect(ok.status).toBe(200);
+    const batch = await env.ctx.db.query.importBatches.findFirst({ where: eq(importBatches.id, ok.body.id) });
+    const stored = await env.ctx.files.get(o.officeId, batch!.fileId!);
+    expect(stored.row.mimeType).toBe(XLSX);
+    const served = await o.api.get(`/api/files/${batch!.fileId}?inline=1`);
+    expect(served.status).toBe(200);
+    expect(served.raw.headers['content-type']).toBe(XLSX);
+    expect(String(served.raw.headers['content-disposition'])).toMatch(/^attachment;/);
+    // HTML disfarçado de planilha e extensão fora da lista são recusados antes de gravar
+    const html = Buffer.from('<html><script>alert(1)</script></html>');
+    const fake = await uploadAs(o.token, '/api/finance/budget-import', [{ name: 'orcamentos.xlsx', data: html, type: XLSX }], { year: String(YEAR) });
+    expect(fake.status).toBe(400);
+    expect(fake.body.error).toContain('não corresponde');
+    const page = await uploadAs(o.token, '/api/finance/budget-import', [{ name: 'orcamentos.html', data: html, type: 'text/html' }], { year: String(YEAR) });
+    expect(page.status).toBe(400);
+    expect(page.body.error).toContain('.xlsx ou .csv');
   });
 
   it('robô e uploads manuais ignoram o tipo informado', () => {
@@ -241,8 +284,15 @@ describe('colaboradores e funções (SEG-2)', () => {
     expect((await emp.api.get('/api/auth/me')).status).toBe(401);
     const pending = await env.ctx.db.query.passwordResets.findMany({ where: eq(passwordResets.userId, emp.userId) });
     expect(pending.every((p) => p.usedAt !== null)).toBe(true);
-    const warn = env.providers.sentEmails.find((m) => m.to === before.email && m.subject.includes('e-mail de acesso'));
+    // o aviso sai pela fila (com repetição), não durante a requisição
+    const isWarn = (m: { to: string; subject: string }) => m.to === before.email && m.subject.includes('e-mail de acesso');
+    expect(env.providers.sentEmails.some(isWarn)).toBe(false);
+    const queued = await env.ctx.db.query.jobs.findFirst({ where: and(eq(jobs.type, 'auth.email_changed'), eq(jobs.officeId, o.officeId)) });
+    expect(queued?.payload).toMatchObject({ userId: emp.userId, oldEmail: before.email, newEmail: 'novo-email@teste.com.br' });
+    await env.ctx.jobs.drain();
+    const warn = env.providers.sentEmails.find(isWarn);
     expect(warn?.html).toContain('novo-email@teste.com.br');
+    expect(warn?.html).toContain('Ana Dona');
   });
 });
 
@@ -283,6 +333,53 @@ describe('códigos de acesso no histórico (SEG-4)', () => {
     ]);
     expect(stored).not.toContain(token);
     expect(stored).not.toContain(sent.body.code);
+  });
+
+  it('checklist: link e código valem 30 dias; vencidos, o link e o login são recusados', async () => {
+    const o = await officeWithCustomer(VALID_CPFS[1]);
+    const created = await o.api.post(`/api/customers/${o.customerId}/checklist`, { year: YEAR });
+    const checklistId = created.body.id as string;
+    // antes do primeiro envio o link não existe
+    const fresh = await env.ctx.db.query.checklists.findFirst({ where: eq(checklists.id, checklistId) });
+    expect(fresh!.accessExpiresAt).toBeNull();
+
+    const sent = await o.api.post(`/api/checklists/${checklistId}/access`, { channels: [] });
+    expect(sent.status).toBe(200);
+    const token = (sent.body.link as string).split('/checklist/')[1];
+    const days = (new Date(sent.body.expiresAt).getTime() - Date.now()) / 86_400_000;
+    expect(days).toBeGreaterThan(29.9);
+    expect(days).toBeLessThanOrEqual(30);
+    const office = await o.api.get(`/api/customers/${o.customerId}/checklist?year=${YEAR}`);
+    expect(office.body.checklist.accessExpiresAt).toBe(new Date(sent.body.expiresAt).toISOString());
+
+    const link = () => env.app.inject({ method: 'POST', url: '/api/portal/checklist-link', payload: { token } });
+    const login = () => env.app.inject({ method: 'POST', url: '/api/portal/checklist-login', payload: { token, cpf: VALID_CPFS[1], code: sent.body.code } });
+    expect((await link()).statusCode).toBe(200);
+    const session = await login();
+    expect(session.statusCode).toBe(200);
+    const open = () =>
+      env.app.inject({ method: 'GET', url: `/api/portal/checklists/${checklistId}`, headers: { authorization: `Bearer ${session.json().token}` } });
+    expect((await open()).statusCode).toBe(200);
+
+    await env.ctx.db.update(checklists).set({ accessExpiresAt: new Date(Date.now() - 1000) }).where(eq(checklists.id, checklistId));
+    expect((await link()).statusCode).toBe(404);
+    const expired = await login();
+    expect(expired.statusCode).toBe(404);
+    expect(expired.json().error).toContain('Link');
+    // a sessão aberta pelo link também termina com a validade
+    const closed = await open();
+    expect(closed.statusCode).toBe(401);
+    expect(closed.json().error).toContain('venceu');
+    // pelo portal (acesso próprio do cliente) o checklist continua disponível
+    const portal = signCustomerToken(env.app, { id: o.customerId, officeId: o.officeId }, 'portal');
+    const viaPortal = await env.app.inject({ method: 'GET', url: `/api/portal/checklists/${checklistId}`, headers: { authorization: `Bearer ${portal}` } });
+    expect(viaPortal.statusCode).toBe(200);
+
+    // um novo envio gera outro par, com nova validade
+    const again = await o.api.post(`/api/checklists/${checklistId}/access`, { channels: [] });
+    const token2 = (again.body.link as string).split('/checklist/')[1];
+    const relogin = await env.app.inject({ method: 'POST', url: '/api/portal/checklist-login', payload: { token: token2, cpf: VALID_CPFS[1], code: again.body.code } });
+    expect(relogin.statusCode).toBe(200);
   });
 });
 

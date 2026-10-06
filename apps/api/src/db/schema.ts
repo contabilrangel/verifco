@@ -381,6 +381,8 @@ export const checklists = pgTable(
     declarationId: uuid('declaration_id').notNull().references(() => declarations.id, { onDelete: 'cascade' }),
     accessTokenHash: text('access_token_hash').notNull(),
     accessCodeHash: text('access_code_hash').notNull(),
+    /** Validade do link e do código atuais (definida a cada envio); vazio = sem acesso pelo link. */
+    accessExpiresAt: ts('access_expires_at'),
     sentAt: ts('sent_at'),
     lastCustomerAccessAt: ts('last_customer_access_at'),
     finishedAt: ts('finished_at'),

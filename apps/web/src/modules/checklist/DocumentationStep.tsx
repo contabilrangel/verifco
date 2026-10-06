@@ -44,13 +44,13 @@ function DigitalCard({ data, queryKey }: { data: OfficeChecklistResponse; queryK
   const c = data.checklist;
   const [sendOpen, setSendOpen] = useState(false);
   const [confirm, setConfirm] = useState<null | 'regenerate' | 'delete'>(null);
-  const [result, setResult] = useState<{ link: string; code: string; channels: string[] } | null>(null);
+  const [result, setResult] = useState<{ link: string; code: string; channels: string[]; expiresAt: string } | null>(null);
 
   const create = useAction(() => api.post(`/customers/${customer.id}/checklist`, { year: data.exerciseYear }), {
     success: 'Checklist criado.',
     invalidate: [queryKey],
   });
-  const access = useAction((channels: string[]) => api.post<{ link: string; code: string; channels: string[] }>(`/checklists/${c!.id}/access`, { channels }), {
+  const access = useAction((channels: string[]) => api.post<{ link: string; code: string; channels: string[]; expiresAt: string }>(`/checklists/${c!.id}/access`, { channels }), {
     invalidate: [queryKey],
     onSuccess: (r) => {
       setSendOpen(false);
@@ -150,6 +150,13 @@ function DigitalCard({ data, queryKey }: { data: OfficeChecklistResponse; queryK
         <div className="ck-meta">
           <span>Criado em {formatDate(c.createdAt)} com {c.fromPreviousYear} item(ns) da declaração de {prev.exerciseYear}</span>
           <span>{c.sentAt ? `Acesso enviado em ${formatDateTime(c.sentAt)}` : 'Acesso ainda não enviado'}</span>
+          {c.accessExpiresAt && (
+            <span>
+              {new Date(c.accessExpiresAt).getTime() > Date.now()
+                ? `Link e código válidos até ${formatDateTime(c.accessExpiresAt)}`
+                : `Link e código vencidos em ${formatDateTime(c.accessExpiresAt)}: envie um novo acesso`}
+            </span>
+          )}
           <span>{c.lastCustomerAccessAt ? `Último acesso do cliente: ${formatDateTime(c.lastCustomerAccessAt)}` : 'O cliente ainda não acessou'}</span>
           {c.finishedAt && <span>Finalizado pelo cliente em {formatDateTime(c.finishedAt)}</span>}
         </div>
@@ -282,7 +289,7 @@ function CopyField({ label, value }: { label: string; value: string }) {
   );
 }
 
-function AccessResultModal({ result, onClose }: { result: { link: string; code: string; channels: string[] } | null; onClose: () => void }) {
+function AccessResultModal({ result, onClose }: { result: { link: string; code: string; channels: string[]; expiresAt: string } | null; onClose: () => void }) {
   const where = result?.channels.map((c) => (c === 'email' ? 'e-mail' : 'WhatsApp')).join(' e ');
   return (
     <Modal open={Boolean(result)} title={result?.channels.length ? 'Acesso enviado' : 'Novo acesso gerado'} onClose={onClose} width={560} footer={<Button onClick={onClose}>Fechar</Button>}>
@@ -291,7 +298,9 @@ function AccessResultModal({ result, onClose }: { result: { link: string; code: 
           <Alert tone="success">{result.channels.length ? `Enviamos o link e o código por ${where}.` : 'Repasse o link e o código ao cliente.'}</Alert>
           <CopyField label="Link do checklist" value={result.link} />
           <CopyField label="Código de acesso" value={result.code} />
-          <p className="vf-muted vf-text-xs">Por segurança, o código não fica salvo no Verifco: ele só aparece agora. Se precisar, gere outro.</p>
+          <p className="vf-muted vf-text-xs">
+            O link e o código valem até {formatDateTime(result.expiresAt)}. Por segurança, o código não fica salvo no Verifco: ele só aparece agora. Se precisar, gere outro.
+          </p>
         </div>
       )}
     </Modal>

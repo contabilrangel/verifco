@@ -93,6 +93,21 @@ Vitest com PGlite em memória e provedores falsos (`test/helpers.ts`):
 Cada módulo tem o seu arquivo `test/<modulo>.test.ts` cobrindo regras de negócio,
 permissões e isolamento entre escritórios.
 
+### Implantação
+
+- `NODE_ENV=production` (o `pnpm start` já define): a API recusa subir sem `JWT_SECRET` (32+
+  caracteres), `ENCRYPTION_KEY` e `DATABASE_URL` de PostgreSQL. Modelo em `apps/api/.env.example`.
+- **Atrás de proxy reverso ou balanceador (nginx, Caddy, Traefik, load balancer da nuvem),
+  `TRUST_PROXY=true` é obrigatório.** Sem ele, a API enxerga só o IP do proxy e o limite de
+  tentativas por IP (login, senha, cadastro, links públicos) passa a valer para todos os clientes
+  juntos: algumas senhas erradas bloqueiam o escritório inteiro. Em produção, a API avisa no
+  console (uma vez) quando recebe `X-Forwarded-For` com `TRUST_PROXY` desligado. O proxy precisa
+  repassar o IP do cliente em `X-Forwarded-For`.
+- Com a API exposta direto na internet, deixe `TRUST_PROXY` desligado: o cliente poderia forjar o
+  cabeçalho para escapar do limite.
+- Ao subir, a API aplica as migrações de `apps/api/drizzle/` (padrão `DB_SYNC=migrate`); não use
+  `DB_SYNC=push` em produção.
+
 ## Web (`apps/web`)
 
 ### Módulos

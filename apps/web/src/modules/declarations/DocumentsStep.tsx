@@ -3,7 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Download, Eye, File as FileIcon, FileArchive, FileImage, FileSpreadsheet, FileText, FolderOpen, Trash2 } from 'lucide-react';
 import { DOCUMENT_CATEGORIES, DOCUMENT_CATEGORY_LIST, documentCategoryLabel, documentOriginLabel } from '@verifco/shared';
 import { Alert, Button, Card, ConfirmDialog, DropFile, EmptyState, IconButton, Loading, Select, Tag, useToast, type Tone } from '../../ds';
-import { ApiError, api } from '../../lib/api';
+import { ApiError, api, isViewableType } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { useAction, useApi } from '../../lib/hooks';
 import { formatDateTime } from '../../lib/format';
@@ -35,7 +35,6 @@ const iconFor = (mime: string, name: string) => {
   if (/zip|compressed/.test(mime) || /\.zip$/i.test(name)) return <FileArchive />;
   return <FileIcon />;
 };
-const previewable = (mime: string) => mime === 'application/pdf' || mime.startsWith('image/');
 
 /** Etapa "Documentos": arquivos do cliente no exercício. */
 export function DocumentsStep() {
@@ -161,7 +160,7 @@ export function DocumentsStep() {
                     <td className="num">{formatBytes(d.size)}</td>
                     <td>{formatDateTime(d.createdAt)}</td>
                     <td className="actions">
-                      {previewable(d.mimeType) && (
+                      {isViewableType(d.mimeType) && (
                         <IconButton label="Visualizar" onClick={() => void api.open(`/documents/${d.id}/file?inline=1`)}>
                           <Eye />
                         </IconButton>
