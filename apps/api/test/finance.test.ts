@@ -324,7 +324,8 @@ describe('faturamento e recibos', () => {
     expect(sent.status).toBe(200);
     expect(sent.body.receiptNumber).toBe(1);
     await env.ctx.jobs.drain();
-    const mail = env.providers.sentEmails.filter((m) => m.to === 'maria@cliente.com').at(-1)!;
+    // a fila reveza os escritórios: envios pendentes de outros testes podem sair depois deste
+    const mail = env.providers.sentEmails.filter((m) => m.to === 'maria@cliente.com' && m.subject.startsWith('Recibo')).at(-1)!;
     expect(mail.attachments?.[0].filename).toBe('recibo-1.pdf');
     expect(mail.html).toContain('mil duzentos e trinta e quatro reais e cinquenta e seis centavos');
     const wa = await api.post(`/api/finance/installments/${inst.id}/receipt/send`, { channel: 'whatsapp' });

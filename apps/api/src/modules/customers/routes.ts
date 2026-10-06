@@ -5,12 +5,14 @@ import {
   CND_STATUS,
   DECLARATION_SUBSTATUS,
   PROCURATION_STATUS,
+  addDaysIso,
   formatCep,
   formatCpfCnpj,
   formatPhone,
   isValidCpfCnpj,
   onlyDigits,
   stageOfSubstatus,
+  todayIso,
   type DeclarationSubstatus,
 } from '@verifco/shared';
 import { customerGroupMembers, customerGroups, customers, declarations, procurators, users } from '../../db/schema';
@@ -105,8 +107,8 @@ export async function customerRoutes(app: FastifyInstance) {
     if (q.mailbox) conds.push(sql`${customers.ecacMailboxMessages} > 0`);
     if (q.govbrRequired) conds.push(eq(customers.govbrLevel, 'bronze'));
     if (q.expiring) {
-      const today = new Date().toISOString().slice(0, 10);
-      const in30 = new Date(Date.now() + 30 * 86400_000).toISOString().slice(0, 10);
+      const today = todayIso();
+      const in30 = addDaysIso(today, 30);
       conds.push(and(gte(customers.procurationExpiresAt, today), lte(customers.procurationExpiresAt, in30))!);
     }
     if (q.cnd?.length) conds.push(inArray(customers.cndStatus, q.cnd));
@@ -183,8 +185,8 @@ export async function customerRoutes(app: FastifyInstance) {
       const rows = await db.select({ k: col, n: count() }).from(customers).where(scope).groupBy(col);
       return Object.fromEntries(rows.map((r) => [r.k, r.n]));
     };
-    const today = new Date().toISOString().slice(0, 10);
-    const in30 = new Date(Date.now() + 30 * 86400_000).toISOString().slice(0, 10);
+    const today = todayIso();
+    const in30 = addDaysIso(today, 30);
     const groupCounts = await db
       .select({ id: customerGroups.id, name: customerGroups.name, n: count(customers.id) })
       .from(customerGroups)

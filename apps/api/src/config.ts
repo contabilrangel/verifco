@@ -7,6 +7,9 @@ const flag = (fallback: boolean) =>
     .optional()
     .transform((v) => (v === undefined || v === '' ? fallback : ['1', 'true', 'sim', 'yes', 'on'].includes(v.toLowerCase())));
 
+/** Número inteiro do ambiente; vazio conta como não informado (usa o padrão). */
+const int = (min: number, max: number) => z.preprocess((v) => (v === '' ? undefined : v), z.coerce.number().int().min(min).max(max).optional());
+
 /** Valores de exemplo que nunca valem em produção (padrão do código e do .env.example). */
 const DEV_JWT_SECRET = 'dev-only-secret-change-me-please';
 const DEV_ENCRYPTION_KEY = 'ZGV2LW9ubHkta2V5LWNoYW5nZS1tZS0zMi1ieXRlcyE=';
@@ -59,6 +62,14 @@ const schema = z.object({
     .string()
     .default('true')
     .transform((v) => v !== 'false'),
+  /** Jobs da fila executados ao mesmo tempo por processo (veja "Fila de tarefas" em docs/ARQUITETURA.md). */
+  JOB_CONCURRENCY: int(1, 64).default(4),
+  /** Máximo de jobs de um mesmo escritório rodando ao mesmo tempo; vazio = JOB_CONCURRENCY − 1 (mínimo 1). */
+  JOB_OFFICE_CONCURRENCY: int(1, 64).optional(),
+  /** Prazo (s) para um job sem sinal de vida (processo que caiu) voltar para a fila. */
+  JOB_LEASE_SECONDS: int(10, 86_400).default(300),
+  /** Ao desligar (SIGTERM), quanto esperar (s) os jobs e requisições em andamento antes de devolvê-los à fila. */
+  SHUTDOWN_TIMEOUT_SECONDS: int(1, 3600).default(25),
 });
 
 type Parsed = z.infer<typeof schema>;

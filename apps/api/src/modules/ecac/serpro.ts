@@ -16,6 +16,7 @@
  */
 import { existsSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { todayIso } from '@verifco/shared';
 import type { AppContext } from '../../context';
 import { normalizeDate } from './util';
 
@@ -139,7 +140,7 @@ function* walk(value: unknown, depth = 0): Generator<[string, unknown]> {
  * `dtexpiracao`). Sem data reconhecível devolve `null`: o registro bruto é guardado, mas o
  * cadastro não muda.
  */
-export function interpretProcuration(raw: unknown, today = new Date().toISOString().slice(0, 10)): { status: 'valid' | 'expired'; expiresAt: string } | null {
+export function interpretProcuration(raw: unknown, today = todayIso()): { status: 'valid' | 'expired'; expiresAt: string } | null {
   const dates: string[] = [];
   for (const [k, v] of walk(raw)) {
     if (!/expira/i.test(k)) continue;

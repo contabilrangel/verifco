@@ -1,6 +1,7 @@
 export * from './permissions';
 export * from './enums';
 export * from './validators';
+export * from './dates';
 export * from './templates';
 export * from './dirpf';
 export * from './tax/params';

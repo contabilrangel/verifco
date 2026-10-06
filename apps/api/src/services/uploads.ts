@@ -8,6 +8,7 @@
  *   `nosniff` e CSP `sandbox`, e tipos fora da lista viram `application/octet-stream`.
  *   Assim um HTML ou SVG enviado como "documento" não roda script na origem do Verifco.
  */
+import type { Readable } from 'node:stream';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { fileExtension } from '@verifco/shared';
 import { HttpError, badRequest } from '../lib/errors';
@@ -174,6 +175,8 @@ export interface ReadUploadsOptions {
   unknown?: 'reject' | 'octet-stream';
   maxBytes?: number;
   maxFiles?: number;
+  /** Soma máxima dos arquivos de um envio (padrão 150 MB): limita a memória de cada requisição. */
+  maxTotalBytes?: number;
   /** Descrição dos tipos aceitos, para a mensagem de erro (ex.: "PDF, imagem ou planilha"). */
   accepted?: string;
   /** Recusa arquivo vazio (padrão: ignora). */
@@ -181,6 +184,7 @@ export interface ReadUploadsOptions {
 }
 
 const DEFAULT_MAX_BYTES = 25 * 1024 * 1024;
+const DEFAULT_MAX_TOTAL_BYTES = 150 * 1024 * 1024;
 const formatMb = (bytes: number) => `${Math.round(bytes / (1024 * 1024))} MB`;
 
 /**
@@ -191,6 +195,8 @@ export async function readUploads(req: FastifyRequest, opts: ReadUploadsOptions)
   if (!req.isMultipart()) throw badRequest('Envie o arquivo pelo formulário de upload.');
   const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
   const maxFiles = opts.maxFiles ?? 20;
+  const maxTotal = opts.maxTotalBytes ?? DEFAULT_MAX_TOTAL_BYTES;
+  let total = 0;
   const files: UploadedFile[] = [];
   const fields: Record<string, string> = {};
   let current = 'arquivo';
@@ -208,6 +214,8 @@ export async function readUploads(req: FastifyRequest, opts: ReadUploadsOptions)
         throw badRequest(`O arquivo “${filename}” não é aceito.${opts.accepted ? ` Envie ${opts.accepted}.` : ''}`);
       }
       const data = await part.toBuffer();
+      total += data.length;
+      if (total > maxTotal) throw new HttpError(413, `Os arquivos deste envio passam de ${formatMb(maxTotal)} no total. Envie em partes.`);
       if (!data.length) {
         if (opts.rejectEmpty) throw badRequest(`O arquivo “${filename}” está vazio.`);
         continue;
@@ -240,8 +248,16 @@ export const isInlineType = (mime: string) => INLINE_TYPES.has(mime);
  * Entrega um arquivo gravado sem permitir execução de conteúdo: tipo da lista branca,
  * `inline` só para PDF e imagens, `nosniff`, CSP `sandbox` e sem cache compartilhado
  * (`cacheControl` só muda o cache, ex.: o logo público do escritório).
+ * `data` pode ser um fluxo (`ctx.files.open`, .zip montado em fluxo) para arquivos grandes; com
+ * `file.size` informado, vai o `Content-Length`.
  */
-export function sendStoredFile(reply: FastifyReply, file: { filename: string; mimeType: string }, data: Buffer, inline = false, cacheControl = 'private, no-store') {
+export function sendStoredFile(
+  reply: FastifyReply,
+  file: { filename: string; mimeType: string; size?: number | null },
+  data: Buffer | Readable,
+  inline = false,
+  cacheControl = 'private, no-store',
+) {
   const type = servedMimeType(file.mimeType);
   const canInline = inline && isInlineType(type);
   reply
@@ -249,6 +265,7 @@ export function sendStoredFile(reply: FastifyReply, file: { filename: string; mi
     .header('X-Content-Type-Options', 'nosniff')
     .header('Cache-Control', cacheControl)
     .header('Content-Disposition', `${canInline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(file.filename)}`);
+  if (!Buffer.isBuffer(data) && typeof file.size === 'number' && file.size >= 0) reply.header('Content-Length', String(file.size));
   // o visualizador de PDF do Chrome não abre em documento com sandbox
   if (type !== 'application/pdf') reply.header('Content-Security-Policy', "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox");
   return reply.send(data);

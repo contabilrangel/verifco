@@ -58,6 +58,9 @@ importers:
       pg:
         specifier: ^8.16.0
         version: 8.23.1
+      yazl:
+        specifier: ^3.3.1
+        version: 3.3.1
       zod:
         specifier: ^4.1.12
         version: 4.6.5
@@ -74,6 +77,9 @@ importers:
       '@types/pg':
         specifier: ^8.15.0
         version: 8.23.1
+      '@types/yazl':
+        specifier: ^3.3.1
+        version: 3.3.1
       tsx:
         specifier: ^4.20.0
         version: 4.23.15
@@ -1155,6 +1161,9 @@ packages:
   '@types/react@19.3.0':
     resolution: {integrity: sha512-N0rFCuH9YoxG9/m61l9MfpJKfmLOVU0em7ipIz6TRgSSkvReLB9vL85GB+yr8Bs5leqpvg96JSwF4ZS1s4viQg==}
 
+  '@types/yazl@3.3.1':
+    resolution: {integrity: sha512-DIWfCKpsTp6hE5BDBHV3+fIL/bLUF9Bv13iDrWnMlmhQpH67buNvI291ZauQ1xcccxK3FqQ9honnXpq4R8NMuQ==}
+
   '@vitejs/plugin-react@5.2.0':
     resolution: {integrity: sha512-YmKkfhOAi3wsB1PhJq5Scj3GXMn3WvtQ/JC0xoopuHoXSdmtdStOpFrYaT1kie2YgFBcIe64ROzMYRjCrYOdYw==}
     engines: {node: ^20.19.0 || >=22.12.0}
@@ -1302,6 +1311,10 @@ packages:
 
   buffer-crc32@0.2.13:
     resolution: {integrity: sha512-VO9Ht/+p3SN7SKWqcrgEzjGbRSJYTx+Q1pTQC0wrWqHx0vpJraQ6GtHx8tvcg1rlK1byhU5gccxgOgj7B0TDkQ==}
+
+  buffer-crc32@1.0.0:
+    resolution: {integrity: sha512-Db1SbgBS/fg/392AblrMJk97KggmvYhr4pB5ZIMTWtaivCPMWLkmb7m21cJvpvgK+J3nsU2CmmixNBZx4vFj/w==}
+    engines: {node: '>=8.0.0'}
 
   buffer-from@1.1.2:
     resolution: {integrity: sha512-E+XQCRwSbaaiChtv6k6Dwgc+bx+Bs6vuKJHHl5kox/BaKbhiXzqQOwK4cO22yElGp2OCmjwVhT3HmxgyPGnJfQ==}
@@ -2473,6 +2486,9 @@ packages:
   yallist@3.1.1:
     resolution: {integrity: sha512-a4UGQaWPH59mOXUYnAG2ewncQS4i4F43Tv3JoAM+s2VDAmS9NsK8GpDMLrCHPksFT7h3K6TOoUNn2pb7RoXx4g==}
 
+  yazl@3.3.1:
+    resolution: {integrity: sha512-BbETDVWG+VcMUle37k5Fqp//7SDOK2/1+T7X8TD96M3D9G8jK5VLUdQVdVjGi8im7FGkazX7kk5hkU8X4L5Bng==}
+
   zip-stream@4.1.1:
     resolution: {integrity: sha512-9qv4rlDiopXg4E69k+vMHjNN63YFMe9sZMrdlvKnCjlCRWeCBswPPMPUfx+ipsAWq1LXHe70RcbaHdJJpS6hyQ==}
     engines: {node: '>= 10'}
@@ -3206,6 +3222,10 @@ snapshots:
     dependencies:
       csstype: 3.2.3
 
+  '@types/yazl@3.3.1':
+    dependencies:
+      '@types/node': 22.20.5
+
   '@vitejs/plugin-react@5.2.0(vite@7.3.6(@types/node@22.20.5)(lightningcss@1.33.0)(tsx@4.23.15))':
     dependencies:
       '@babel/core': 7.29.7
@@ -3397,6 +3417,8 @@ snapshots:
       update-browserslist-db: 1.3.3(browserslist@4.29.3)
 
   buffer-crc32@0.2.13: {}
+
+  buffer-crc32@1.0.0: {}
 
   buffer-from@1.1.2: {}
 
@@ -4494,6 +4516,10 @@ snapshots:
   xtend@4.0.2: {}
 
   yallist@3.1.1: {}
+
+  yazl@3.3.1:
+    dependencies:
+      buffer-crc32: 1.0.0
 
   zip-stream@4.1.1:
     dependencies:

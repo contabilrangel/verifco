@@ -61,14 +61,16 @@ describe('migrações (SEG-4)', () => {
   });
 
   it('a migração própria dá 30 dias aos links do checklist enviados antes da validade', async () => {
-    // cópia da pasta sem a migração própria: o banco fica como estava depois da 0002
+    // cópia da pasta só até antes da migração própria: o banco fica como estava depois da 0002
+    // (as posteriores também ficam de fora; o migrador só aplica as mais novas que a última aplicada)
     const dir = mkdtempSync(join(tmpdir(), 'verifco-migracoes-'));
     const client = new PGlite();
     try {
       cpSync(MIGRATIONS, dir, { recursive: true });
       const journal = readJournal(MIGRATIONS);
       const journalPath = join(dir, 'meta/_journal.json');
-      writeFileSync(journalPath, JSON.stringify({ ...journal, entries: journal.entries.filter((e) => e.tag !== CUSTOM) }));
+      const customIdx = journal.entries.findIndex((e) => e.tag === CUSTOM);
+      writeFileSync(journalPath, JSON.stringify({ ...journal, entries: journal.entries.slice(0, customIdx) }));
       const db = drizzle(client, { schema });
       await migrate(db, { migrationsFolder: dir });
 

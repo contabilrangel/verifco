@@ -8,6 +8,8 @@ import {
   GOVBR_LEVELS,
   PROCURATION_STATUS,
   TAXATION_TYPES,
+  addDaysIso,
+  todayIso,
   type EcacRecordKind,
   type EcacRecordSource,
 } from '@verifco/shared';
@@ -182,8 +184,8 @@ export async function buildEcacPanel(ctx: AppContext, customer: CustomerRow) {
     .leftJoin(declarations, eq(declarations.id, darfs.declarationId))
     .where(and(eq(darfs.customerId, customer.id), eq(darfs.officeId, customer.officeId)))
     .orderBy(desc(darfs.dueDate), asc(darfs.quotaNumber));
-  const today = new Date().toISOString().slice(0, 10);
-  const in30 = new Date(Date.now() + 30 * 86400_000).toISOString().slice(0, 10);
+  const today = todayIso();
+  const in30 = addDaysIso(today, 30);
   const lastCnd = of('cnd')[0] ?? null;
   const simplified = [...of('simplified_status'), ...of('fiscal_situation')].sort((a, b) => b.fetchedAt.getTime() - a.fetchedAt.getTime())[0] ?? null;
   const base = (r: EcacRecordRow) => ({ id: r.id, year: r.year, fileId: r.fileId, source: r.source, fetchedAt: r.fetchedAt });

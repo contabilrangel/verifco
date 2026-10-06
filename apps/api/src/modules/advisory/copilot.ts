@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, inArray } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, isNull } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
@@ -8,8 +8,11 @@ import {
   copilotBudget,
   copilotLimit,
   copilotOverview,
+  currentMonthInBrazil,
+  currentYearInBrazil,
   formatMoney,
   projectCopilotIrpfm,
+  todayIso,
   type CopilotEntryKind,
 } from '@verifco/shared';
 import type { AppContext } from '../../context';
@@ -33,11 +36,13 @@ async function officeLimit(ctx: AppContext, officeId: string) {
   return copilotLimit(rows.map((c) => ({ plan: c.plan, status: c.status, startsAt: String(c.startsAt), expiresAt: String(c.expiresAt) })));
 }
 
+/** Vagas do plano em uso: clientes excluídos (soft delete) liberam a vaga. */
 async function activeCount(ctx: AppContext, officeId: string) {
   const [{ n }] = await ctx.db
     .select({ n: count() })
     .from(copilotEnrollments)
-    .where(and(eq(copilotEnrollments.officeId, officeId), eq(copilotEnrollments.status, 'active')));
+    .innerJoin(customers, eq(customers.id, copilotEnrollments.customerId))
+    .where(and(eq(copilotEnrollments.officeId, officeId), eq(copilotEnrollments.status, 'active'), isNull(customers.deletedAt)));
   return n;
 }
 
@@ -156,8 +161,8 @@ export async function copilotRoutes(app: FastifyInstance) {
     if (!enrollment || enrollment.status !== 'active') {
       return { enrolled: false, enrollment: enrollment ?? null, limit: await officeLimit(app.ctx, user.officeId), used: await activeCount(app.ctx, user.officeId) };
     }
-    const year = q.year ?? new Date().getFullYear();
-    const month = q.month ?? (year === new Date().getFullYear() ? new Date().getMonth() + 1 : 12);
+    const year = q.year ?? currentYearInBrazil();
+    const month = q.month ?? (year === currentYearInBrazil() ? currentMonthInBrazil() : 12);
     const rows = await db
       .select()
       .from(copilotEntries)
@@ -169,7 +174,7 @@ export async function copilotRoutes(app: FastifyInstance) {
       .innerJoin(files, eq(files.id, documents.fileId))
       .where(and(eq(documents.officeId, user.officeId), eq(documents.customerId, customer.id), eq(documents.category, 'copilot')))
       .orderBy(desc(documents.createdAt));
-    const todayStr = new Date().toISOString().slice(0, 10);
+    const todayStr = todayIso();
     const bills = rows.filter((r) => r.kind === 'bill');
     return {
       enrolled: true,

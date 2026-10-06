@@ -1,7 +1,9 @@
 import ExcelJS from 'exceljs';
+import { formatDate, todayIso } from '@verifco/shared';
 import type { AppContext } from '../../context';
 import type { AiCompletion, AiMessage } from '../../integrations/providers';
 import { HttpError, badRequest } from '../../lib/errors';
+import { decodeCsvText } from '../../services/xlsx';
 
 /** Assistentes disponíveis e quem pode usá-los (todas as permissões listadas são exigidas). */
 export const ASSISTANTS = {
@@ -19,7 +21,7 @@ export const AI_LIMITS = { chatTimeoutMs: 60_000, analysisTimeoutMs: 180_000 };
 export const MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024;
 export const MAX_ATTACHMENTS = 10;
 
-const today = () => new Date().toLocaleDateString('pt-BR');
+const today = () => formatDate(todayIso());
 
 const COMMON_RULES = `Regras:
 - Responda em português do Brasil, de forma objetiva, para um contador (profissional da área).
@@ -93,10 +95,8 @@ export async function completeWithTimeout(
 const MEDIA = /^(application\/pdf|image\/(png|jpe?g|webp|gif))$/;
 const TEXT_LIMIT = 30_000;
 
-export const decodeText = (data: Buffer) => {
-  const utf8 = data.toString('utf8');
-  return utf8.includes('�') ? data.toString('latin1') : utf8;
-};
+/** Texto de um anexo .txt/.csv: UTF-8 ou Windows-1252, pelo decodificador único das planilhas. */
+export const decodeText = (data: Buffer) => decodeCsvText(data);
 
 async function sheetToText(data: Buffer): Promise<string> {
   const wb = new ExcelJS.Workbook();

@@ -1,7 +1,7 @@
 import { and, asc, desc, eq, inArray, isNull } from 'drizzle-orm';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { formatCpfCnpj, formatDate } from '@verifco/shared';
+import { currentYearInBrazil, formatCpfCnpj, formatDate } from '@verifco/shared';
 import { aiAnalyses, aiAttachments, aiConversations, aiMessages, declarations, documents, files } from '../../db/schema';
 import { badRequest, forbidden, notFound } from '../../lib/errors';
 import { audit, can, parse, requireUser, uuidParam, yearSchema } from '../../lib/http';
@@ -77,7 +77,7 @@ export async function aiRoutes(app: FastifyInstance) {
   async function contextFor(officeId: string, customer: { id: string; name: string }, assistant: AssistantKey, year: number) {
     const base = await clientContextText(app.ctx, officeId, customer, year);
     if (assistant !== 'copilot') return base;
-    return `${base}\n\n${await copilotContextText(app.ctx, officeId, customer.id, new Date().getFullYear())}`;
+    return `${base}\n\n${await copilotContextText(app.ctx, officeId, customer.id, currentYearInBrazil())}`;
   }
 
   // ------------------------------------------------------------------ conversa

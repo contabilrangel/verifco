@@ -58,6 +58,12 @@ Não há registro central para editar: criar a pasta basta.
 5. **Auditoria**: ações relevantes chamam `audit(req, acao, entidade, id, dados)`.
 6. **Segredos**: senhas e chaves só cifradas (`ctx.secrets.encrypt`) e nunca devolvidas.
 7. **Dinheiro**: sempre em centavos (inteiro). Datas sem hora em `AAAA-MM-DD`.
+8. **"Hoje"**: sempre no horário de Brasília, pelas funções de `packages/shared/src/dates.ts`:
+   `todayIso()` (ou `brazilToday()`, a mesma), `addDaysIso(hoje, 30)` para "daqui a N dias",
+   `isoDateInBrazil(instante)` para a data de um `createdAt`, `currentYearInBrazil()` para o ano e
+   `formatDateTimeBr()` para "gerado em". Nunca `new Date().toISOString().slice(0, 10)` (é UTC: das
+   21h à meia-noite o que vence hoje aparece vencido) nem `new Date().getFullYear()` no servidor.
+   `formatDate` mostra data sem hora sem passar por fuso e data com hora no horário de Brasília.
 
 ### Serviços compartilhados (`src/services/`)
 
@@ -67,19 +73,31 @@ Não há registro central para editar: criar a pasta basta.
 | `declarations.ts` | `getOrCreateDeclaration`, `setDeclarationSubstatus`, `advanceDeclaration`, `recomputeTotals`, `listItems` |
 | `delivery.ts` | `queueDelivery` (e-mail/WhatsApp por template ou texto, com idempotência e anexos) |
 | `pdf.ts` | `PdfBuilder` + `loadBranding` (logo e cores do escritório) |
-| `xlsx.ts` | `buildWorkbook`, `readSheet`, `parseMoneyToCents`, `parseDate` |
+| `xlsx.ts` | `buildWorkbook`; leitor único de planilhas `readSheet` (e `readSheetTable`, que devolve também os cabeçalhos) para .xlsx e .csv; `decodeCsvText` (UTF-8 ou Windows-1252 de verdade, com aspas curvas, travessão e €); `sheetMoneyToCents`, `parseMoneyToCents`, `parseDate` |
+| `zip.ts` | `ZipStream` (.zip em fluxo com o `yazl`, ZIP64 automático, um arquivo aberto por vez, arquivo que sumiu fica de fora e é listado), `assertZipSize` (teto de 1 GB por download, 413) |
 | `settings.ts` | `getOfficeSettings` com os padrões aplicados |
 | `notify.ts` | notificação no sino |
-| `uploads.ts` | `readUploads` (multipart: tipo pela extensão conferida com o conteúdo, limites e mensagens em português), `sendStoredFile` (download com lista branca de tipos, `nosniff` e CSP `sandbox`), `safeFilename`, `safeZipName`, `uploadedFromBase64`, listas de tipos (`DOCUMENT_TYPES`, `SHEET_TYPES`, `PDF_TYPES`...) |
+| `uploads.ts` | `readUploads` (multipart: tipo pela extensão conferida com o conteúdo, limites por arquivo e por envio, `maxTotalBytes` padrão 150 MB, e mensagens em português), `sendStoredFile` (download com lista branca de tipos, `nosniff` e CSP `sandbox`; aceita `Buffer` ou fluxo), `safeFilename`, `safeZipName`, `uploadedFromBase64`, listas de tipos (`DOCUMENT_TYPES`, `SHEET_TYPES`, `PDF_TYPES`...) |
 | `rate-limit.ts` | limite de tentativas no banco (vale entre instâncias): `consume`, `check`, `fail`, `allow`, `resetLimit`; `ROUTE_LIMITS` (por IP, aplicado em `app.ts`) e as regras por e-mail, CPF/link (`CUSTOMER_LOGIN_RULE`) e conta |
 
 **Arquivos**: todo upload usa `readUploads` (ou um leitor do módulo construído sobre ele, como
 `readChecklistUploads` e `readMultipart`) e todo download de arquivo gravado usa
 `sendStoredFile`. Nunca grave nem devolva o `Content-Type` informado por quem enviou.
+**Planilhas**: toda leitura de .xlsx/.csv passa por `readSheet`/`readSheetTable` (o CSV é
+decodificado por `decodeCsvText`; não decodifique por conta própria nem use `TextDecoder('windows-1252')`,
+que no Node 22 decodifica como Latin-1). Valor em reais de planilha sai de `sheetMoneyToCents(row, chave)`:
+numa célula numérica do .xlsx ele usa o número cru de `SheetRow.numbers` (o texto da célula usa ponto
+decimal, "104.895", e seria lido como R$ 104.895,00); no CSV e no texto digitado usa `parseMoneyToCents`.
+`parseMoneyToCents` direto só para texto que o usuário digitou.
+**Arquivos grandes** (backup, .zip, downloads de vários arquivos): leia com `ctx.files.open` e grave com
+`ctx.files.saveStream` (fluxo, tamanho e SHA-256 calculados no caminho); monte .zip com `ZipStream`
+(`zip.ts`), nunca com `JSZip.generateAsync` de muitos arquivos. `ctx.files.get` (Buffer) é só para
+arquivos pequenos (até os 25 MB do upload).
 **Limites de tentativa**: use as funções de `rate-limit.ts` (nunca um contador em memória, que
 vale só para uma instância da API).
 
-Contexto (`app.ctx`): `db`, `config`, `secrets`, `files` (salvar/ler arquivos), `jobs`
+Contexto (`app.ctx`): `db`, `config`, `secrets`, `files` (salvar/ler arquivos: `save`, `get`,
+`saveStream`, `open`, `remove`; `removeRows` dentro de uma transação + `deleteBlobs` depois do commit), `jobs`
 (fila), `providers` (e-mail, WhatsApp, IA, `fetch` injetável).
 
 ### Fila de tarefas
@@ -87,6 +105,26 @@ Contexto (`app.ctx`): `db`, `config`, `secrets`, `files` (salvar/ler arquivos), 
 `ctx.jobs.enqueue(tipo, payload, { officeId, idempotencyKey })`. Tudo que fala com serviço
 externo ou demora (envios, exportações, IA, sincronizações) passa pela fila. Nos testes,
 `await env.ctx.jobs.drain()` executa o que estiver pendente.
+
+- **Posse com prazo**: o job em execução renova `locked_at` (a cada ¼ do prazo e a cada
+  `progress()`). Se o processo cai (deploy, OOM), o job fica em `running` sem renovação e, vencido o
+  prazo (`JOB_LEASE_SECONDS`, padrão 300), `recoverStale` o devolve à fila contando a tentativa (ou o
+  marca `failed` se acabaram as tentativas). Cada execução só grava o próprio resultado enquanto
+  ainda é dona do job (mesmo `attempts` e status `running`).
+- **Deduplicar pedidos** ("já existe um backup em andamento"): use `ctx.jobs.pending(officeId, tipo)`,
+  que recupera antes os jobs presos; não consulte `status in ('queued','running')` direto.
+- **Concorrência e justiça**: cada processo roda até `JOB_CONCURRENCY` jobs (padrão 4); um escritório
+  ocupa no máximo `JOB_OFFICE_CONCURRENCY` vagas (padrão `JOB_CONCURRENCY − 1`) e, havendo jobs de
+  vários escritórios, eles se revezam (o 2º job do escritório A só sai depois do 1º de B e C).
+  Job longo que percorre a carteira inteira deve informar `progress()`.
+- **Repetição**: padrão de 3 tentativas com espera de 10 s, 20 s, 40 s... (até 10 min). Jobs que
+  falam com serviço externo usam `EXTERNAL_SERVICE_RETRY` (10 tentativas: 1, 5, 15, 30 min, 1, 2, 4, 8,
+  12 h). A política fica em `JOB_RETRY_POLICIES` (`jobs/queue.ts`) ou no `register(tipo, executor,
+  política)`; `maxAttempts` no `enqueue` vale mais que a política.
+- **Chave de idempotência**: repetir o `enqueue` com a mesma chave devolve o job que está na fila,
+  rodando ou concluído; se ele **falhou de vez**, é reaberto (tentativas zeradas, payload novo).
+- **Desligamento**: no SIGTERM, `server.ts` para de pegar jobs, espera os em andamento até
+  `SHUTDOWN_TIMEOUT_SECONDS` (padrão 25) e devolve os que não terminaram à fila, sem gastar tentativa.
 
 ### Banco
 
@@ -96,6 +134,9 @@ preenchimento) vai numa migração própria, criada com
 `npx drizzle-kit generate --custom --name <nome>` dentro de `apps/api` (veja
 `0003_checklist_validade_links.sql`). `test/migrations.test.ts` confere que as migrações aplicam
 num banco vazio e chegam ao mesmo banco que o `schema.ts`.
+Coluna buscada por rota pública sem login (token de link, webhook) ou usada em filtro frequente
+(chave estrangeira de lista, `customer_id` de envios) precisa de índice no `schema.ts`: sem ele a
+busca varre a tabela de todos os escritórios.
 
 ### Testes
 
@@ -128,6 +169,13 @@ permissões e isolamento entre escritórios.
   cabeçalho para escapar do limite.
 - Ao subir, a API aplica as migrações de `apps/api/drizzle/` (padrão `DB_SYNC=migrate`); não use
   `DB_SYNC=push` em produção.
+- **Fila de tarefas**: cada processo com `RUN_WORKER` (padrão ligado) executa até `JOB_CONCURRENCY`
+  jobs. Com várias instâncias, todas podem processar (o PostgreSQL reparte os jobs) ou a API roda com
+  `RUN_WORKER=false` e um processo separado só para a fila. Pare as instâncias com SIGTERM e dê ao
+  orquestrador um prazo maior que `SHUTDOWN_TIMEOUT_SECONDS` (o padrão de 25 s cabe nos 30 s do
+  Docker/Kubernetes). Um job de uma instância que morreu volta para a fila em até `JOB_LEASE_SECONDS`.
+- **Disco**: o backup do escritório é gravado em `STORAGE_DIR` enquanto é montado (pode passar de
+  4 GB, em ZIP64); reserve espaço para ele além dos documentos.
 
 ## Web (`apps/web`)
 

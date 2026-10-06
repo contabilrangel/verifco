@@ -1,6 +1,5 @@
 import { and, asc, desc, eq, inArray, type SQL } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
-import JSZip from 'jszip';
 import { z } from 'zod';
 import { DOCUMENT_CATEGORY_LIST, formatCpfCnpj, type DocumentCategory } from '@verifco/shared';
 import type { AppContext, AuthUser } from '../../context';
@@ -10,9 +9,9 @@ import { audit, guard, parse, requireUser, uuidParam, yearSchema } from '../../l
 import { customerScope, getCustomerForUser } from '../../services/customers';
 import { getOrCreateDeclaration } from '../../services/declarations';
 import { DOCUMENT_TYPES, readUploads, sendStoredFile } from '../../services/uploads';
+import { ZipStream, assertZipSize } from '../../services/zip';
 
 const categoryEnum = z.enum(DOCUMENT_CATEGORY_LIST as [DocumentCategory, ...DocumentCategory[]]);
-const MAX_ZIP_BYTES = 1024 * 1024 * 1024;
 
 /** Nome seguro para pastas e arquivos dentro do .zip. */
 const safeName = (s: string) =>
@@ -137,30 +136,33 @@ export async function documentRoutes(app: FastifyInstance) {
     if (body.year) conds.push(eq(declarations.exerciseYear, body.year));
     const docs = await selectDocs(and(...conds)!).orderBy(asc(documents.createdAt));
     if (!docs.length) throw badRequest(body.year ? `Nenhum documento do exercício ${body.year} para os clientes selecionados.` : 'Nenhum documento para os clientes selecionados.');
-    const totalSize = docs.reduce((a, d) => a + d.size, 0);
-    if (totalSize > MAX_ZIP_BYTES) throw badRequest('Os arquivos passam de 1 GB. Selecione menos clientes.');
-
-    const zip = new JSZip();
-    const used = new Set<string>();
-    for (const c of visible) {
-      const mine = docs.filter((d) => d.customerId === c.id);
-      if (!mine.length) continue;
-      const folder = safeName(`${c.name} - ${formatCpfCnpj(c.cpfCnpj)}`);
-      for (const d of mine) {
-        const sub = body.year ? '' : `${d.exerciseYear ?? 'sem-exercicio'}/`;
-        const base = safeName(d.filename);
-        const dot = base.lastIndexOf('.');
-        const [stem, ext] = dot > 0 ? [base.slice(0, dot), base.slice(dot)] : [base, ''];
-        let path = `${folder}/${sub}${base}`;
-        for (let n = 2; used.has(path.toLowerCase()); n++) path = `${folder}/${sub}${stem} (${n})${ext}`;
-        used.add(path.toLowerCase());
-        const { data } = await app.ctx.files.get(user.officeId, d.fileId);
-        zip.file(path, data);
-      }
-    }
-    const buf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } });
+    assertZipSize(docs.reduce((a, d) => a + d.size, 0));
     await audit(req, 'download_zip', 'document', null, { customers: visible.length, files: docs.length, year: body.year ?? null });
     const name = body.year ? `documentos-${body.year}.zip` : 'documentos.zip';
-    return reply.header('Content-Type', 'application/zip').header('Content-Disposition', `attachment; filename="${name}"`).send(buf);
+
+    // .zip em fluxo: cada arquivo é lido do armazenamento enquanto o navegador baixa
+    const output = new ZipStream().produce(
+      async (zip) => {
+        const used = new Set<string>();
+        for (const c of visible) {
+          const mine = docs.filter((d) => d.customerId === c.id);
+          if (!mine.length) continue;
+          const folder = safeName(`${c.name} - ${formatCpfCnpj(c.cpfCnpj)}`);
+          for (const d of mine) {
+            const sub = body.year ? '' : `${d.exerciseYear ?? 'sem-exercicio'}/`;
+            const base = safeName(d.filename);
+            const dot = base.lastIndexOf('.');
+            const [stem, ext] = dot > 0 ? [base.slice(0, dot), base.slice(dot)] : [base, ''];
+            let path = `${folder}/${sub}${base}`;
+            for (let n = 2; used.has(path.toLowerCase()); n++) path = `${folder}/${sub}${stem} (${n})${ext}`;
+            used.add(path.toLowerCase());
+            await zip.addFile(app.ctx, user.officeId, d.fileId, path);
+          }
+        }
+        zip.end('Estes arquivos não foram encontrados no armazenamento e ficaram de fora do .zip:');
+      },
+      (err) => req.log.error({ err }, 'falha ao montar o .zip de documentos'),
+    );
+    return sendStoredFile(reply, { filename: name, mimeType: 'application/zip' }, output);
   });
 }

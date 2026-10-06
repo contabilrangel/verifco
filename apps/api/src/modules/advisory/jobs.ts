@@ -1,4 +1,5 @@
 import { and, eq, inArray } from 'drizzle-orm';
+import { currentYearInBrazil } from '@verifco/shared';
 import type { AppContext } from '../../context';
 import { aiAnalyses, customers, documents } from '../../db/schema';
 import { AI_LIMITS, FINANCIAL_ADVISOR_PROMPT, attachmentsForAi, completeWithTimeout } from './ai-service';
@@ -23,7 +24,7 @@ export async function runFinancialAnalysis(ctx: AppContext, analysisId: string) 
       : [];
     if (!docs.length) throw new Error('Os documentos selecionados não estão mais disponíveis.');
     const att = await attachmentsForAi(ctx, row.officeId, docs.map((d) => d.fileId));
-    const context = await clientContextText(ctx, row.officeId, customer, new Date().getFullYear());
+    const context = await clientContextText(ctx, row.officeId, customer, currentYearInBrazil());
     const out = await completeWithTimeout(
       ctx,
       row.officeId,

@@ -1,6 +1,5 @@
 import { and, asc, desc, eq, ilike, inArray, isNull, or, type SQL } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
-import JSZip from 'jszip';
 import { z } from 'zod';
 import { ELABORATION_STATUS, ITEM_KINDS, onlyDigits, type DeclarationItem, type ElaborationStatus } from '@verifco/shared';
 import { customers, declarationItems, declarations, documents, files, jobs } from '../../db/schema';
@@ -10,6 +9,7 @@ import { customerScope, getCustomerForUser } from '../../services/customers';
 import { listItems, recomputeTotals } from '../../services/declarations';
 import { jobView } from '../ecac/util';
 import { safeZipName, sendStoredFile } from '../../services/uploads';
+import { ZipStream, assertZipSize, uniqueZipPath } from '../../services/zip';
 import {
   computeElaborationStatus,
   docCounts,
@@ -306,17 +306,25 @@ export async function elaborationRoutes(app: FastifyInstance) {
       .where(and(eq(declarations.officeId, user.officeId), eq(declarations.exerciseYear, body.year), inArray(declarations.customerId, ids)));
     const fileIds = rows.flatMap((r) => (r.fileId ? [r.fileId] : []));
     if (!fileIds.length) throw notFound('Pacote exportado');
-    const send = (name: string, data: Buffer) => sendStoredFile(reply, { filename: name, mimeType: 'application/zip' }, data);
     if (fileIds.length === 1) {
-      const { row, data } = await app.ctx.files.get(user.officeId, fileIds[0]);
-      return send(row.filename, data);
+      const { row, stream } = await app.ctx.files.open(user.officeId, fileIds[0]);
+      return sendStoredFile(reply, { filename: row.filename, mimeType: 'application/zip', size: row.size }, stream);
     }
-    const zip = new JSZip();
-    for (const id of fileIds) {
-      const { row, data } = await app.ctx.files.get(user.officeId, id);
-      zip.file(safeZipName(row.filename), data);
-    }
-    return send(`conferencia-${body.year}.zip`, await zip.generateAsync({ type: 'nodebuffer' }));
+    // vários pacotes: um .zip de .zips montado em fluxo, com teto de tamanho
+    const packs = await db
+      .select({ id: files.id, filename: files.filename, size: files.size })
+      .from(files)
+      .where(and(eq(files.officeId, user.officeId), inArray(files.id, fileIds)));
+    assertZipSize(packs.reduce((a, f) => a + f.size, 0), 'Selecione menos declarações.');
+    const output = new ZipStream().produce(
+      async (zip) => {
+        const used = new Set<string>();
+        for (const f of packs) await zip.addFile(app.ctx, user.officeId, f.id, uniqueZipPath(used, '', safeZipName(f.filename)));
+        zip.end('Estes pacotes não foram encontrados no armazenamento e ficaram de fora do .zip:');
+      },
+      (err) => req.log.error({ err }, 'falha ao montar o .zip dos pacotes de conferência'),
+    );
+    return sendStoredFile(reply, { filename: `conferencia-${body.year}.zip`, mimeType: 'application/zip' }, output);
   });
 
   /** Últimas tarefas de processamento/exportação do escritório. */

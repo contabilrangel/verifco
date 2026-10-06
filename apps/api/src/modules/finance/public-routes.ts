@@ -65,11 +65,14 @@ export async function publicRoutes(app: FastifyInstance) {
   const { ctx } = app;
   const { db } = ctx;
 
-  /** Orçamento pelo token do link; 404 se não existe, 410 se expirou ou foi cancelado. */
+  /** Orçamento pelo token do link; 404 se não existe, 410 se expirou, foi cancelado ou o cliente foi excluído. */
   const byToken = async (token: string) => {
     const b = await db.query.budgets.findFirst({ where: eq(budgets.approvalTokenHash, sha256(token)) });
     if (!b || b.status === 'draft') throw notFound('Orçamento');
     if (b.status === 'canceled') throw gone('Esta proposta foi cancelada pelo escritório.');
+    // cliente excluído (soft delete): o link deixa de valer e não gera faturamento nem cobrança
+    const customer = await db.query.customers.findFirst({ where: eq(customers.id, b.customerId), columns: { deletedAt: true } });
+    if (!customer || customer.deletedAt) throw gone('Esta proposta não está mais disponível. Fale com o escritório.');
     const expires = linkExpiresAt(b.sentAt);
     if (b.status === 'sent' && (!expires || expires.getTime() < Date.now())) throw gone('Este link expirou. Peça ao escritório um novo envio da proposta.');
     return b;

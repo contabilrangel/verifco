@@ -5,6 +5,7 @@
  * Tudo em centavos (inteiros) e datas `AAAA-MM-DD`. As multiplicações usam BigInt
  * para arredondar sem erro de ponto flutuante (meio centavo arredonda para cima).
  */
+import { todayIso } from './dates';
 import type { PriceTableType } from './enums';
 
 export const PRICING_BASES = {
@@ -80,12 +81,6 @@ export type BudgetAmountResult =
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
-/** Data de hoje (AAAA-MM-DD) no fuso informado; por padrão, horário de Brasília. */
-export function todayIso(now: Date = new Date(), timeZone = 'America/Sao_Paulo'): string {
-  const parts = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(now);
-  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
-  return `${get('year')}-${get('month')}-${get('day')}`;
-}
 
 /** Divide com arredondamento "meio para cima" em valores não negativos (e simétrico para negativos). */
 function roundDiv(n: bigint, d: bigint): bigint {

@@ -112,14 +112,19 @@ export const users = pgTable(
   (t) => [uniqueIndex('users_email_uq').on(sql`lower(${t.email})`)],
 );
 
-export const passwordResets = pgTable('password_resets', {
-  id: id(),
-  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
-  tokenHash: text('token_hash').notNull(),
-  expiresAt: ts('expires_at').notNull(),
-  usedAt: ts('used_at'),
-  createdAt: createdAt(),
-});
+export const passwordResets = pgTable(
+  'password_resets',
+  {
+    id: id(),
+    userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+    tokenHash: text('token_hash').notNull(),
+    expiresAt: ts('expires_at').notNull(),
+    usedAt: ts('used_at'),
+    createdAt: createdAt(),
+  },
+  // busca pelo token na rota pública /auth/reset-password
+  (t) => [index('password_resets_token_idx').on(t.tokenHash)],
+);
 
 export const userFavorites = pgTable(
   'user_favorites',
@@ -158,7 +163,8 @@ export const files = pgTable(
     storageKey: text('storage_key').notNull(),
     filename: text('filename').notNull(),
     mimeType: text('mime_type').notNull(),
-    size: integer('size').notNull(),
+    /** Bytes; bigint porque o backup do escritório passa de 2 GB. */
+    size: bigint('size', { mode: 'number' }).notNull(),
     sha256: text('sha256').notNull(),
     createdByUserId: uuid('created_by_user_id'),
     createdAt: createdAt(),
@@ -367,7 +373,7 @@ export const darfs = pgTable(
     source: text('source').notNull().default('manual'),
     createdAt: createdAt(),
   },
-  (t) => [index('darfs_customer_idx').on(t.customerId)],
+  (t) => [index('darfs_customer_idx').on(t.customerId), index('darfs_decl_idx').on(t.declarationId)],
 );
 
 // ---------------------------------------------------------------------------
@@ -388,7 +394,8 @@ export const checklists = pgTable(
     finishedAt: ts('finished_at'),
     createdAt: createdAt(),
   },
-  (t) => [uniqueIndex('checklists_decl_uq').on(t.declarationId)],
+  // o token do link público (/checklist/:token) é buscado sem escritório: precisa de índice
+  (t) => [uniqueIndex('checklists_decl_uq').on(t.declarationId), uniqueIndex('checklists_token_uq').on(t.accessTokenHash)],
 );
 
 export const checklistSections = pgTable(
@@ -439,7 +446,11 @@ export const documents = pgTable(
     extracted: jsonb('extracted').$type<Record<string, unknown>>(),
     createdAt: createdAt(),
   },
-  (t) => [index('documents_customer_idx').on(t.customerId)],
+  (t) => [
+    index('documents_customer_idx').on(t.customerId),
+    index('documents_decl_idx').on(t.declarationId),
+    index('documents_checklist_item_idx').on(t.checklistItemId),
+  ],
 );
 
 // ---------------------------------------------------------------------------
@@ -510,7 +521,7 @@ export const budgets = pgTable(
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [index('budgets_customer_idx').on(t.customerId, t.exerciseYear)],
+  (t) => [index('budgets_customer_idx').on(t.customerId, t.exerciseYear), uniqueIndex('budgets_token_uq').on(t.approvalTokenHash)],
 );
 
 export const billings = pgTable(
@@ -547,7 +558,11 @@ export const installments = pgTable(
     externalUrl: text('external_url'),
     createdAt: createdAt(),
   },
-  (t) => [uniqueIndex('installments_billing_number_uq').on(t.billingId, t.number), index('installments_external_idx').on(t.externalId)],
+  (t) => [
+    uniqueIndex('installments_billing_number_uq').on(t.billingId, t.number),
+    index('installments_external_idx').on(t.externalId),
+    index('installments_office_receipt_idx').on(t.officeId, t.receiptNumber),
+  ],
 );
 
 // ---------------------------------------------------------------------------
@@ -590,6 +605,7 @@ export const deliveries = pgTable(
   (t) => [
     index('deliveries_office_idx').on(t.officeId, t.createdAt),
     uniqueIndex('deliveries_idempotency_uq').on(t.officeId, t.idempotencyKey),
+    index('deliveries_customer_idx').on(t.customerId, t.createdAt),
   ],
 );
 
@@ -664,7 +680,7 @@ export const integrations = pgTable(
     webhookToken: text('webhook_token'),
     updatedAt: updatedAt(),
   },
-  (t) => [uniqueIndex('integrations_office_provider_uq').on(t.officeId, t.provider)],
+  (t) => [uniqueIndex('integrations_office_provider_uq').on(t.officeId, t.provider), index('integrations_webhook_token_idx').on(t.webhookToken)],
 );
 
 export const ecacRecords = pgTable(
@@ -741,7 +757,11 @@ export const jobs = pgTable(
     createdAt: createdAt(),
     finishedAt: ts('finished_at'),
   },
-  (t) => [index('jobs_status_run_idx').on(t.status, t.runAt), uniqueIndex('jobs_idempotency_uq').on(t.type, t.idempotencyKey)],
+  (t) => [
+    index('jobs_status_run_idx').on(t.status, t.runAt),
+    uniqueIndex('jobs_idempotency_uq').on(t.type, t.idempotencyKey),
+    index('jobs_office_type_status_idx').on(t.officeId, t.type, t.status),
+  ],
 );
 
 export const importBatches = pgTable('import_batches', {
@@ -818,17 +838,21 @@ export const aiConversations = pgTable(
   (t) => [index('ai_conversations_customer_idx').on(t.customerId, t.assistant)],
 );
 
-export const aiMessages = pgTable('ai_messages', {
-  id: id(),
-  conversationId: uuid('conversation_id').notNull().references(() => aiConversations.id, { onDelete: 'cascade' }),
-  role: text('role').notNull(),
-  content: text('content').notNull(),
-  attachments: jsonb('attachments').$type<{ fileId: string; filename: string }[]>().notNull().default([]),
-  inputTokens: integer('input_tokens'),
-  outputTokens: integer('output_tokens'),
-  rating: integer('rating'),
-  createdAt: createdAt(),
-});
+export const aiMessages = pgTable(
+  'ai_messages',
+  {
+    id: id(),
+    conversationId: uuid('conversation_id').notNull().references(() => aiConversations.id, { onDelete: 'cascade' }),
+    role: text('role').notNull(),
+    content: text('content').notNull(),
+    attachments: jsonb('attachments').$type<{ fileId: string; filename: string }[]>().notNull().default([]),
+    inputTokens: integer('input_tokens'),
+    outputTokens: integer('output_tokens'),
+    rating: integer('rating'),
+    createdAt: createdAt(),
+  },
+  (t) => [index('ai_messages_conversation_idx').on(t.conversationId, t.createdAt)],
+);
 
 /** Arquivos enviados como anexo na conversa com a IA, vinculados ao cliente da conversa. */
 export const aiAttachments = pgTable(

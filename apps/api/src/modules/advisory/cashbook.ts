@@ -2,41 +2,26 @@ import JSZip from 'jszip';
 import { and, asc, desc, eq, gte, lt } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import {
-  CASHBOOK_MAX_ROWS,
-  carneLeaoFiles,
-  cashbookByMonth,
-  detectCashbookKind,
-  normalizeHeader,
-  parseCashbookRow,
-  type CashbookEntryData,
-} from '@verifco/shared';
+import { CASHBOOK_MAX_ROWS, carneLeaoFiles, cashbookByMonth, detectCashbookKind, parseCashbookRow, type CashbookEntryData } from '@verifco/shared';
 import { cashbookEntries, importBatches } from '../../db/schema';
 import { badRequest, notFound } from '../../lib/errors';
 import { audit, guard, parse, requireUser, uuidParam } from '../../lib/http';
 import { getCustomerForUser } from '../../services/customers';
 import { fileTypes, readUploads } from '../../services/uploads';
-import { readCsv, readSheet, type SheetRow } from '../../services/xlsx';
-import { decodeText } from './ai-service';
+import { readSheetTable, type SheetRow } from '../../services/xlsx';
 
 const calendarYear = z.coerce.number().int().min(2000).max(2100);
 
 /** Planilhas aceitas na conversão do livro caixa. */
 const CASHBOOK_TYPES = fileTypes('csv', 'txt', 'xlsx');
 
-/** Lê .csv (UTF-8 ou Windows-1252, ; ou ,) ou .xlsx e devolve cabeçalhos normalizados e linhas. */
+/**
+ * Lê .csv (UTF-8 ou Windows-1252, ; ou ,) ou .xlsx pelo leitor único de planilhas e devolve os
+ * cabeçalhos normalizados e as linhas.
+ */
 async function readUpload(data: Buffer, filename: string): Promise<{ headers: string[]; rows: SheetRow[] }> {
-  if (/\.(csv|txt)$/i.test(filename)) {
-    const text = decodeText(data).replace(/^﻿/, '');
-    const first = text.split(/\r?\n/).find((l) => l.trim()) ?? '';
-    const sep = (first.match(/;/g)?.length ?? 0) >= (first.match(/,/g)?.length ?? 0) ? ';' : ',';
-    return { headers: first.split(sep).map((h) => normalizeHeader(h.replace(/^"|"$/g, ''))), rows: readCsv(text) };
-  }
-  if (/\.xlsx$/i.test(filename)) {
-    const rows = await readSheet(data, filename);
-    return { headers: rows[0] ? Object.keys(rows[0].values) : [], rows };
-  }
-  throw badRequest(`${filename}: envie um arquivo .csv ou .xlsx no layout do modelo.`);
+  if (!/\.(csv|txt|xlsx)$/i.test(filename)) throw badRequest(`${filename}: envie um arquivo .csv ou .xlsx no layout do modelo.`);
+  return readSheetTable(data, filename);
 }
 
 export async function cashbookRoutes(app: FastifyInstance) {
@@ -106,33 +91,41 @@ export async function cashbookRoutes(app: FastifyInstance) {
         else results.push({ file: f.filename, row: r.rowNumber, ok: false, message: res.errors.join(' ') });
       }
     }
-    const [batch] = await db
-      .insert(importBatches)
-      .values({ officeId: user.officeId, kind: `cashbook:${customer.id}:${year}`, total, succeeded: valid.length, failed: total - valid.length, createdByUserId: user.userId })
-      .returning();
-    if (valid.length) {
-      await db.insert(cashbookEntries).values(
-        valid.map((v) => ({
-          officeId: user.officeId,
-          customerId: customer.id,
-          year,
-          kind: v.entry.kind,
-          entryDate: v.entry.entryDate,
-          code: v.entry.code,
-          description: v.entry.description,
-          valueCents: v.entry.valueCents,
-          counterpartyCpf: v.entry.counterpartyCpf,
-          extra: v.entry.extra as Record<string, unknown>,
-          importBatchId: batch.id,
-        })),
-      );
-    }
     for (const v of valid) results.push({ file: v.file, row: v.row, ok: true, message: `Lançamento incluído (${v.entry.code}).` });
     results.sort((a, b) => a.file.localeCompare(b.file) || a.row - b.row);
-    await db
-      .update(importBatches)
-      .set({ results: results.map((r) => ({ row: r.row, ok: r.ok, message: `${r.file}: ${r.message}` })) })
-      .where(eq(importBatches.id, batch.id));
+    // o lote (com o resultado por linha) e os lançamentos entram juntos: uma falha não deixa lote "com sucesso" sem lançamentos
+    const batch = await db.transaction(async (tx) => {
+      const [created] = await tx
+        .insert(importBatches)
+        .values({
+          officeId: user.officeId,
+          kind: `cashbook:${customer.id}:${year}`,
+          total,
+          succeeded: valid.length,
+          failed: total - valid.length,
+          results: results.map((r) => ({ row: r.row, ok: r.ok, message: `${r.file}: ${r.message}` })),
+          createdByUserId: user.userId,
+        })
+        .returning();
+      if (valid.length) {
+        await tx.insert(cashbookEntries).values(
+          valid.map((v) => ({
+            officeId: user.officeId,
+            customerId: customer.id,
+            year,
+            kind: v.entry.kind,
+            entryDate: v.entry.entryDate,
+            code: v.entry.code,
+            description: v.entry.description,
+            valueCents: v.entry.valueCents,
+            counterpartyCpf: v.entry.counterpartyCpf,
+            extra: v.entry.extra as Record<string, unknown>,
+            importBatchId: created.id,
+          })),
+        );
+      }
+      return created;
+    });
     await audit(req, 'import', 'cashbook', customer.id, { year, total, succeeded: valid.length });
     reply.status(201);
     return { batchId: batch.id, total, succeeded: valid.length, failed: total - valid.length, results };

@@ -1,4 +1,5 @@
 import { ExternalLink, FileText } from 'lucide-react';
+import { todayIso } from '@verifco/shared';
 import { Alert, Card, EmptyState, Loading, Tag, type Tone } from '../../ds';
 import { useApi } from '../../lib/hooks';
 import { formatDate } from '../../lib/format';
@@ -19,7 +20,7 @@ interface ContractRow {
 const PLANS: Record<string, string> = { trial: 'Avaliação', basic: 'Básico', pro: 'Profissional', enterprise: 'Empresarial' };
 
 function situation(c: ContractRow): { tone: Tone; label: string } {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayIso();
   if (c.status === 'canceled') return { tone: 'neutral', label: 'Cancelado' };
   if (c.status === 'suspended') return { tone: 'warning', label: 'Suspenso' };
   if (c.expiresAt < today) return { tone: 'danger', label: 'Expirado' };

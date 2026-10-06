@@ -1,5 +1,5 @@
 import ExcelJS from 'exceljs';
-import { parseBrDate, parseBrMoney, toCents } from '@verifco/shared';
+import { normalizeHeader, parseBrDate, parseBrMoney, toCents } from '@verifco/shared';
 
 export interface SheetColumn {
   header: string;
@@ -39,24 +39,34 @@ export async function buildWorkbook(sheets: { name: string; columns: SheetColumn
   return Buffer.from(await wb.xlsx.writeBuffer());
 }
 
-const normalize = (s: string) =>
-  s
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '_')
-    .replace(/^_|_$/g, '');
+/** Cabeçalho normalizado (sem acento, minúsculo, com _): o mesmo `normalizeHeader` do livro caixa. */
+const normalize = normalizeHeader;
+
+/**
+ * Bytes 0x80–0x9F do Windows-1252, onde ele difere do Latin-1 (aspas curvas, travessão, €...).
+ * Os bytes sem caractere (0x81, 0x8D, 0x8F, 0x90, 0x9D) ficam como o controle de mesmo código,
+ * como no padrão WHATWG. Não usamos `TextDecoder('windows-1252')`: o do Node 22 decodifica como
+ * Latin-1 e transforma "–" (0x96) no controle U+0096.
+ */
+const CP1252_HIGH = '\u20ac\u0081\u201a\u0192\u201e\u2026\u2020\u2021\u02c6\u2030\u0160\u2039\u0152\u008d\u017d\u008f\u0090\u2018\u2019\u201c\u201d\u2022\u2013\u2014\u02dc\u2122\u0161\u203a\u0153\u009d\u017e\u0178';
+
+/** Decodifica Windows-1252 (o "ANSI" do Excel e do Bloco de Notas em português). */
+export function decodeWindows1252(data: Buffer): string {
+  return data.toString('latin1').replace(/[\u0080-\u009f]/g, (c) => CP1252_HIGH[c.charCodeAt(0) - 0x80]);
+}
 
 /**
  * Texto de um CSV/TXT: UTF-8 (com ou sem BOM) ou, se não for UTF-8 válido, Windows-1252 (o
  * "CSV (separado por vírgulas)" do Excel em português). Sem isso, "Descrição" chega quebrado.
+ * Leitor único de texto de planilha: importações, orçamentos em lote e livro caixa passam por aqui
+ * (via `readSheet`/`readSheetTable`).
  */
 export function decodeCsvText(data: Buffer): string {
   let text: string;
   try {
     text = new TextDecoder('utf-8', { fatal: true }).decode(data);
   } catch {
-    text = new TextDecoder('windows-1252').decode(data);
+    text = decodeWindows1252(data);
   }
   return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
 }
@@ -88,11 +98,16 @@ function cellNumber(cell: ExcelJS.Cell): number | undefined {
  * CSV em UTF-8 ou Windows-1252 (detectado).
  */
 export async function readSheet(data: Buffer, filename: string): Promise<SheetRow[]> {
-  if (/\.csv$/i.test(filename) || /\.txt$/i.test(filename)) return readCsv(decodeCsvText(data));
+  return (await readSheetTable(data, filename)).rows;
+}
+
+/** Como `readSheet`, devolvendo também os cabeçalhos normalizados (mesmo sem nenhuma linha preenchida). */
+export async function readSheetTable(data: Buffer, filename: string): Promise<{ headers: string[]; rows: SheetRow[] }> {
+  if (/\.csv$/i.test(filename) || /\.txt$/i.test(filename)) return parseCsv(decodeCsvText(data));
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.load(data as unknown as ArrayBuffer);
   const ws = wb.worksheets[0];
-  if (!ws) return [];
+  if (!ws) return { headers: [], rows: [] };
   const headers: string[] = [];
   ws.getRow(1).eachCell({ includeEmpty: true }, (cell, col) => {
     headers[col] = normalize(String(cell.text ?? ''));
@@ -112,12 +127,17 @@ export async function readSheet(data: Buffer, filename: string): Promise<SheetRo
     });
     if (Object.values(values).some((v) => v !== '')) out.push({ rowNumber, values, numbers });
   });
-  return out;
+  return { headers: headers.filter(Boolean), rows: out };
 }
 
+/** Linhas de um CSV já decodificado (use `readSheet` para ler o arquivo). */
 export function readCsv(text: string): SheetRow[] {
+  return parseCsv(text).rows;
+}
+
+function parseCsv(text: string): { headers: string[]; rows: SheetRow[] } {
   const lines = text.split(/\r?\n/).filter((l) => l.trim() !== '');
-  if (!lines.length) return [];
+  if (!lines.length) return { headers: [], rows: [] };
   const sep = (lines[0].match(/;/g)?.length ?? 0) >= (lines[0].match(/,/g)?.length ?? 0) ? ';' : ',';
   const parseLine = (line: string) => {
     const cells: string[] = [];
@@ -139,12 +159,13 @@ export function readCsv(text: string): SheetRow[] {
     return cells.map((c) => c.trim());
   };
   const headers = parseLine(lines[0]).map(normalize);
-  return lines.slice(1).map((line, i) => {
+  const rows = lines.slice(1).map((line, i) => {
     const cells = parseLine(line);
     const values: Record<string, string> = {};
     headers.forEach((h, j) => (values[h] = cells[j] ?? ''));
     return { rowNumber: i + 2, values, numbers: {} };
   });
+  return { headers: headers.filter(Boolean), rows };
 }
 
 /**

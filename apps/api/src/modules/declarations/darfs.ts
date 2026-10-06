@@ -117,17 +117,24 @@ export async function darfRoutes(app: FastifyInstance) {
     const { declaration } = await getDeclarationForUser(app.ctx, user, id);
     const total = body.totalCents ?? declaration.taxDueCents;
     if (!total || total <= 0) throw badRequest('Informe o imposto a pagar no resumo da declaração ou o valor total a parcelar.');
-    const existing = await listFor(declaration.id);
-    if (existing.length && !body.replace) throw conflict('Já existem quotas cadastradas. Confirme a substituição para gerar de novo.');
-    if (existing.some((d) => d.status === 'paid' || d.paidAt)) throw conflict('Há quotas pagas; ajuste as quotas manualmente.');
     const plan = planDarfQuotas(total, body.quotas, body.firstDueDate);
     if (!plan.quotas.length) throw badRequest(plan.warning ?? 'Não foi possível gerar as quotas.');
-    for (const d of existing) if (d.fileId) await app.ctx.files.remove(user.officeId, d.fileId);
-    if (existing.length) await db.delete(darfs).where(inArray(darfs.id, existing.map((d) => d.id)));
-    const rows = await db
-      .insert(darfs)
-      .values(plan.quotas.map((q) => ({ officeId: user.officeId, customerId: declaration.customerId, declarationId: declaration.id, ...q, source: 'generated' })))
-      .returning();
+    // troca as quotas numa transação (com a declaração travada, para gerações simultâneas não se
+    // misturarem); os PDFs das quotas antigas só saem do armazenamento depois do commit
+    const { rows, oldBlobs } = await db.transaction(async (tx) => {
+      await tx.select({ id: declarations.id }).from(declarations).where(eq(declarations.id, declaration.id)).for('update');
+      const existing = await tx.select().from(darfs).where(eq(darfs.declarationId, declaration.id));
+      if (existing.length && !body.replace) throw conflict('Já existem quotas cadastradas. Confirme a substituição para gerar de novo.');
+      if (existing.some((d) => d.status === 'paid' || d.paidAt)) throw conflict('Há quotas pagas; ajuste as quotas manualmente.');
+      const oldBlobs = await app.ctx.files.removeRows(tx, user.officeId, existing.flatMap((d) => (d.fileId ? [d.fileId] : [])));
+      if (existing.length) await tx.delete(darfs).where(inArray(darfs.id, existing.map((d) => d.id)));
+      const inserted = await tx
+        .insert(darfs)
+        .values(plan.quotas.map((q) => ({ officeId: user.officeId, customerId: declaration.customerId, declarationId: declaration.id, ...q, source: 'generated' })))
+        .returning();
+      return { rows: inserted, oldBlobs };
+    });
+    await app.ctx.files.deleteBlobs(oldBlobs);
     await audit(req, 'generate', 'darf', declaration.id, { totalCents: total, quotas: plan.count });
     reply.status(201);
     return { warning: plan.warning, count: plan.count, totalCents: total, darfs: await present(rows, declaration.customerId) };

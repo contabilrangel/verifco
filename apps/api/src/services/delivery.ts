@@ -1,5 +1,5 @@
 import { and, eq, sql } from 'drizzle-orm';
-import { getTemplateDef, renderTemplate, onlyDigits, type DeliveryChannel } from '@verifco/shared';
+import { currentYearInBrazil, getTemplateDef, renderTemplate, onlyDigits, type DeliveryChannel } from '@verifco/shared';
 import type { AppContext } from '../context';
 import { customers, deliveries, emailTemplates, jobs, messages, offices, users } from '../db/schema';
 import { badRequest } from '../lib/errors';
@@ -21,7 +21,7 @@ export async function baseTemplateValues(ctx: AppContext, officeId: string, cust
   const office = await ctx.db.query.offices.findFirst({ where: eq(offices.id, officeId) });
   const customer = customerId ? await ctx.db.query.customers.findFirst({ where: eq(customers.id, customerId) }) : null;
   const responsible = customer?.responsibleUserId ? await ctx.db.query.users.findFirst({ where: eq(users.id, customer.responsibleUserId) }) : null;
-  const year = exerciseYear ?? new Date().getFullYear();
+  const year = exerciseYear ?? currentYearInBrazil();
   return {
     CLIENTE: customer?.name ?? '',
     ESCRITORIO: office?.name ?? '',

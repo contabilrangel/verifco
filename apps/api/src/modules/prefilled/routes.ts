@@ -1,6 +1,5 @@
 import { and, asc, desc, eq, ilike, inArray, isNull, or, type SQL } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
-import JSZip from 'jszip';
 import { z } from 'zod';
 import { formatCpfCnpj, onlyDigits } from '@verifco/shared';
 import { customers, files, prefilledStatements, procurators } from '../../db/schema';
@@ -8,6 +7,7 @@ import { badRequest, notFound } from '../../lib/errors';
 import { audit, guard, parse, requireUser, uuidParam, yearSchema } from '../../lib/http';
 import { customerScope, getCustomerForUser } from '../../services/customers';
 import { safeZipName, sendStoredFile } from '../../services/uploads';
+import { ZipStream, assertZipSize } from '../../services/zip';
 import { readMultipart } from '../sync/multipart';
 import { savePrefilled } from './service';
 
@@ -97,28 +97,35 @@ export async function prefilledRoutes(app: FastifyInstance) {
     if (body.mode === 'new') conds.push(isNull(prefilledStatements.downloadedAt));
     if (body.customerIds?.length) conds.push(inArray(prefilledStatements.customerId, body.customerIds));
     const rows = await db
-      .select({ st: prefilledStatements, name: customers.name, cpf: customers.cpfCnpj })
+      .select({ st: prefilledStatements, name: customers.name, cpf: customers.cpfCnpj, filename: files.filename, size: files.size })
       .from(prefilledStatements)
       .innerJoin(customers, eq(customers.id, prefilledStatements.customerId))
+      .innerJoin(files, eq(files.id, prefilledStatements.fileId))
       .where(and(...conds))
       .orderBy(asc(customers.name), desc(prefilledStatements.fetchedAt));
     if (!rows.length) throw notFound(body.mode === 'new' ? 'Arquivo novo' : 'Arquivo');
-    const zip = new JSZip();
-    const used = new Set<string>();
-    for (const r of rows) {
-      const { row, data } = await app.ctx.files.get(user.officeId, r.st.fileId);
-      const folder = safeZipName(`${formatCpfCnpj(r.cpf)} - ${r.name}`);
-      let path = `${folder}/${safeZipName(row.filename)}`;
-      for (let n = 2; used.has(path); n++) path = `${folder}/${safeZipName(row.filename).replace(/(\.[^.]*)?$/, (ext) => ` (${n})${ext}`)}`;
-      used.add(path);
-      zip.file(path, data);
-    }
-    const buf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+    assertZipSize(rows.reduce((a, r) => a + r.size, 0), 'Baixe por partes (selecione menos clientes).');
     const pending = rows.filter((r) => !r.st.downloadedAt).map((r) => r.st.id);
     if (pending.length) await db.update(prefilledStatements).set({ downloadedAt: new Date() }).where(inArray(prefilledStatements.id, pending));
     await audit(req, 'prefilled_download', 'prefilled_statement', null, { year: body.year, mode: body.mode, count: rows.length });
     const name = `pre-preenchidas-${body.year}-${body.mode === 'new' ? 'novas' : 'todas'}.zip`;
-    return reply.header('Content-Type', 'application/zip').header('Content-Disposition', `attachment; filename="${name}"`).send(buf);
+
+    // .zip em fluxo: cada arquivo é lido do armazenamento enquanto o navegador baixa
+    const output = new ZipStream().produce(
+      async (zip) => {
+        const used = new Set<string>();
+        for (const r of rows) {
+          const folder = safeZipName(`${formatCpfCnpj(r.cpf)} - ${r.name}`);
+          let path = `${folder}/${safeZipName(r.filename)}`;
+          for (let n = 2; used.has(path); n++) path = `${folder}/${safeZipName(r.filename).replace(/(\.[^.]*)?$/, (ext) => ` (${n})${ext}`)}`;
+          used.add(path);
+          await zip.addFile(app.ctx, user.officeId, r.st.fileId, path);
+        }
+        zip.end('Estes arquivos não foram encontrados no armazenamento e ficaram de fora do .zip:');
+      },
+      (err) => req.log.error({ err }, 'falha ao montar o .zip das pré-preenchidas'),
+    );
+    return sendStoredFile(reply, { filename: name, mimeType: 'application/zip' }, output);
   });
 
   /** Envio manual do arquivo da pré-preenchida (quando o escritório baixou por fora do robô). */

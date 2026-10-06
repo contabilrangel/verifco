@@ -14,7 +14,11 @@ export async function createContext(overrides: Partial<Config> = {}, opts: { pro
   const { db, close } = await openDatabase(config.DATABASE_URL, { sync: config.DB_SYNC });
   const secrets = new Secrets(config.ENCRYPTION_KEY);
   const files = new FileService(db, opts.memoryStorage ? new MemoryBlobStore() : new LocalBlobStore(config.STORAGE_DIR));
-  const jobs = new JobQueue(db);
+  const jobs = new JobQueue(db, {
+    concurrency: config.JOB_CONCURRENCY,
+    officeConcurrency: config.JOB_OFFICE_CONCURRENCY,
+    leaseMs: config.JOB_LEASE_SECONDS * 1000,
+  });
   const partial = { config, db, secrets, files, jobs } as AppContext;
   partial.providers = opts.providers ?? createProviders(partial);
   await registerJobHandlers(partial);

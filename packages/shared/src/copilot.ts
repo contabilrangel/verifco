@@ -2,6 +2,7 @@
  * Copiloto financeiro: lançamentos mensais do cliente (receitas, despesas, orçamento,
  * vencimentos, seguros e bens no exterior), visão geral e projeção do IRPFM do ano.
  */
+import { todayIso } from './dates';
 import { annualIrpfDue } from './tax/irpf-annual';
 import { computeIrpfm, irpfmParams, type IrpfmIncomeLine, type IrpfmResult } from './tax/irpfm';
 
@@ -47,7 +48,7 @@ export const COPILOT_PLAN_LIMITS: Record<string, number> = { basic: 5, pro: 25, 
 export const COPILOT_DEFAULT_LIMIT = 5;
 
 /** Maior limite entre os contratos ativos e vigentes; sem contrato, o limite padrão. */
-export function copilotLimit(contracts: { plan: string; status: string; startsAt: string; expiresAt: string }[], today = new Date().toISOString().slice(0, 10)): number {
+export function copilotLimit(contracts: { plan: string; status: string; startsAt: string; expiresAt: string }[], today = todayIso()): number {
   const active = contracts.filter((c) => c.status === 'active' && c.startsAt <= today && c.expiresAt >= today);
   if (!active.length) return COPILOT_DEFAULT_LIMIT;
   return Math.max(...active.map((c) => COPILOT_PLAN_LIMITS[c.plan] ?? COPILOT_DEFAULT_LIMIT));
