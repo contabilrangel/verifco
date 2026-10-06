@@ -68,7 +68,9 @@ describe('migrações (SEG-4)', () => {
       cpSync(MIGRATIONS, dir, { recursive: true });
       const journal = readJournal(MIGRATIONS);
       const journalPath = join(dir, 'meta/_journal.json');
-      writeFileSync(journalPath, JSON.stringify({ ...journal, entries: journal.entries.filter((e) => e.tag !== CUSTOM) }));
+      // corta a partir da migração própria: o migrador só aplica migrações mais novas que a última aplicada
+      const upTo = journal.entries.findIndex((e) => e.tag === CUSTOM);
+      writeFileSync(journalPath, JSON.stringify({ ...journal, entries: journal.entries.slice(0, upTo) }));
       const db = drizzle(client, { schema });
       await migrate(db, { migrationsFolder: dir });
 
@@ -84,6 +86,37 @@ describe('migrações (SEG-4)', () => {
       const days = (row!.accessExpiresAt!.getTime() - Date.now()) / 86_400_000;
       expect(days).toBeGreaterThan(29.9);
       expect(days).toBeLessThanOrEqual(30);
+    } finally {
+      await client.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('COB-7: a migração própria descarta as senhas do INSS, avisa o escritório e tira a permissão das funções', async () => {
+    const INSS = '0004_inss_senhas_descartadas';
+    const dir = mkdtempSync(join(tmpdir(), 'verifco-migracoes-'));
+    const client = new PGlite();
+    try {
+      cpSync(MIGRATIONS, dir, { recursive: true });
+      const journal = readJournal(MIGRATIONS);
+      const journalPath = join(dir, 'meta/_journal.json');
+      writeFileSync(journalPath, JSON.stringify({ ...journal, entries: journal.entries.slice(0, journal.entries.findIndex((e) => e.tag === INSS)) }));
+      const db = drizzle(client, { schema });
+      await migrate(db, { migrationsFolder: dir });
+
+      const [withPwd] = await db.insert(schema.offices).values({ name: 'Com senha' }).returning();
+      const [without] = await db.insert(schema.offices).values({ name: 'Sem senha' }).returning();
+      const [c1] = await db.insert(schema.customers).values({ officeId: withPwd.id, name: 'Cliente', cpfCnpj: '52998224725', inssPasswordEnc: 'cifrada' }).returning();
+      await db.insert(schema.customers).values({ officeId: without.id, name: 'Outro', cpfCnpj: '52998224725' });
+      const [role] = await db.insert(schema.roles).values({ officeId: withPwd.id, name: 'Operador', permissions: ['customer.list', 'worksheet.inss', 'worksheet.ecac'] }).returning();
+
+      writeFileSync(journalPath, JSON.stringify(journal));
+      await migrate(db, { migrationsFolder: dir });
+      expect((await db.query.customers.findFirst({ where: eq(schema.customers.id, c1.id) }))!.inssPasswordEnc).toBeNull();
+      expect((await db.query.roles.findFirst({ where: eq(schema.roles.id, role.id) }))!.permissions).toEqual(['customer.list', 'worksheet.ecac']);
+      const notes = await db.select().from(schema.notifications);
+      expect(notes).toHaveLength(1);
+      expect(notes[0]).toMatchObject({ officeId: withPwd.id, title: 'Senhas do INSS descartadas', userId: null });
     } finally {
       await client.close();
       rmSync(dir, { recursive: true, force: true });

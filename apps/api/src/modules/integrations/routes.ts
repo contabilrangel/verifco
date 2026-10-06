@@ -23,6 +23,7 @@ import { scheduleOmiePoll, type OmieConfig } from '../../integrations/omie';
 import { clearSerproTokens } from '../../integrations/serpro';
 import { decryptSecrets, getIntegrationRow, maskSecret, type IntegrationRow } from '../../integrations/store';
 import { testIntegration } from '../../integrations/testers';
+import { scheduleEcacAutoSync } from '../ecac/jobs';
 
 const PROVIDER_KEYS = Object.keys(INTEGRATION_PROVIDERS) as [IntegrationProvider, ...IntegrationProvider[]];
 const providerParam = z.object({ provider: z.enum(PROVIDER_KEYS) });
@@ -202,6 +203,8 @@ export async function integrationRoutes(app: FastifyInstance) {
 
     if (provider === 'serpro' && credentialsChanged) clearSerproTokens(`${user.officeId}:`);
     if (provider === 'omie' && enabled) await scheduleOmiePoll(ctx, user.officeId, effective as Partial<OmieConfig>, 60_000);
+    // sincronização automática do eCAC (diária/semanal), se ligada na integração SERPRO
+    if (provider === 'serpro') await scheduleEcacAutoSync(ctx, user.officeId);
     await audit(req, 'integration.update', 'integration', saved.id, { provider, enabled, changedConfig, changedSecrets });
     return view(ctx, def, saved);
   });

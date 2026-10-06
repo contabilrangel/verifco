@@ -9,7 +9,7 @@ import { IntegrationError } from './http';
 import { testOmie, type OmieConfig, type OmieSecrets } from './omie';
 import { testSerpro, type MtlsRequest } from './serpro';
 import { loadIntegration } from './store';
-import { testWhatsApp, type WhatsAppConfig, type WhatsAppSecrets } from './whatsapp';
+import { testWhatsApp, whatsappWindowOpen, type WhatsAppConfig, type WhatsAppSecrets } from './whatsapp';
 
 export interface TestDeps {
   createTransport?: TransportFactory;
@@ -42,8 +42,12 @@ export async function testIntegration(
       return testAsaas(ctx, await saved<AsaasConfig, AsaasSecrets>(ctx, officeId, provider));
     case 'omie':
       return testOmie(ctx, await saved<OmieConfig, OmieSecrets>(ctx, officeId, provider));
-    case 'whatsapp':
-      return testWhatsApp(ctx.providers.fetch, await saved<WhatsAppConfig, WhatsAppSecrets>(ctx, officeId, provider), opts, ctx.providers.userUrlFetch ?? ctx.providers.fetch);
+    case 'whatsapp': {
+      const loaded = await saved<WhatsAppConfig, WhatsAppSecrets>(ctx, officeId, provider);
+      // no modo Meta, fora da janela de 24 h a mensagem de teste vai pelo modelo aprovado
+      const windowOpen = loaded.config.mode === 'meta' && opts.sendTo ? await whatsappWindowOpen(ctx, officeId, opts.sendTo) : undefined;
+      return testWhatsApp(ctx.providers.fetch, loaded, { ...opts, windowOpen }, ctx.providers.userUrlFetch ?? ctx.providers.fetch);
+    }
     case 'smtp': {
       const loaded = await saved<SmtpConfig, SmtpSecrets>(ctx, officeId, provider);
       const office = await ctx.db.query.offices.findFirst({ where: eq(offices.id, officeId) });

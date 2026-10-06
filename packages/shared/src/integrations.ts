@@ -217,10 +217,12 @@ export const INTEGRATION_CATALOG: IntegrationDef[] = [
     key: 'whatsapp',
     label: 'WhatsApp',
     category: 'messaging',
-    description: 'Envia mensagens e documentos aos clientes pelo WhatsApp do escritório.',
+    description: 'Envia mensagens e documentos aos clientes pelo WhatsApp do escritório e recebe as respostas na aba Mensagens.',
     capabilities: [
       'Envia textos dos templates (checklist, orçamento, avisos)',
       'Envia PDFs como documento (DARF, recibos, relatórios)',
+      'Recebe as respostas dos clientes pelo webhook e as mostra na aba Mensagens do cliente (casando pelo celular)',
+      'No modo Meta, fora da janela de 24 h usa o modelo aprovado e marca como falha o envio que a Meta recusar',
       'Funciona com a Evolution API ou com a WhatsApp Cloud API oficial da Meta',
     ],
     fields: [
@@ -241,10 +243,43 @@ export const INTEGRATION_CATALOG: IntegrationDef[] = [
       { key: 'phoneNumberId', label: 'Phone number ID', type: 'text', required: true, when: whatsappMeta },
       { key: 'accessToken', label: 'Token de acesso', type: 'secret', required: true, when: whatsappMeta },
       { key: 'apiVersion', label: 'Versão da Graph API', type: 'text', default: 'v25.0', when: whatsappMeta },
+      {
+        key: 'appSecret',
+        label: 'Chave secreta do app (App Secret)',
+        type: 'secret',
+        help: 'Com ela, o Verifco confere a assinatura (X-Hub-Signature-256) de cada notificação recebida da Meta. Fica em Meta for Developers › seu app › Configurações do app › Básico.',
+        when: whatsappMeta,
+      },
+      {
+        key: 'templateName',
+        label: 'Modelo aprovado para fora da janela de 24 h',
+        type: 'text',
+        placeholder: 'aviso_escritorio',
+        help: 'Nome do modelo aprovado no Gerenciador do WhatsApp. Sem ele, a Meta não entrega mensagens a quem não escreveu nas últimas 24 h.',
+        when: whatsappMeta,
+      },
+      { key: 'templateLanguage', label: 'Idioma do modelo', type: 'text', default: 'pt_BR', when: whatsappMeta },
+      {
+        key: 'templateBody',
+        label: 'Corpo do modelo',
+        type: 'select',
+        default: 'message',
+        options: [
+          { value: 'message', label: 'Tem uma variável {{1}}, que recebe o texto da mensagem' },
+          { value: 'none', label: 'Sem variáveis (só avisa e convida o cliente a responder)' },
+        ],
+        when: whatsappMeta,
+        wide: true,
+      },
+      { key: 'templateDocument', label: 'O modelo tem cabeçalho do tipo documento (para enviar PDFs fora da janela)', type: 'boolean', default: false, when: whatsappMeta, wide: true },
     ],
     steps: [
       { text: 'Na sua Evolution API, crie uma instância e conecte o número do escritório lendo o QR Code.', when: whatsappEvolution },
       { text: 'Copie a URL do servidor, o nome da instância e a API key (global ou da instância).', when: whatsappEvolution },
+      {
+        text: 'Para receber as respostas na aba Mensagens: em Webhook da instância, cole a URL do webhook mostrada aqui, ligue o evento MESSAGES_UPSERT e deixe "Webhook by events" desligado.',
+        when: whatsappEvolution,
+      },
       { text: 'No Meta for Developers, crie um app do tipo Empresa e adicione o produto WhatsApp.', when: whatsappMeta },
       { text: 'Em WhatsApp › Configuração da API, copie o Phone number ID do número do escritório.', when: whatsappMeta },
       {
@@ -252,21 +287,28 @@ export const INTEGRATION_CATALOG: IntegrationDef[] = [
         when: whatsappMeta,
       },
       {
-        text: 'Pela política da Meta, mensagens livres só podem ser enviadas até 24 h depois da última mensagem do cliente; fora dessa janela é preciso um modelo aprovado.',
+        text: 'Para receber as respostas: em WhatsApp › Configuração › Webhook, cole a URL do webhook mostrada aqui, use como token de verificação o código do fim da URL (depois de /whatsapp/) e assine o campo messages.',
+        when: whatsappMeta,
+      },
+      {
+        text: 'Pela política da Meta, mensagens livres só são entregues até 24 h depois da última mensagem do cliente. Para avisar fora dessa janela, crie um modelo da categoria Utilidade com uma variável {{1}} no corpo (ex.: "Mensagem do escritório: {{1}}") e informe o nome dele aqui.',
         when: whatsappMeta,
       },
     ],
     docsUrl: 'https://developers.facebook.com/docs/whatsapp/cloud-api/reference/messages',
+    webhook: true,
   },
   {
     key: 'serpro',
     label: 'SERPRO Integra Contador',
     category: 'government',
-    description: 'Consulta a Receita Federal pela API oficial do SERPRO: procurações, caixa postal, situação fiscal, pagamentos e DARF.',
+    description: 'Consulta a Receita Federal pela API oficial do SERPRO: procurações, caixa postal, situação fiscal e pagamentos de DARF.',
     capabilities: [
       'Autentica com as chaves do contrato e o certificado digital do escritório',
-      'Consulta procurações eletrônicas e mensagens da caixa postal do e-CAC',
-      'Emite relatório de situação fiscal e DARF (Sicalc) para os clientes com procuração',
+      'Consulta procurações eletrônicas e lista as mensagens da caixa postal do e-CAC (sem abrir o conteúdo, que daria ciência de intimações)',
+      'Baixa o relatório de situação fiscal (pendências e certidão vigente), se ligado em Administração › Preferências',
+      'Dá baixa nas quotas do IRPF pagas, consultando os pagamentos de DARF (código 0211)',
+      'O Integra Contador não tem serviço de IRPF: situação da declaração, malha, extratos e pré-preenchida vêm da extensão ou de lançamento manual',
     ],
     fields: [
       {
@@ -285,6 +327,19 @@ export const INTEGRATION_CATALOG: IntegrationDef[] = [
       },
       { key: 'consumerKey', label: 'Consumer Key', type: 'secret', required: true },
       { key: 'consumerSecret', label: 'Consumer Secret', type: 'secret', required: true },
+      {
+        key: 'autoSync',
+        label: 'Sincronização automática',
+        type: 'select',
+        default: '',
+        options: [
+          { value: '', label: 'Desligada (só quando você pedir)' },
+          { value: 'daily', label: 'Diária, às 6h' },
+          { value: 'weekly', label: 'Semanal, às 6h' },
+        ],
+        help: 'Consulta todos os clientes com procurador. Cada consulta ao Integra Contador é cobrada pelo SERPRO conforme o seu contrato.',
+        wide: true,
+      },
     ],
     steps: [
       { text: 'Contrate a API Integra Contador na Loja Serpro (loja.serpro.gov.br) com o e-CNPJ do escritório.' },

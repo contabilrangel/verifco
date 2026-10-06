@@ -314,12 +314,15 @@ export async function customerRoutes(app: FastifyInstance) {
     return publicCustomer(row);
   });
 
-  /** Credenciais eCAC/gov.br e INSS: gravadas cifradas, nunca devolvidas ao navegador. */
+  /**
+   * Credenciais eCAC/gov.br: gravadas cifradas, nunca devolvidas ao navegador. A senha do INSS não é
+   * mais aceita: não há integração com o INSS (veja packages/shared/src/imports.ts).
+   */
   app.put('/customers/:id/credentials', { preHandler: guard('ecac.credentials') }, async (req) => {
     const user = requireUser(req);
     const { id } = parse(uuidParam, req.params);
     const body = parse(
-      z.object({ ecacLogin: z.string().max(200).nullable().optional(), ecacPassword: z.string().max(200).nullable().optional(), inssPassword: z.string().max(200).nullable().optional() }),
+      z.object({ ecacLogin: z.string().max(200).nullable().optional(), ecacPassword: z.string().max(200).nullable().optional() }),
       req.body,
     );
     const c = await getCustomerForUser(app.ctx, user, id);
@@ -329,7 +332,6 @@ export async function customerRoutes(app: FastifyInstance) {
       .set({
         ecacLoginEnc: enc(body.ecacLogin, c.ecacLoginEnc),
         ecacPasswordEnc: enc(body.ecacPassword, c.ecacPasswordEnc),
-        inssPasswordEnc: enc(body.inssPassword, c.inssPasswordEnc),
         updatedAt: new Date(),
       })
       .where(eq(customers.id, c.id))

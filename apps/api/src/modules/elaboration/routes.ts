@@ -23,7 +23,8 @@ import {
   type DocStat,
 } from './service';
 
-const LIST_PERMS = ['elaboration.export', 'elaboration.process', 'pre_declaration.view'];
+/** Quem processa, decide ou valida linhas da pré-declaração também precisa ver a lista. */
+const LIST_PERMS = ['elaboration.export', 'elaboration.process', 'pre_declaration.view', 'pre_declaration.create', 'pre_declaration.edit'];
 const STATUS_KEYS = Object.keys(ELABORATION_STATUS) as [ElaborationStatus, ...ElaborationStatus[]];
 
 const listQuery = z.object({

@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
+import { Link } from 'react-router';
 import { Save } from 'lucide-react';
 import { DECLARATION_SUBSTATUS } from '@verifco/shared';
 import { Alert, Button, Card, Input, Loading, MoneyInput, Select, Switch } from '../../ds';
@@ -52,8 +53,12 @@ export function PreferencesTab() {
           </Section>
 
           <Section title="Comunicação" description="Envios automáticos e contato exibido aos clientes.">
-            {toggle('autoSendDarfEmail', 'Enviar a guia DARF por e-mail ao cliente automaticamente', 'Quando o robô obtém uma nova guia de quota do IRPF.')}
-            {toggle('notifyMainEmailOnEcacChanges', 'Avisar o e-mail principal do escritório sobre mudanças no eCAC', 'Ex.: declaração em malha, nova mensagem na caixa postal.')}
+            {toggle('autoSendDarfEmail', 'Enviar a guia DARF por e-mail ao cliente automaticamente', 'Quando o PDF da guia é anexado a uma quota na etapa DARF do IRPF.')}
+            {toggle(
+              'notifyMainEmailOnEcacChanges',
+              'Avisar o e-mail principal do escritório sobre mudanças no eCAC',
+              'Quando a sincronização pelo SERPRO encontra mudança (procuração, mensagem nova na caixa postal, situação fiscal ou quota paga), o e-mail principal do escritório recebe um resumo. O responsável pelo cliente é avisado no sino de qualquer forma.',
+            )}
             <Input
               label="WhatsApp de atendimento"
               placeholder="(11) 99999-0000"
@@ -66,9 +71,17 @@ export function PreferencesTab() {
             />
           </Section>
 
-          <Section title="Robô (eCAC)" description="Consultas feitas pelo robô em nome do escritório.">
-            {toggle('simplifiedQueryWithoutProcurator', 'Pedir consulta simplificada para clientes sem procurador', 'O cliente recebe um pedido de autorização no portal do cliente.')}
-            {toggle('autoGenerateCnd', 'Emitir a certidão negativa (CND) automaticamente', 'O robô tenta emitir a CND dos clientes com procuração válida.')}
+          <Section title="Robô (eCAC)" description="Consultas feitas pelo robô (SERPRO Integra Contador) em nome do escritório.">
+            {toggle(
+              'autoGenerateCnd',
+              'Consultar a situação fiscal (base da CND) na sincronização',
+              'Para os clientes com procuração, o robô baixa pelo SERPRO o relatório de situação fiscal, que mostra as pendências e a certidão (CND) vigente. Cada consulta é cobrada pelo SERPRO. O Integra Contador não emite a CND: sem pendências, emita-a no site da Receita.',
+            )}
+            <p className="vf-text-xs vf-muted">
+              Clientes sem procurador não são consultados: a Receita só libera os dados do eCAC a quem tem procuração eletrônica do cliente, e não existe consulta oficial simplificada sem
+              ela. Por isso a opção de pedir “consulta simplificada” no portal do cliente foi retirada. A frequência da sincronização automática fica em{' '}
+              <Link to="/admin/integracoes">Administração › Integrações › SERPRO</Link>.
+            </p>
           </Section>
 
           <Section title="Checklist" description="Como o checklist digital se comporta durante a declaração.">

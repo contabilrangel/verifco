@@ -7,11 +7,13 @@ import type { ItemRow } from './data';
 export interface FieldDef {
   name: string;
   label: string;
-  kind: 'text' | 'textarea' | 'money' | 'select' | 'date' | 'cpf' | 'doc';
+  kind: 'text' | 'textarea' | 'money' | 'select' | 'date' | 'cpf' | 'doc' | 'checkbox';
   options?: { value: string; label: string }[];
   required?: boolean;
   wide?: boolean;
   help?: string;
+  /** Só aparece (e só é gravado) para estes tipos de linha da ficha. */
+  kinds?: ItemKind[];
 }
 
 export interface ColumnDef {
@@ -244,9 +246,25 @@ export const FICHAS: Ficha[] = [
       { name: 'description', label: 'Descrição', kind: 'text', wide: true },
       { name: 'prevValueCents', label: `Situação em ${dec31(year - 2)}`, kind: 'money', help: 'Só para bens e dívidas da atividade.' },
       { name: 'valueCents', label: 'Valor no ano', kind: 'money', required: true },
+      {
+        name: 'extra.investment',
+        label: 'Despesa de investimento (bem da atividade)',
+        kind: 'checkbox',
+        wide: true,
+        kinds: ['rural_expense'],
+        help: 'Marque quando a despesa comprou um bem da atividade rural lançado também nos bens: a análise de caixa não conta o valor duas vezes.',
+      },
     ],
     columns: () => [
-      { header: 'Tipo', render: (i) => ITEM_KINDS[i.kind].label },
+      {
+        header: 'Tipo',
+        render: (i) => (
+          <>
+            {ITEM_KINDS[i.kind].label}
+            {extra(i, 'investment') === true && <span className="vf-text-xs vf-muted"> · investimento</span>}
+          </>
+        ),
+      },
       { header: 'Descrição', render: (i) => i.description || '—' },
       { header: 'Anterior', num: true, render: (i) => (i.kind === 'rural_asset' || i.kind === 'rural_debt' ? money(i.prevValueCents) : '—') },
       { header: 'Valor', num: true, render: (i) => money(i.valueCents) },

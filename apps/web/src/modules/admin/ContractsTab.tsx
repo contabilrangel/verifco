@@ -1,5 +1,5 @@
 import { ExternalLink, FileText } from 'lucide-react';
-import { Alert, Card, EmptyState, Loading, Tag, type Tone } from '../../ds';
+import { Alert, Card, EmptyState, Loading, Progress, Tag, type Tone } from '../../ds';
 import { useApi } from '../../lib/hooks';
 import { formatDate } from '../../lib/format';
 
@@ -27,11 +27,71 @@ function situation(c: ContractRow): { tone: Tone; label: string } {
   return { tone: 'success', label: 'Ativo' };
 }
 
+interface ContractStatus {
+  hasContracts: boolean;
+  blocked: boolean;
+  lastExpiresAt: string | null;
+  nextStartsAt: string | null;
+  activeExpiresAt: string | null;
+  quotas: { year: number; limit: number | null; used: number; remaining: number | null }[];
+}
+
+const daysUntil = (iso: string) => Math.round((new Date(`${iso}T12:00:00`).getTime() - Date.now()) / 86_400_000);
+
+/** Validade do contrato e uso do limite de declarações (o servidor bloqueia a criação acima do limite). */
+function ContractUsage() {
+  const q = useApi<ContractStatus>(['contracts', 'status'], '/office/contracts/status');
+  const s = q.data;
+  if (!s || !s.hasContracts) return null;
+  const expiring = s.activeExpiresAt !== null && daysUntil(s.activeExpiresAt) <= 15;
+  return (
+    <Card title="Uso do contrato">
+      <div className="vf-stack">
+        {s.blocked ? (
+          <Alert tone="danger" title={s.nextStartsAt ? `O pacote começa em ${formatDate(s.nextStartsAt)}` : `Contrato vencido${s.lastExpiresAt ? ` em ${formatDate(s.lastExpiresAt)}` : ''}`}>
+            Não é possível criar novas declarações até haver um pacote vigente. As declarações já criadas continuam disponíveis. Para renovar, fale com o suporte do Verifco.
+          </Alert>
+        ) : (
+          expiring &&
+          s.activeExpiresAt && (
+            <Alert tone="warning" title={`O pacote vence em ${formatDate(s.activeExpiresAt)}`}>
+              Depois do vencimento, novas declarações ficam bloqueadas até a renovação. Fale com o suporte do Verifco para renovar.
+            </Alert>
+          )
+        )}
+        {s.quotas.map((u) => {
+          const pct = u.limit ? Math.round((u.used / u.limit) * 100) : 0;
+          const full = u.limit !== null && u.used >= u.limit;
+          return (
+            <div key={u.year} className="vf-stack" style={{ '--gap': '6px' } as React.CSSProperties}>
+              <div className="vf-inline">
+                <span className="vf-text-sm-bold vf-grow">Declarações do exercício {u.year}</span>
+                <span className="vf-text-sm">{u.limit === null ? `${u.used.toLocaleString('pt-BR')} (ilimitado)` : `${u.used.toLocaleString('pt-BR')} de ${u.limit.toLocaleString('pt-BR')}`}</span>
+              </div>
+              {u.limit !== null && <Progress value={pct} />}
+              {full ? (
+                <Alert tone="danger">Limite atingido: o sistema não cria novas declarações do exercício {u.year}. Para ampliar o pacote, fale com o suporte do Verifco.</Alert>
+              ) : (
+                u.limit !== null && pct >= 90 && <Alert tone="warning">Restam {u.remaining} declaração(ões) no pacote do exercício {u.year}.</Alert>
+              )}
+            </div>
+          );
+        })}
+        <span className="vf-text-xs vf-muted">
+          Contam as declarações do exercício do pacote (de clientes não excluídos). Declarações de outros exercícios, como retificar o ano anterior, não consomem o limite, mas também precisam de
+          um pacote vigente.
+        </span>
+      </div>
+    </Card>
+  );
+}
+
 /** Aba Contratos: pacotes e licenças contratados pelo escritório (somente consulta). */
 export function ContractsTab() {
   const list = useApi<ContractRow[]>(['contracts'], '/office/contracts');
   return (
     <div className="vf-stack" style={{ '--gap': '16px' } as React.CSSProperties}>
+      <ContractUsage />
       <Card flush title="Pacotes e licenças">
         {list.isLoading ? (
           <Loading />

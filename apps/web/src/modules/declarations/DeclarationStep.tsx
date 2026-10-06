@@ -294,7 +294,7 @@ function FichasCard({ declaration, canEdit, ensure, onChanged }: { declaration: 
   );
 }
 
-type FormValues = Record<string, string | number>;
+type FormValues = Record<string, string | number | boolean>;
 
 const readPath = (item: ItemRow | null, name: string): unknown => {
   if (!item) return undefined;
@@ -323,7 +323,7 @@ function ItemModal({
     Object.fromEntries(
       fields.map((f) => {
         const v = readPath(item, f.name);
-        return [f.name, f.kind === 'money' ? (typeof v === 'number' ? v : 0) : typeof v === 'string' ? v : ''];
+        return [f.name, f.kind === 'money' ? (typeof v === 'number' ? v : 0) : f.kind === 'checkbox' ? v === true : typeof v === 'string' ? v : ''];
       }),
     ),
   );
@@ -333,7 +333,9 @@ function ItemModal({
       const payload: Record<string, unknown> = { kind, extra: { ...((item?.extra as Record<string, unknown>) ?? {}) } };
       for (const f of fields) {
         const v = values[f.name];
-        const value = f.kind === 'money' ? Number(v) || 0 : typeof v === 'string' && v.trim() ? v.trim() : null;
+        // campo de outro tipo de linha (ex.: investimento só em despesa rural) não é gravado
+        const shown = !f.kinds || f.kinds.includes(kind);
+        const value = !shown ? null : f.kind === 'money' ? Number(v) || 0 : f.kind === 'checkbox' ? (v === true ? true : null) : typeof v === 'string' && v.trim() ? v.trim() : null;
         if (f.name.startsWith('extra.')) {
           const key = f.name.slice(6);
           if (value === null) delete (payload.extra as Record<string, unknown>)[key];
@@ -347,8 +349,9 @@ function ItemModal({
     { success: item ? 'Lançamento atualizado.' : 'Lançamento incluído.', onSuccess: (r) => onSaved(r.declaration) },
   );
   const errors = fieldErrors(save.error);
-  const missing = fields.some((f) => f.required && (f.kind === 'money' ? false : !String(values[f.name] ?? '').trim()));
-  const set = (name: string, v: string | number) => setValues((s) => ({ ...s, [name]: v }));
+  const visible = fields.filter((f) => !f.kinds || f.kinds.includes(kind));
+  const missing = visible.some((f) => f.required && (f.kind === 'money' ? false : !String(values[f.name] ?? '').trim()));
+  const set = (name: string, v: string | number | boolean) => setValues((s) => ({ ...s, [name]: v }));
 
   const render = (f: FieldDef) => {
     const common = { label: f.label, required: f.required, help: f.help, error: errors[f.name] };
@@ -363,6 +366,13 @@ function ItemModal({
         return <Textarea key={f.name} {...common} style={style} rows={3} value={String(value)} onChange={(e) => set(f.name, e.target.value)} />;
       case 'date':
         return <Input key={f.name} {...common} style={style} type="date" value={String(value)} onChange={(e) => set(f.name, e.target.value)} />;
+      case 'checkbox':
+        return (
+          <div key={f.name} className="vf-stack" style={{ ...style, '--gap': '4px' } as CSSProperties}>
+            <Checkbox label={f.label} checked={value === true} onChange={(e) => set(f.name, e.target.checked)} />
+            {f.help && <span className="vf-field__help">{f.help}</span>}
+          </div>
+        );
       default:
         return (
           <Input
@@ -406,7 +416,7 @@ function ItemModal({
             options={ficha.kinds.map((k) => ({ value: k, label: ficha.id === 'outros' ? ITEM_KINDS[k].ficha : ITEM_KINDS[k].label }))}
           />
         )}
-        {fields.map(render)}
+        {visible.map(render)}
       </div>
     </Modal>
   );

@@ -210,19 +210,16 @@ describe('importações de atualização', () => {
     expect(again.body).toMatchObject({ total: 0, ignored: 1 });
   });
 
-  it('INSS e eCAC: senhas cifradas, nunca devolvidas e arquivo não guardado', async () => {
+  it('eCAC: senhas cifradas, nunca devolvidas e arquivo não guardado; INSS não é mais coletado', async () => {
     const office = await registerOffice(env);
     const a = await office.api.post('/api/customers', { name: 'Alice', cpfCnpj: VALID_CPFS[0] });
     const b = await office.api.post('/api/customers', { name: 'Bento', cpfCnpj: VALID_CPFS[1] });
 
-    const inss = await upload(
-      office.token,
-      '/api/imports/inss',
-      'inss.csv',
-      `Nome;CPF;Senha gov.br;Senha já cadastrada\nAlice;${VALID_CPFS[0]};segredo-inss-1;Não\nBento;${VALID_CPFS[1]};;Não`,
-    );
-    expect(inss.body).toMatchObject({ total: 1, succeeded: 1, ignored: 1, fileId: null });
-    expect(JSON.stringify(inss.body)).not.toContain('segredo-inss-1');
+    // COB-7: sem integração com o INSS, a importação de senhas gov.br do INSS foi retirada
+    const inss = await upload(office.token, '/api/imports/inss', 'inss.csv', `CPF;Senha gov.br\n${VALID_CPFS[0]};segredo-inss-1`);
+    expect(inss.status).toBe(404);
+    expect((await office.api.get('/api/imports/inss/template')).status).toBe(404);
+    await office.api.put(`/api/customers/${a.body.id}/credentials`, { inssPassword: 'segredo-inss-2' });
 
     const ecac = await upload(
       office.token,
@@ -234,18 +231,18 @@ describe('importações de atualização', () => {
     expect(byRow(ecac.body.results)[3].message).toBe('Informe a senha.');
 
     const row = await env.ctx.db.query.customers.findFirst({ where: (t, { eq }) => eq(t.id, a.body.id) });
-    expect(env.ctx.secrets.decrypt(row!.inssPasswordEnc!)).toBe('segredo-inss-1');
+    expect(row!.inssPasswordEnc).toBeNull();
     expect(env.ctx.secrets.decrypt(row!.ecacLoginEnc!)).toBe(VALID_CPFS[0]);
     expect(env.ctx.secrets.decrypt(row!.ecacPasswordEnc!)).toBe('senha-ecac-1');
     const pub = await office.api.get(`/api/customers/${a.body.id}`);
-    expect(pub.body).toMatchObject({ hasInssPassword: true, hasEcacCredentials: true });
+    expect(pub.body).toMatchObject({ hasInssPassword: false, hasEcacCredentials: true });
     expect(JSON.stringify(pub.body)).not.toContain('senha-ecac-1');
     expect((await office.api.get(`/api/customers/${b.body.id}`)).body.hasEcacCredentials).toBe(false);
 
-    const tpl = await office.api.get('/api/imports/inss/template');
+    const tpl = await office.api.get('/api/imports/ecac/template');
     const rows = sheetRows((await readXlsx(tpl.raw.rawPayload)).worksheets[0]);
-    expect(rows[1]).toEqual(['Alice', '529.982.247-25', '', 'Sim']);
-    expect(tpl.raw.rawPayload.toString('latin1')).not.toContain('segredo-inss-1');
+    expect(rows[1]).toEqual(['Alice', '529.982.247-25', '', '', 'Sim']);
+    expect(tpl.raw.rawPayload.toString('latin1')).not.toContain('senha-ecac-1');
   });
 
   it('respeita a restrição de clientes por responsável', async () => {
@@ -271,7 +268,7 @@ describe('histórico, permissões e isolamento', () => {
     const csv = (cpf: string) => `Nome;CPF;E-mail do responsável\nCliente ${cpf};${cpf};${office.email}`;
     const first = await upload(office.token, '/api/imports/novos-clientes', 'a.csv', csv(VALID_CPFS[0]));
     await upload(office.token, '/api/imports/novos-clientes', 'b.csv', csv(VALID_CPFS[0]));
-    await upload(office.token, '/api/imports/inss', 'inss.csv', `CPF;Senha gov.br\n${VALID_CPFS[0]};x`);
+    await upload(office.token, '/api/imports/ecac', 'ecac.csv', `CPF;Senha\n${VALID_CPFS[0]};x`);
 
     const all = await office.api.get('/api/imports');
     expect(all.body.total).toBe(3);
@@ -292,7 +289,7 @@ describe('histórico, permissões e isolamento', () => {
   it('exige a permissão de cada tipo', async () => {
     const office = await registerOffice(env);
     const batch = await upload(office.token, '/api/imports/novos-clientes', 'a.csv', `Nome;CPF;E-mail do responsável\nAna;${VALID_CPFS[0]};${office.email}`);
-    await upload(office.token, '/api/imports/inss', 'inss.csv', `CPF;Senha gov.br\n${VALID_CPFS[0]};x`);
+    await upload(office.token, '/api/imports/ecac', 'ecac.csv', `CPF;Senha\n${VALID_CPFS[0]};x`);
 
     const anon = await env.app.inject({ method: 'GET', url: '/api/imports/novos-clientes/template' });
     expect(anon.statusCode).toBe(401);
@@ -305,11 +302,11 @@ describe('histórico, permissões e isolamento', () => {
 
     const partial = await createEmployee(env, office.api, ['worksheet.new_customers']);
     expect((await partial.api.get('/api/imports/novos-clientes/template')).status).toBe(200);
-    expect((await partial.api.get('/api/imports/inss/template')).status).toBe(403);
+    expect((await partial.api.get('/api/imports/ecac/template')).status).toBe(403);
     const list = await partial.api.get('/api/imports');
     expect(list.body.total).toBe(1);
     expect(list.body.data[0].kind).toBe('novos-clientes');
-    expect((await partial.api.get('/api/imports?kind=inss')).status).toBe(403);
+    expect((await partial.api.get('/api/imports?kind=ecac')).status).toBe(403);
   });
 
   it('isola escritórios', async () => {

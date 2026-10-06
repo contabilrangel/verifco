@@ -7,6 +7,19 @@ import type { UploadedFile } from '../../services/uploads';
 
 export type PrefilledRow = typeof prefilledStatements.$inferSelect;
 
+/*
+ * De onde vêm as pré-preenchidas (COB-2):
+ * - SERPRO Integra Contador: o catálogo oficial não tem serviço de IRPF nem de pré-preenchida
+ *   (apicenter.estaleiro.serpro.gov.br/documentacao/api-integra-contador/pt/catalogo_de_servicos/,
+ *   atualizado em 03/09/2026 e conferido em 06/10/2026). Se um serviço for publicado, a busca entra
+ *   em `modules/ecac/jobs.ts` e grava por `savePrefilled`.
+ * - Extensão do navegador: o leitor da página "Declaração pré-preenchida" do eCAC está desligado
+ *   (apps/extension/content/parsers.js): a página não é pública e não inventamos seletores.
+ * - Sincronizador: envia os arquivos que o contador baixa no eCAC para a pasta de pré-preenchidas
+ *   (`--pasta-pre`), identificando o cliente pelo CPF no nome do arquivo (POST /api/sync/prefilled).
+ * - Envio manual na tela Pré-preenchidas (POST /api/prefilled/upload).
+ */
+
 /**
  * Guarda o arquivo da declaração pré-preenchida de um cliente/exercício.
  * O mesmo conteúdo (hash) para o mesmo cliente e ano não é duplicado.

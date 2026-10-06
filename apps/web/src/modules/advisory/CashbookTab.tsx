@@ -1,8 +1,11 @@
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { BookOpen, Download, ExternalLink, FileSpreadsheet, ListChecks, Trash2, Undo2 } from 'lucide-react';
+import { BookOpen, Download, ExternalLink, FileSpreadsheet, ListChecks, Search, Trash2, Undo2 } from 'lucide-react';
 import {
+  CARNE_LEAO_CODES_SOURCE,
+  CARNE_LEAO_INCOME_CODES,
   CARNE_LEAO_MODELS_URL,
+  CARNE_LEAO_PAYMENT_CODES,
   CARNE_LEAO_TABLES_URL,
   CASHBOOK_GUIDE,
   CASHBOOK_MAX_ROWS,
@@ -11,7 +14,7 @@ import {
   type CashbookKind,
   type CashbookMonth,
 } from '@verifco/shared';
-import { Alert, Button, Card, ConfirmDialog, DropFile, EmptyState, IconButton, Loading, Modal, Select, Tabs, Tag, useToast } from '../../ds';
+import { Alert, Button, Card, ConfirmDialog, DropFile, EmptyState, IconButton, Input, Loading, Modal, Select, Tabs, Tag, useToast } from '../../ds';
 import { api } from '../../lib/api';
 import { useApi } from '../../lib/hooks';
 import { formatCpfCnpj, formatDate, formatDateTime, formatMoney } from '../../lib/format';
@@ -63,7 +66,7 @@ export function CashbookTab() {
   const qc = useQueryClient();
   const thisYear = new Date().getFullYear();
   const [year, setYear] = useState(exercise - 1);
-  const [guide, setGuide] = useState<CashbookKind>('income');
+  const [guide, setGuide] = useState<CashbookKind | 'codes' | 'import'>('income');
   const [uploading, setUploading] = useState(false);
   const [result, setResult] = useState<ImportResult | null>(null);
   const [month, setMonth] = useState<number | null>(null);
@@ -187,29 +190,38 @@ export function CashbookTab() {
               items={[
                 { value: 'income', label: 'Rendimentos' },
                 { value: 'payment', label: 'Pagamentos' },
+                { value: 'codes', label: 'Códigos' },
+                { value: 'import', label: 'Importar no Carnê-Leão' },
               ]}
             />
-            <div className="vf-table-wrap" style={{ maxHeight: 330, overflowY: 'auto' }}>
-              <table className="vf-table">
-                <thead>
-                  <tr>
-                    <th>Campo</th>
-                    <th>Formato</th>
-                    <th>Obrigatório</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {CASHBOOK_GUIDE.filter((g) => g.kind === guide).map((g) => (
-                    <tr key={g.field}>
-                      <td className="vf-text-sm-bold">{g.field}</td>
-                      <td className="vf-text-sm">{g.format}</td>
-                      <td className="vf-text-xs vf-muted">{g.required}</td>
+            {guide === 'codes' && <CodesTable />}
+            {guide === 'import' && <ImportTutorial />}
+            {(guide === 'income' || guide === 'payment') && (
+              <div className="vf-table-wrap" style={{ maxHeight: 330, overflowY: 'auto' }}>
+                <table className="vf-table">
+                  <thead>
+                    <tr>
+                      <th>Campo</th>
+                      <th>Formato</th>
+                      <th>Obrigatório</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <p className="vf-text-xs vf-muted">Os códigos são conferidos só pelo formato: escolha o código certo nas tabelas oficiais do Carnê-Leão Web.</p>
+                  </thead>
+                  <tbody>
+                    {CASHBOOK_GUIDE.filter((g) => g.kind === guide).map((g) => (
+                      <tr key={g.field}>
+                        <td className="vf-text-sm-bold">{g.field}</td>
+                        <td className="vf-text-sm">{g.format}</td>
+                        <td className="vf-text-xs vf-muted">{g.required}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <p className="vf-text-xs vf-muted">
+              Os códigos são conferidos nas tabelas dos modelos oficiais (aba Códigos); contas do seu plano de contas no Carnê-Leão (P10 ou P11 + código da conta) também são aceitas. O código de
+              ocupação é conferido só no formato.
+            </p>
           </div>
         </Card>
       </div>
@@ -449,5 +461,76 @@ export function CashbookTab() {
         onClose={() => setUndo(null)}
       />
     </div>
+  );
+}
+
+/** Tabelas de códigos dos modelos oficiais do Carnê-Leão, com busca (COB-9). */
+function CodesTable() {
+  const [search, setSearch] = useState('');
+  const term = search
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+  const norm = (v: string) =>
+    v
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase();
+  const rows = [...CARNE_LEAO_INCOME_CODES, ...CARNE_LEAO_PAYMENT_CODES].filter((c) => !term || norm(`${c.code} ${c.label} ${c.group}`).includes(term));
+  return (
+    <div className="vf-stack">
+      <Input aria-label="Buscar código" placeholder="Buscar por código ou descrição" icon={<Search />} value={search} onChange={(e) => setSearch(e.target.value)} />
+      <div className="vf-table-wrap" style={{ maxHeight: 330, overflowY: 'auto' }}>
+        <table className="vf-table">
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Descrição</th>
+              <th>Grupo</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((c) => (
+              <tr key={c.code}>
+                <td className="vf-mono vf-text-sm">{c.code}</td>
+                <td className="vf-text-sm">{c.label}</td>
+                <td className="vf-text-xs vf-muted">{c.group}</td>
+              </tr>
+            ))}
+            {!rows.length && (
+              <tr>
+                <td colSpan={3} className="vf-muted">
+                  Nenhum código encontrado.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      <p className="vf-text-xs vf-muted">
+        Fonte: {CARNE_LEAO_CODES_SOURCE}. A tabela de ocupações e as tabelas completas ficam nas{' '}
+        <a href={CARNE_LEAO_TABLES_URL} target="_blank" rel="noopener noreferrer">
+          tabelas auxiliares do Carnê-Leão Web <ExternalLink size={12} />
+        </a>
+        .
+      </p>
+    </div>
+  );
+}
+
+/** Passo a passo para levar o arquivo exportado ao Carnê-Leão Web. */
+function ImportTutorial() {
+  return (
+    <ol className="vf-stack vf-text-sm" style={{ '--gap': '8px', paddingLeft: 20, margin: 0 } as React.CSSProperties}>
+      <li>Converta as planilhas no passo 3 e confira os lançamentos do mês no passo 4.</li>
+      <li>
+        Clique em “Exportar para o Carnê-Leão Web”. O arquivo sai no layout oficial (CSV com ponto e vírgula, sem cabeçalho, até 1.000 linhas por arquivo). Os modelos oficiais separam
+        rendimentos e pagamentos; se preferir importar um tipo de cada vez, use “Só rendimentos” e “Só pagamentos”.
+      </li>
+      <li>No eCAC, abra Meu Imposto de Renda › Carnê-Leão com o perfil do cliente (a aba Ações eCAC abre o serviço pela extensão).</li>
+      <li>Use a importação de escrituração do Carnê-Leão Web e envie o arquivo. Se o Carnê-Leão recusar alguma linha, ele mostra o motivo por linha: corrija aqui e exporte de novo.</li>
+      <li>Confira os totais do mês no Carnê-Leão antes de gerar o DARF.</li>
+    </ol>
   );
 }

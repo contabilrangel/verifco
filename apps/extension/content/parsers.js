@@ -39,6 +39,21 @@
     },
   });
 
+  /*
+   * Pré-preenchida (Meu Imposto de Renda › Declaração pré-preenchida) — DESLIGADA, sem parser.
+   *
+   * Não existe fonte oficial automática: o SERPRO Integra Contador não tem serviço de pré-preenchida
+   * (catálogo conferido em 06/10/2026). A busca automática depende de um leitor desta página, que
+   * não foi escrito porque o HTML não é público. Hoje o arquivo chega pelo sincronizador (pasta de
+   * pré-preenchidas) ou pelo envio manual na tela Pré-preenchidas do Verifco.
+   *
+   * Para implementar: na página real, localize o link/botão de download do arquivo, baixe-o com
+   * `fetch` na própria origem (a sessão do navegador vale) e envie em multipart para
+   * POST /api/sync/prefilled (campos `file`, `cpf` = ctx.cpf e `ano`), pelo service worker, com o
+   * token da extensão. Não é um registro de `/sync/ecac-records`, então não use `C.register` com
+   * `kind`.
+   */
+
   C.register({
     id: 'certidao-cnd',
     description: 'Emissão de certidão (CND) — situação e PDF (a implementar)',

@@ -159,6 +159,13 @@ describe('elaboração', () => {
     expect((await viewer.api.get('/api/elaboration?year=2026')).status).toBe(200);
     expect((await viewer.api.post('/api/elaboration/process', { year: 2026, customerIds: [o.customerId] })).status).toBe(403);
     expect((await viewer.api.post('/api/elaboration/validate', { year: 2026, customerIds: [o.customerId] })).status).toBe(403);
+    // COB-13: quem cria ou edita a pré-declaração também vê a lista (o menu usa as mesmas permissões)
+    const creator = await createEmployee(env, o.api, ['customer.list', 'pre_declaration.create']);
+    expect((await creator.api.get('/api/elaboration?year=2026')).status).toBe(200);
+    expect((await creator.api.get(`/api/elaboration/customers/${o.customerId}?year=2026`)).status).toBe(200);
+    const editor = await createEmployee(env, o.api, ['customer.list', 'pre_declaration.edit']);
+    expect((await editor.api.get('/api/elaboration?year=2026')).status).toBe(200);
+    expect((await editor.api.post('/api/elaboration/process', { year: 2026, customerIds: [o.customerId] })).status).toBe(403);
     const nobody = await createEmployee(env, o.api, ['customer.list']);
     expect((await nobody.api.get('/api/elaboration?year=2026')).status).toBe(403);
     expect((await nobody.api.post('/api/elaboration/export', { year: 2026, customerIds: [o.customerId] })).status).toBe(403);

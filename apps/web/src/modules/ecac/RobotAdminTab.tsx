@@ -57,8 +57,13 @@ export function RobotAdminTab() {
       >
         <div className="vf-stack">
           <span className="vf-muted">
-            O robô reúne os dados do eCAC por três caminhos: a integração oficial <strong>SERPRO Integra Contador</strong> (procuração e caixa postal, sem depender do seu computador), a{' '}
-            <strong>extensão do navegador</strong> (envia o que você abre no eCAC) e o <strong>sincronizador</strong> (envia os arquivos .DEC, .REC e .DBK do programa IRPF). Nada é simulado: sem uma dessas fontes, os painéis ficam vazios.
+            O robô reúne os dados do eCAC por três caminhos: a integração oficial <strong>SERPRO Integra Contador</strong> (procuração, lista da caixa postal, relatório de situação fiscal e baixa das
+            quotas do IRPF pagas, sem depender do seu computador), a <strong>extensão do navegador</strong> (envia o que você abre no eCAC, com os leitores de página desligados até serem implementados)
+            e o <strong>sincronizador</strong> (envia os arquivos .DEC, .REC e .DBK do programa IRPF e as pré-preenchidas baixadas). Nada é simulado: sem uma dessas fontes, os painéis ficam vazios.
+          </span>
+          <span className="vf-text-xs vf-muted">
+            O Integra Contador não tem serviço de IRPF: situação da declaração, malha, extratos e pré-preenchida não vêm por ele. A sincronização automática (diária ou semanal) é ligada em{' '}
+            <Link to="/admin/integracoes">Administração › Integrações › SERPRO</Link>; cada consulta é cobrada pelo SERPRO conforme o contrato do escritório.
           </span>
           {o?.lastOfficeSync && <JobAlert job={o.lastOfficeSync} title="Sincronização geral" done={`${String(o.lastOfficeSync.result?.ok ?? 0)} de ${String(o.lastOfficeSync.result?.total ?? 0)} cliente(s) sincronizado(s).`} />}
         </div>

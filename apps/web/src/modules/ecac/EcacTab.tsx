@@ -124,7 +124,7 @@ export function EcacTab() {
               { value: 'income', label: `Extrato de rendimentos (${d.incomeStatements.length})` },
               { value: 'darf', label: `DARF (${d.darfs.length})` },
               { value: 'cnd', label: 'CND' },
-              { value: 'simplified', label: 'Status simplificado' },
+              { value: 'simplified', label: 'Situação fiscal' },
               { value: 'mailbox', label: `Caixa postal (${d.mailbox.length})` },
             ]}
           />
@@ -192,6 +192,10 @@ function CredentialsCard({ panel, onSaved }: { panel: EcacPanel; onSaved: () => 
         <span className="vf-text-xs vf-muted">
           Guardadas cifradas e nunca exibidas de volta. Para trocar, digite os novos valores; campos vazios mantêm o que já está salvo.
         </span>
+        <Alert tone="warning">
+          Nenhuma rotina do Verifco usa estas credenciais hoje: o robô consulta o eCAC pelo SERPRO Integra Contador, com o certificado do escritório e a procuração eletrônica do cliente.
+          Como a senha não volta a ser exibida, guardá-la não traz benefício; prefira remover.
+        </Alert>
         {editable && (
           <div className="vf-inline vf-end">
             {configured && (
@@ -220,7 +224,11 @@ function CredentialsCard({ panel, onSaved }: { panel: EcacPanel; onSaved: () => 
 }
 
 // ---------------------------------------------------------------- painéis
-const EMPTY_HINT = 'O painel é preenchido quando o robô (extensão, sincronizador ou SERPRO Integra Contador) traz os dados, ou por lançamento manual.';
+/** O SERPRO Integra Contador não tem serviço de IRPF: declaração e extratos vêm da extensão ou do lançamento manual. */
+const EMPTY_HINT =
+  'A situação da declaração e os extratos não vêm pelo SERPRO (o Integra Contador não tem serviço de IRPF). Use “Lançar registro” ou a extensão do navegador, cujos leitores das páginas do eCAC ficam desligados até serem implementados.';
+const MAILBOX_HINT =
+  'As mensagens chegam pela sincronização do SERPRO (assunto, data e se foi lida; o conteúdo não é aberto, porque abrir dá ciência de intimações) ou por lançamento manual.';
 
 function DeclarationsPanel({ d }: { d: EcacPanel }) {
   if (!d.declarations.length) return <EmptyState title="Nenhuma declaração processada registrada" description={EMPTY_HINT} />;
@@ -293,7 +301,8 @@ function IncomePanel({ d }: { d: EcacPanel }) {
 }
 
 function DarfPanel({ d }: { d: EcacPanel }) {
-  if (!d.darfs.length) return <EmptyState title="Nenhum DARF acompanhado" description="As guias aparecem aqui quando são lançadas na etapa DARF do IRPF ou trazidas do eCAC pelo robô." />;
+  if (!d.darfs.length)
+    return <EmptyState title="Nenhum DARF acompanhado" description="As guias aparecem aqui quando são lançadas na etapa DARF do IRPF. Com o SERPRO configurado, a sincronização dá baixa nas quotas pagas." />;
   return (
     <div className="vf-table-wrap">
       <table className="vf-table">
@@ -336,10 +345,15 @@ function CndPanel({ d }: { d: EcacPanel }) {
   return (
     <div className="vf-stack" style={{ padding: 24 }}>
       {!d.cnd.autoGenerateCnd && (
-        <Alert tone="warning" title="Geração automática de CND desligada">
-          O escritório ainda não marcou a opção “Permitir geração automática de CND” nas preferências. <Link to="/admin/preferencias">Abrir Administração › Preferências</Link>
+        <Alert tone="warning" title="Consulta da situação fiscal desligada">
+          Ligue “Consultar a situação fiscal (base da CND) na sincronização” para o robô trazer pelo SERPRO o relatório com as pendências e a certidão vigente.{' '}
+          <Link to="/admin/preferencias">Abrir Administração › Preferências</Link>
         </Alert>
       )}
+      <span className="vf-text-xs vf-muted">
+        O SERPRO Integra Contador não emite a CND nem entrega o PDF dela: a situação abaixo vem do relatório de situação fiscal ou de lançamento manual. Sem pendências, emita a certidão no
+        site da Receita e anexe em “Lançar registro”.
+      </span>
       <dl className="vf-ecac-facts">
         <dt>Situação</dt>
         <dd>
@@ -349,14 +363,14 @@ function CndPanel({ d }: { d: EcacPanel }) {
         <dd>{d.cnd.checkedAt ? formatDateTime(d.cnd.checkedAt) : <span className="vf-muted">Nunca consultada</span>}</dd>
         <dt>Certidão</dt>
         <dd>
-          {d.cnd.latest?.fileId ? (
+          {d.cnd.latest?.fileId || d.cnd.latest?.validUntil ? (
             <span className="vf-inline">
-              <ViewFileButton fileId={d.cnd.latest.fileId} label="Abrir certidão" />
+              {d.cnd.latest.fileId ? <ViewFileButton fileId={d.cnd.latest.fileId} label="Abrir certidão" /> : <span className="vf-muted">Informada no relatório de situação fiscal (sem PDF)</span>}
               {d.cnd.latest.issuedAt && <span>Emitida em {formatDate(d.cnd.latest.issuedAt)}</span>}
               {d.cnd.latest.validUntil && <span className="vf-muted">· válida até {formatDate(d.cnd.latest.validUntil)}</span>}
             </span>
           ) : (
-            <span className="vf-muted">Nenhum arquivo de certidão registrado</span>
+            <span className="vf-muted">Nenhuma certidão registrada</span>
           )}
         </dd>
       </dl>
@@ -369,12 +383,12 @@ function SimplifiedPanel({ d }: { d: EcacPanel }) {
   if (!s) {
     return (
       <div style={{ padding: 24 }}>
-        <Alert title="Caso já tenha feito o passo a passo, basta esperar o robô passar na sua base">
+        <Alert title="Situação fiscal ainda não consultada">
           <ol className="vf-ecac-steps">
-            <li>Associe um procurador ao cliente (aba Identificação).</li>
-            <li>Confirme a procuração eletrônica no eCAC, em nome do cliente.</li>
-            <li>Instale a extensão ou o sincronizador (Central de downloads) ou configure o SERPRO em Administração › Integrações.</li>
-            <li>Use “Solicitar sincronização” acima. O resultado aparece nesta aba.</li>
+            <li>Associe um procurador ao cliente (aba Identificação) e confirme a procuração eletrônica no eCAC, em nome do cliente.</li>
+            <li>Configure o SERPRO em Administração › Integrações.</li>
+            <li>Ligue “Consultar a situação fiscal (base da CND) na sincronização” em Administração › Preferências.</li>
+            <li>Use “Solicitar sincronização” acima (ou ligue a sincronização automática na integração). O relatório aparece nesta aba.</li>
           </ol>
         </Alert>
       </div>
@@ -389,6 +403,14 @@ function SimplifiedPanel({ d }: { d: EcacPanel }) {
         <dd>
           {formatDateTime(s.fetchedAt)} <span className="vf-muted">· {sourceLabel(s.source)}</span>
         </dd>
+        {s.fileId && (
+          <>
+            <dt>Relatório</dt>
+            <dd>
+              <ViewFileButton fileId={s.fileId} label="Abrir relatório" />
+            </dd>
+          </>
+        )}
         {s.message && (
           <>
             <dt>Mensagem</dt>
@@ -410,7 +432,9 @@ function SimplifiedPanel({ d }: { d: EcacPanel }) {
 }
 
 function MailboxPanel({ d }: { d: EcacPanel }) {
-  if (!d.mailbox.length) return <EmptyState title="Nenhuma mensagem registrada" description={EMPTY_HINT} />;
+  if (!d.mailbox.length) return <EmptyState title="Nenhuma mensagem registrada" description={MAILBOX_HINT} />;
+  // a mais recente primeiro, venha do SERPRO, da extensão ou de lançamento manual
+  const list = [...d.mailbox].sort((a, b) => (b.receivedAt ?? '').localeCompare(a.receivedAt ?? ''));
   return (
     <div className="vf-table-wrap">
       <table className="vf-table">
@@ -424,7 +448,7 @@ function MailboxPanel({ d }: { d: EcacPanel }) {
           </tr>
         </thead>
         <tbody>
-          {d.mailbox.map((r) => (
+          {list.map((r) => (
             <tr key={r.id}>
               <td>{r.subject ?? '—'}</td>
               <td>{r.receivedAt ? formatDate(r.receivedAt) : '—'}</td>

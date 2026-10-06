@@ -339,13 +339,30 @@ export function itemsToCsv(items: DeclarationItem[]): string {
   return '﻿' + [header, ...rows].map((r) => r.map(csvCell).join(';')).join('\r\n') + '\r\n';
 }
 
+/**
+ * Exportação em .DBK/.DEC (COB-4): não implementada de propósito.
+ *
+ * O leiaute das cópias de segurança (.DBK) e das declarações (.DEC) do programa IRPF não é
+ * publicado pela Receita Federal e muda a cada exercício. Gerar o arquivo exigiria engenharia
+ * reversa sem especificação, e um .DBK malformado restaurado no programa oficial pode corromper ou
+ * alterar a declaração do cliente sem aviso — risco maior que a ausência do arquivo. Por isso o
+ * pacote é de CONFERÊNCIA (CSV/JSON + documentos) e a tela da Elaboração avisa que não é um .DBK.
+ *
+ * Para implementar com honestidade: (1) obter a especificação oficial do leiaute do exercício (ou
+ * validar um leitor/gravador por exercício em ida e volta ler → gravar → ler); (2) testar a
+ * restauração no programa IRPF oficial de cada exercício; (3) liberar por exercício validado, atrás
+ * de uma opção, mantendo o linhas.csv para conferência. Não simule o arquivo.
+ */
 const README = (customer: CustomerRow, year: number) => `PACOTE DE CONFERÊNCIA — VERIFCO
 Cliente: ${customer.name} (CPF ${formatCpfCnpj(customer.cpfCnpj)})
 Exercício ${year} · ano-calendário ${year - 1}
 Gerado em ${new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}
 
 Este pacote serve para CONFERIR e DIGITAR a declaração. Ele NÃO é um arquivo para restaurar
-no programa IRPF: o formato das cópias de segurança (.DBK) do programa não é público.
+no programa IRPF: o formato das cópias de segurança (.DBK) do programa não é público, e um
+arquivo gerado sem a especificação oficial poderia alterar a declaração do cliente ao ser
+restaurado. No programa IRPF, comece pela declaração pré-preenchida ou pela do ano anterior e
+digite as linhas abaixo.
 
 Conteúdo:
 - linhas.csv   linhas da declaração (separador ";", valores em reais), abre no Excel;

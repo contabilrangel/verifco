@@ -29,6 +29,13 @@
       "when": 1791275844819,
       "tag": "0003_checklist_validade_links",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1791282478209,
+      "tag": "0004_inss_senhas_descartadas",
+      "breakpoints": true
     }
   ]
 }

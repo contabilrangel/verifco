@@ -76,7 +76,6 @@ export const COLUMNS = {
   group: ['grupo', 'grupos', 'grupo_de_clientes'],
   birthDate: ['data_de_nascimento', 'data_nascimento', 'nascimento'],
   procurator: ['cpf_cnpj_do_procurador', 'cpf_cnpj_procurador', 'cpf_cnpj_procurador_a', 'procurador', 'documento_do_procurador'],
-  inssPassword: ['senha_gov_br', 'senha_govbr', 'senha_inss', 'senha'],
   ecacLogin: ['login', 'login_ecac', 'login_gov_br', 'usuario'],
   ecacPassword: ['senha', 'senha_ecac', 'senha_gov_br'],
 } as const;

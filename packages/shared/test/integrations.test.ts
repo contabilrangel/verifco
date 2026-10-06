@@ -15,7 +15,20 @@ describe('catálogo de integrações', () => {
   it('aplica padrões e respeita campos condicionais', () => {
     const wa = getIntegrationDef('whatsapp')!;
     expect(integrationDefaults(wa)).toMatchObject({ mode: 'evolution', apiVersion: 'v25.0' });
-    expect(activeIntegrationFields(wa, { mode: 'meta' }).map((f) => f.key)).toEqual(['mode', 'phoneNumberId', 'accessToken', 'apiVersion']);
+    expect(activeIntegrationFields(wa, { mode: 'meta' }).map((f) => f.key)).toEqual([
+      'mode',
+      'phoneNumberId',
+      'accessToken',
+      'apiVersion',
+      'appSecret',
+      'templateName',
+      'templateLanguage',
+      'templateBody',
+      'templateDocument',
+    ]);
+    // recebe as respostas dos clientes pelo webhook (COB-8)
+    expect(wa.webhook).toBe(true);
+    expect(integrationDefaults(wa)).toMatchObject({ templateLanguage: 'pt_BR', templateBody: 'message', templateDocument: false });
     expect(missingIntegrationFields(wa, { mode: 'evolution', baseUrl: 'https://x' }, [])).toEqual(['Nome da instância', 'API key']);
     expect(missingIntegrationFields(wa, { mode: 'meta', phoneNumberId: '1' }, ['accessToken'])).toEqual([]);
   });

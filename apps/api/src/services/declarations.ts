@@ -1,8 +1,8 @@
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, count, eq, inArray, isNull } from 'drizzle-orm';
 import { STAGE_SUBSTATUS, declarationTotals, stageOfSubstatus, type DeclarationItem, type DeclarationSubstatus } from '@verifco/shared';
 import type { Db } from '../db/client';
-import { customers, declarationItems, declarations } from '../db/schema';
-import { notFound } from '../lib/errors';
+import { contracts, customers, declarationItems, declarations } from '../db/schema';
+import { conflict, notFound } from '../lib/errors';
 
 export type DeclarationRow = typeof declarations.$inferSelect;
 
@@ -22,6 +22,7 @@ export async function getOrCreateDeclaration(db: Db, officeId: string, customerI
     where: and(eq(declarations.customerId, customerId), eq(declarations.exerciseYear, exerciseYear)),
   });
   if (existing) return existing;
+  await assertContractAllowsDeclaration(db, officeId, exerciseYear);
   const [row] = await db
     .insert(declarations)
     .values({ officeId, customerId, exerciseYear })
@@ -88,4 +89,91 @@ export async function recomputeTotals(db: Db, declarationId: string) {
   const totals = declarationTotals(items);
   const [row] = await db.update(declarations).set({ ...totals, updatedAt: new Date() }).where(eq(declarations.id, declarationId)).returning();
   return row;
+}
+
+// ---------------------------------------------------------------------------
+// Contrato do escritório: validade e limite de declarações
+// ---------------------------------------------------------------------------
+export type ContractRow = typeof contracts.$inferSelect;
+
+export interface DeclarationQuota {
+  /** Exercício do pacote. */
+  year: number;
+  /** Soma dos limites dos pacotes vigentes do exercício; `null` = ilimitado. */
+  limit: number | null;
+  /** Declarações do exercício já criadas (clientes não excluídos). */
+  used: number;
+  remaining: number | null;
+}
+
+export interface ContractStatus {
+  /** O escritório tem algum contrato registrado (sem contratos, nada é limitado). */
+  hasContracts: boolean;
+  /** Pacotes vigentes hoje (não cancelados nem suspensos, dentro do período). */
+  active: ContractRow[];
+  /** Tem contratos, mas nenhum vigente. */
+  blocked: boolean;
+  /** Maior data de expiração entre os contratos (para a mensagem de renovação). */
+  lastExpiresAt: string | null;
+  /** Próximo início, quando o único pacote ainda não começou. */
+  nextStartsAt: string | null;
+  quotas: DeclarationQuota[];
+}
+
+const brDate = (iso: string) => iso.split('-').reverse().join('/');
+
+/** Situação do contrato: pacotes vigentes e o uso do limite de declarações de cada exercício. */
+export async function officeContractStatus(db: Db, officeId: string, today = new Date().toISOString().slice(0, 10)): Promise<ContractStatus> {
+  const rows = await db.select().from(contracts).where(eq(contracts.officeId, officeId));
+  const live = rows.filter((c) => c.status !== 'canceled' && c.status !== 'suspended');
+  const active = live.filter((c) => c.startsAt <= today && c.expiresAt >= today);
+  const years = [...new Set(active.map((c) => c.year))].sort();
+  const usage = years.length
+    ? await db
+        .select({ year: declarations.exerciseYear, n: count() })
+        .from(declarations)
+        .innerJoin(customers, eq(customers.id, declarations.customerId))
+        .where(and(eq(declarations.officeId, officeId), inArray(declarations.exerciseYear, years), isNull(customers.deletedAt)))
+        .groupBy(declarations.exerciseYear)
+    : [];
+  const quotas = years.map((year) => {
+    const of = active.filter((c) => c.year === year);
+    const limit = of.some((c) => c.declarationLimit === null) ? null : of.reduce((a, c) => a + (c.declarationLimit ?? 0), 0);
+    const used = usage.find((u) => u.year === year)?.n ?? 0;
+    return { year, limit, used, remaining: limit === null ? null : Math.max(0, limit - used) };
+  });
+  const future = live.filter((c) => c.startsAt > today).map((c) => c.startsAt).sort();
+  return {
+    hasContracts: rows.length > 0,
+    active,
+    blocked: rows.length > 0 && active.length === 0,
+    lastExpiresAt: rows.map((c) => c.expiresAt).sort().at(-1) ?? null,
+    nextStartsAt: future[0] ?? null,
+    quotas,
+  };
+}
+
+/**
+ * Bloqueia a criação de declaração quando o contrato não permite (COB-12):
+ * - escritório com contratos, mas nenhum vigente (vencido, cancelado, suspenso ou ainda não iniciado);
+ * - limite de declarações do exercício atingido (soma dos pacotes vigentes daquele exercício).
+ * Declarações de exercícios sem pacote vigente (ex.: retificar o ano anterior) não consomem o
+ * limite, mas também exigem contrato vigente. Escritórios sem nenhum contrato não são limitados.
+ */
+export async function assertContractAllowsDeclaration(db: Db, officeId: string, exerciseYear: number, today = new Date().toISOString().slice(0, 10)) {
+  const status = await officeContractStatus(db, officeId, today);
+  if (!status.hasContracts) return;
+  if (status.blocked) {
+    throw conflict(
+      status.nextStartsAt && (!status.lastExpiresAt || status.lastExpiresAt >= today)
+        ? `O pacote do escritório começa em ${brDate(status.nextStartsAt)}. Até lá, não é possível criar novas declarações.`
+        : `O contrato do escritório venceu${status.lastExpiresAt ? ` em ${brDate(status.lastExpiresAt)}` : ''}. Para criar novas declarações, renove o pacote com o suporte do Verifco (veja Administração › Contratos). As declarações já criadas continuam disponíveis.`,
+    );
+  }
+  const quota = status.quotas.find((q) => q.year === exerciseYear);
+  if (quota && quota.limit !== null && quota.used >= quota.limit) {
+    throw conflict(
+      `Limite do contrato atingido: o escritório já tem ${quota.used} declaração(ões) do exercício ${exerciseYear}, o máximo do pacote (${quota.limit}). Para criar novas, amplie o pacote com o suporte do Verifco (veja Administração › Contratos).`,
+    );
+  }
 }

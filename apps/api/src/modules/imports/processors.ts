@@ -279,33 +279,6 @@ async function procurations(ctx: AppContext, user: AuthUser, rows: SheetRow[], l
   );
 }
 
-// ---------------------------------------------------------------- senha gov.br do INSS
-async function inss(ctx: AppContext, user: AuthUser, rows: SheetRow[], log: (e: unknown) => void) {
-  const byDoc = await scopedCustomersByDoc(ctx, user);
-  return runRows(
-    rows,
-    {
-      key: docKey(true),
-      skip: (v) => !pick(v, COLUMNS.inssPassword),
-      run: async ({ values }) => {
-        const errors: string[] = [];
-        const doc = readCustomerDoc(values, errors, true);
-        const c = doc ? byDoc.get(doc) : undefined;
-        if (doc && !c) errors.push(`Cliente com CPF ${formatCpfCnpj(doc)} não encontrado.`);
-        const password = pick(values, COLUMNS.inssPassword);
-        if (password.length > 200) errors.push('Senha com mais de 200 caracteres.');
-        if (errors.length || !c) return fail(errors);
-        await ctx.db
-          .update(customers)
-          .set({ inssPasswordEnc: ctx.secrets.encrypt(password), updatedAt: new Date() })
-          .where(eq(customers.id, c.id));
-        return { ok: true, message: `Senha gov.br de ${c.name} salva.` };
-      },
-    },
-    log,
-  );
-}
-
 // ---------------------------------------------------------------- login eCAC
 async function ecac(ctx: AppContext, user: AuthUser, rows: SheetRow[], log: (e: unknown) => void) {
   const byDoc = await scopedCustomersByDoc(ctx, user);
@@ -339,6 +312,5 @@ export const PROCESSORS: Record<ImportKind, (ctx: AppContext, user: AuthUser, ro
   'novos-clientes': newCustomers,
   'atualizar-clientes': updateCustomers,
   procuracoes: procurations,
-  inss,
   ecac,
 };

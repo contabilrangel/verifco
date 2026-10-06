@@ -14,6 +14,15 @@ Extensão Manifest V3, em JavaScript puro, **sem etapa de build**. Ela faz duas 
 > extensão vazios** (devolvem lista vazia). Implemente cada um lendo a página real, como
 > explicado abaixo. A extensão nunca inventa dados.
 
+### O que vem de onde
+
+| Dado | Fonte hoje |
+| --- | --- |
+| Procuração, caixa postal (lista), situação fiscal (SITFIS), pagamento das quotas | SERPRO Integra Contador, pelo robô da API (sem a extensão) |
+| Situação da declaração, malha, lote de restituição, extratos | Extensão (parser `meu-irpf-situacao`, **desligado**) ou lançamento manual na aba eCAC |
+| CND (PDF) | Extensão (parser `certidao-cnd`, **desligado**) ou lançamento manual; a certidão vigente aparece no relatório SITFIS |
+| Pré-preenchida | Sincronizador (pasta de pré-preenchidas) ou envio manual. O Integra Contador não tem esse serviço e a extensão não tem leitor dessa página (veja o comentário em `content/parsers.js`) |
+
 ## Instalação (sem compactação)
 
 1. Baixe o `.zip` na Central de downloads do Verifco (ou use esta pasta `apps/extension`) e

@@ -279,8 +279,16 @@ function IntegrationCard({ def, view }: { def: IntegrationDef; view: Integration
                         </IconButton>
                       </div>
                       <span className="vf-field__help">
-                        Cadastre esta URL no webhook de cobranças do {def.label}. Ela é exclusiva do seu escritório; trate-a como uma senha.
+                        {def.category === 'messaging'
+                          ? `Cadastre esta URL no webhook do ${form.mode === 'meta' ? 'app da Meta (campo messages)' : 'WhatsApp na Evolution API (evento MESSAGES_UPSERT)'} para as respostas dos clientes aparecerem na aba Mensagens.`
+                          : `Cadastre esta URL no webhook de cobranças do ${def.label}.`}{' '}
+                        Ela é exclusiva do seu escritório; trate-a como uma senha.
                       </span>
+                      {def.category === 'messaging' && form.mode === 'meta' && (
+                        <span className="vf-field__help">
+                          Token de verificação na Meta: <code className="vf-int-code">{view.webhookUrl.split('/').pop()}</code>
+                        </span>
+                      )}
                     </>
                   ) : (
                     <span className="vf-field__help">Salve a configuração para gerar a URL exclusiva do escritório.</span>

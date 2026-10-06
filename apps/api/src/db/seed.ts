@@ -15,7 +15,7 @@ import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../app';
 import { createContext } from '../bootstrap';
 import { MemoryProviders } from '../integrations/providers';
-import { users } from './schema';
+import { contracts, users } from './schema';
 
 const DEMO_EMAIL = 'demo@verifco.dev';
 const DEMO_PASSWORD = 'verifco-demo-123';
@@ -305,6 +305,17 @@ async function main() {
   });
   const owner = client(app, reg.token);
   const ownerId = reg.user.id;
+  // pacote contratado da demonstração (o de avaliação, de 30 declarações, ficaria no limite: COB-12)
+  await ctx.db.insert(contracts).values({
+    officeId: reg.office.id,
+    name: 'Pacote Profissional 2026',
+    plan: 'pro',
+    declarationLimit: 150,
+    year: 2026,
+    startsAt: '2026-01-01',
+    expiresAt: '2026-12-31',
+    hasBackup: true,
+  });
   await owner.put('/api/office', {
     name: 'Rangel & Associados Contabilidade',
     cpfCnpj: '11222333000181',

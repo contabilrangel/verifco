@@ -15,8 +15,10 @@
  * - pagamentos: data; código do pagamento; valor; histórico; multa; juros; competência (MM/AAAA)
  *   — os três últimos só para "Imposto pago" e "Previdência oficial".
  *
- * Os códigos de rendimento, pagamento e ocupação são campos livres validados apenas pelo formato;
- * as tabelas ficam em "tabelas auxiliares" do manual do Carnê-Leão Web:
+ * Os códigos de rendimento e pagamento são conferidos no formato e nas tabelas montadas a partir
+ * dos modelos oficiais (`carneLeaoCodeError`, `CARNE_LEAO_INCOME_CODES`, `CARNE_LEAO_PAYMENT_CODES`);
+ * a ocupação, só no formato. As tabelas completas ficam em "tabelas auxiliares" do manual do
+ * Carnê-Leão Web:
  * https://www.gov.br/receitafederal/pt-br/assuntos/orientacao-tributaria/declaracoes-e-demonstrativos/dirpf/carne-leao/topicos-ajuda-carne-leao-web#tabelas_auxiliares
  */
 import { isValidCnpj, isValidCpf, onlyDigits, toCents } from './validators';
@@ -289,6 +291,72 @@ export function parseBrDate(v: string): string | null {
 export const INCOME_CODE_RE = /^R\d{2}\.\d{3}\.\d{3}$/;
 export const PAYMENT_CODE_RE = /^P\d{2}\.\d{2}\.\d{5}$/;
 
+// ---------------------------------------------------------------------------
+// Tabelas de códigos do Carnê-Leão Web
+// ---------------------------------------------------------------------------
+/**
+ * Fonte das tabelas abaixo: os modelos oficiais de importação publicados pela Receita Federal
+ * ("Modelos de escrituração para o Carnê-Leão", arquivos de 20/10/2025, `CARNE_LEAO_MODELS_URL`) e
+ * as instruções que os acompanham. As tabelas auxiliares completas do manual do Carnê-Leão Web
+ * (`CARNE_LEAO_TABLES_URL`, incluindo a de ocupações) não puderam ser obtidas de forma verificável;
+ * por isso:
+ * - rendimentos: os quatro códigos dos modelos oficiais; outros códigos R01.* são aceitos (a tabela
+ *   oficial pode ter mais tipos) e os demais grupos são recusados;
+ * - pagamentos: o plano de contas padrão (P10 dedutíveis, P11 não dedutíveis) e os pagamentos gerais
+ *   (P20). Contas criadas pelo contribuinte no próprio Carnê-Leão seguem a regra oficial
+ *   "P10 + . + código da conta" ou "P11 + . + código da conta" e também são aceitas; um P20 fora dos
+ *   quatro códigos oficiais é recusado;
+ * - ocupações: só a 117 (serviços notariais) aparece nos modelos; a tabela fica no link oficial.
+ */
+export const CARNE_LEAO_CODES_SOURCE = 'Modelos de escrituração para o Carnê-Leão (Receita Federal, arquivos de 20/10/2025)';
+
+export interface CarneLeaoCode {
+  code: string;
+  label: string;
+  group: string;
+}
+
+export const CARNE_LEAO_INCOME_CODES: CarneLeaoCode[] = [
+  { code: 'R01.001.001', label: 'Trabalho não assalariado (também os recibos do Receita Saúde); exige o código de ocupação', group: 'Rendimentos' },
+  { code: 'R01.001.002', label: 'Serviços notariais e de registro (ocupação 117)', group: 'Rendimentos' },
+  { code: 'R01.003.001', label: 'Aluguel recebido de pessoa física ou do exterior (com ou sem dedução)', group: 'Rendimentos' },
+  { code: 'R01.004.001', label: 'Outros rendimentos recebidos de pessoa física ou do exterior', group: 'Rendimentos' },
+];
+
+const PAYMENT_GROUPS: Record<string, string> = {
+  P10: 'Despesa dedutível do livro caixa',
+  P11: 'Despesa não dedutível do livro caixa',
+  P20: 'Pagamento geral',
+};
+
+/** Pagamentos dos modelos oficiais (plano de contas padrão e pagamentos gerais). */
+export const CARNE_LEAO_PAYMENT_CODES: CarneLeaoCode[] = CASHBOOK_MODELS.filter((m) => m.kind === 'payment')
+  .flatMap((m) => m.rows.map((r) => ({ code: r[1], label: r[3], group: PAYMENT_GROUPS[r[1].slice(0, 3)] ?? 'Pagamento' })))
+  .sort((a, b) => a.code.localeCompare(b.code));
+
+/** Ocupação exigida pelo modelo oficial de serviços notariais e de registro. */
+export const CARNE_LEAO_NOTARY_OCCUPATION = '117';
+
+/**
+ * Confere o código nas tabelas do Carnê-Leão (veja `CARNE_LEAO_CODES_SOURCE`). Devolve a mensagem
+ * de erro ou `null` quando o código é aceito. O formato é conferido antes, por `INCOME_CODE_RE` e
+ * `PAYMENT_CODE_RE`.
+ */
+export function carneLeaoCodeError(kind: CashbookKind, code: string): string | null {
+  if (kind === 'income') {
+    if (code.startsWith('R01.')) return null;
+    return `Código ${code} não existe na tabela de rendimentos do Carnê-Leão: os rendimentos usam códigos R01 (ex.: R01.001.001 trabalho não assalariado, R01.003.001 aluguel).`;
+  }
+  const group = code.slice(0, 3);
+  if (group === 'P10' || group === 'P11') return null;
+  if (group === 'P20') {
+    return CARNE_LEAO_PAYMENT_CODES.some((c) => c.code === code)
+      ? null
+      : `Código ${code} não existe na tabela de pagamentos gerais do Carnê-Leão (P20.01.00001 previdência oficial, P20.01.00002 pensão alimentícia, P20.01.00003 imposto pago no exterior, P20.01.00004 imposto pago).`;
+  }
+  return `Código ${code} não existe nas tabelas de pagamentos do Carnê-Leão: use P10 (despesa dedutível), P11 (despesa não dedutível) ou P20 (pagamentos gerais).`;
+}
+
 /** Detecta pelo cabeçalho se a planilha é de rendimentos ou de pagamentos. */
 export function detectCashbookKind(headers: string[]): CashbookKind | null {
   const h = new Set(headers.map(normalizeHeader));
@@ -329,6 +397,10 @@ export function parseCashbookRow(
   const codeRe = kind === 'income' ? INCOME_CODE_RE : PAYMENT_CODE_RE;
   if (!code) errors.push(`Código do ${kind === 'income' ? 'rendimento' : 'pagamento'} obrigatório.`);
   else if (!codeRe.test(code)) errors.push(`Código "${code}" fora do formato ${kind === 'income' ? 'R00.000.000' : 'P00.00.00000'}.`);
+  else {
+    const tableError = carneLeaoCodeError(kind, code);
+    if (tableError) errors.push(tableError);
+  }
 
   const { raw: rawValue, cents: value } = moneyCell(kind === 'income' ? 'valor_recebido' : 'valor_pago', 'valor');
   if (!rawValue) errors.push('Valor obrigatório.');

@@ -122,6 +122,21 @@ describe('holding', () => {
     expect(pdf.raw.rawPayload.subarray(0, 4).toString()).toBe('%PDF');
   });
 
+  it('OBS-3: a atividade rural entra pelo resultado tributável, sem a parcela isenta', async () => {
+    const o = await officeWithCustomer(VALID_CPFS[5]);
+    await seedDeclaration(env, o.officeId, o.customerId, 2026, [
+      { kind: 'asset', groupCode: '01', code: '11', description: 'Casa alugada', valueCents: R(800_000) },
+      { kind: 'income_pj', description: 'Salário', valueCents: R(30_000), extra: { nature: 'salary' } },
+      // receita − despesa = 100 mil; o resultado tributável escolhido foi 40 mil (60 mil nos isentos)
+      { kind: 'rural_income', description: 'Venda de gado', valueCents: R(150_000) },
+      { kind: 'rural_expense', description: 'Ração', valueCents: R(50_000) },
+      { kind: 'income_exempt', description: 'Parcela isenta da atividade rural', valueCents: R(60_000), extra: { nature: 'rural' } },
+    ]);
+    const res = await o.api.get(`/api/customers/${o.customerId}/holding?year=2026`);
+    // antes somava receita − despesa (130 mil); agora salário + resultado tributável (30 mil + 40 mil)
+    expect(res.body.otherTaxableIncomeCents).toBe(R(70_000));
+  });
+
   it('exige holding.view e isola escritórios', async () => {
     const o = await officeWithCustomer(VALID_CPFS[4]);
     const emp = await createEmployee(env, o.api, ['customer.list', 'irpfm.view']);

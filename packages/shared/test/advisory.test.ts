@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CARNE_LEAO_INCOME_CODES,
+  CARNE_LEAO_PAYMENT_CODES,
   CASHBOOK_MAX_ROWS,
+  carneLeaoCodeError,
   carneLeaoFiles,
   carneLeaoLine,
   cashbookByMonth,
@@ -81,6 +84,26 @@ describe('livro caixa — conversão', () => {
     if (p.ok) expect(p.entry.extra).toMatchObject({ fineCents: 1000, interestCents: null, competence: '01/2025' });
     const bad = parseCashbookRow('payment', row(PAYMENT_HEADERS, ['20/02/2025', 'P1.1', '5', 'x', '', '', '13/2025']), 2025);
     expect(bad.ok).toBe(false);
+  });
+
+  it('COB-9: confere os códigos nas tabelas dos modelos oficiais do Carnê-Leão', () => {
+    // tabelas dos modelos oficiais (20/10/2025): 4 rendimentos e 36 pagamentos (14 P10, 18 P11, 4 P20)
+    expect(CARNE_LEAO_INCOME_CODES.map((c) => c.code)).toEqual(['R01.001.001', 'R01.001.002', 'R01.003.001', 'R01.004.001']);
+    expect(CARNE_LEAO_PAYMENT_CODES).toHaveLength(36);
+    expect(CARNE_LEAO_PAYMENT_CODES.filter((c) => c.code.startsWith('P20')).map((c) => c.code)).toEqual(['P20.01.00001', 'P20.01.00002', 'P20.01.00003', 'P20.01.00004']);
+    expect(CARNE_LEAO_PAYMENT_CODES.find((c) => c.code === 'P10.01.00002')).toMatchObject({ label: 'Aluguel do escritório/consultório', group: 'Despesa dedutível do livro caixa' });
+
+    // P20 fora da tabela e grupos inexistentes são recusados com mensagem clara
+    const p20 = parseCashbookRow('payment', row(PAYMENT_HEADERS, ['20/02/2025', 'P20.01.00009', '500,00', 'x']), 2025);
+    expect(p20).toEqual({ ok: false, errors: [expect.stringMatching(/P20.01.00009 não existe na tabela de pagamentos gerais/)] });
+    expect(carneLeaoCodeError('payment', 'P30.01.00001')).toMatch(/use P10 .* P11 .* P20/);
+    expect(carneLeaoCodeError('income', 'R02.001.001')).toMatch(/R02.001.001 não existe na tabela de rendimentos/);
+    // contas próprias do plano de contas (regra oficial P10/P11 + código da conta) continuam aceitas
+    expect(carneLeaoCodeError('payment', 'P10.03.00001')).toBeNull();
+    expect(carneLeaoCodeError('payment', 'P11.03.00001')).toBeNull();
+    expect(carneLeaoCodeError('income', 'R01.003.001')).toBeNull();
+    const ok = parseCashbookRow('payment', row(PAYMENT_HEADERS, ['20/02/2025', 'P10.03.00001', '80,00', 'Conta própria']), 2025);
+    expect(ok.ok).toBe(true);
   });
 });
 
