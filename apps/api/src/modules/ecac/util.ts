@@ -64,16 +64,29 @@ export function fanoutOf(job: JobRow): Fanout | null {
  * Visão do pai de um job dividido: segue "executando" até o último filho terminar, com o progresso
  * deles. Numa rodada agendada, vale o horário marcado (o job é criado um dia antes).
  */
-export function fanoutJobView(job: JobRow | null | undefined) {
+export function summarizeOfficeChildren(children: JobRow[]): Fanout {
+  const failed = children.filter((k) => k.status === 'failed');
+  return {
+    total: children.length,
+    ok: children.filter((k) => k.status === 'done').length,
+    failed: failed.length,
+    errors: failed.slice(0, 50).map((k) => ({ customerId: String(k.payload.customerId), name: String(k.payload.customerName ?? k.payload.customerId), error: k.error ?? 'A sincronização foi interrompida.' })),
+  };
+}
+
+export async function fanoutJobView(db: Db, job: JobRow | null | undefined) {
   const base = jobView(job);
   const view = base && job!.runAt > job!.createdAt ? { ...base, createdAt: job!.runAt } : base;
-  const fan = job ? fanoutOf(job) : null;
-  if (!view || !fan || job!.status !== 'done') return view;
+  if (!view) return view;
+  const children = await db.select().from(jobs).where(eq(jobs.parentId, job!.id));
+  const stored = fanoutOf(job!);
+  const fan = children.length ? { ...summarizeOfficeChildren(children), finishedAt: stored?.finishedAt } : stored;
+  if (!fan || job!.status === 'failed') return view;
   const finished = fan.ok + fan.failed;
   const running = finished < fan.total;
   return {
     ...view,
-    status: running ? 'running' : 'done',
+    status: running || job!.status !== 'done' ? 'running' : 'done',
     progress: fan.total ? Math.floor((finished / fan.total) * 100) : 100,
     result: { ...(view.result ?? {}), total: fan.total, ok: fan.ok, failed: fan.failed, errors: fan.errors },
     finishedAt: running ? null : fan.finishedAt ? new Date(fan.finishedAt) : view.finishedAt,

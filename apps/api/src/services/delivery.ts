@@ -91,11 +91,13 @@ export function redactSecrets(text: string, secrets: readonly string[]): string 
 }
 
 /** O que fica gravado (segredos mascarados) e, havendo segredo, a versão real cifrada para o job de envio. */
-function protect(ctx: AppContext, content: { subject: string; body: string }, redact: string[] | undefined) {
+function protect(ctx: AppContext, content: { subject: string; body: string }, redact: string[] | undefined, values?: TemplateValues) {
   const secrets = (redact ?? []).filter((v) => v.length >= 4);
   const storedSubject = redactSecrets(content.subject, secrets);
   const storedBody = redactSecrets(content.body, secrets);
-  const sealed = storedSubject !== content.subject || storedBody !== content.body ? ctx.secrets.encrypt(JSON.stringify(content)) : undefined;
+  const sealed = storedSubject !== content.subject || storedBody !== content.body || values
+    ? ctx.secrets.encrypt(JSON.stringify({ ...content, ...(values ? { values } : {}) }))
+    : undefined;
   return { storedSubject, storedBody, sealed };
 }
 
@@ -118,14 +120,16 @@ export async function queueDelivery(ctx: AppContext, input: QueueDeliveryInput):
   if (!to) throw badRequest(input.channel === 'email' ? 'O cliente não tem e-mail cadastrado.' : 'O cliente não tem celular cadastrado.');
 
   let content = { subject: input.subject ?? '', body: input.body ?? '' };
+  let templateValues: TemplateValues | undefined;
   if (input.templateKey) {
     const tpl = await resolveTemplate(ctx, input.officeId, input.templateKey);
     const values = { ...(await baseTemplateValues(ctx, input.officeId, input.customerId, input.exerciseYear)), ...(input.values ?? {}) };
     content = renderContent(tpl, values, input.channel, input.rawHtml);
+    if (input.channel === 'whatsapp') templateValues = values;
   } else if (input.channel === 'whatsapp') {
     content.body = htmlToText(content.body);
   }
-  const { storedSubject, storedBody, sealed } = protect(ctx, content, input.redact);
+  const { storedSubject, storedBody, sealed } = protect(ctx, content, input.redact, templateValues);
 
   const [row] = await db
     .insert(deliveries)
@@ -223,7 +227,9 @@ export async function createDeliveryBatch(
           .values(
             rows.map((r) => {
               const sealed = sealedBy.get(r.idempotencyKey ?? '');
-              return { type: JOB_TYPE, payload: sealed ? { deliveryId: r.id, sealed } : { deliveryId: r.id }, officeId: input.officeId, idempotencyKey: r.id };
+              return ctx.jobs.enqueueValues(JOB_TYPE, sealed ? { deliveryId: r.id, sealed } : { deliveryId: r.id }, {
+                officeId: input.officeId, idempotencyKey: r.id, userId: input.userId,
+              });
             }),
           )
           .onConflictDoNothing({ target: [jobs.type, jobs.idempotencyKey] });
@@ -243,7 +249,7 @@ export async function createDeliveryBatch(
         }
         const responsible = item.customer.responsibleUserId ? responsibles.get(item.customer.responsibleUserId) : null;
         const values = { ...commonValues(office, item.customer, responsible, input.exerciseYear), ...(item.values ?? {}) };
-        return [{ item, to, ...protect(ctx, renderContent(tpl, values, item.channel), item.redact) }];
+        return [{ item, to, ...protect(ctx, renderContent(tpl, values, item.channel), item.redact, item.channel === 'whatsapp' ? values : undefined) }];
       });
       if (prepared.length) {
         const created = await insertBlock(prepared);

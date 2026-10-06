@@ -18,7 +18,7 @@ import {
 } from '@verifco/shared';
 import { declarationItems, declarations } from '../../db/schema';
 import { badRequest, conflict, notFound } from '../../lib/errors';
-import { audit, dateStr, guard, optionalText, parse, requireUser, uuidParam, yearSchema } from '../../lib/http';
+import { audit, can, dateStr, guard, optionalText, parse, requireUser, uuidParam, yearSchema } from '../../lib/http';
 import { getCustomerForUser } from '../../services/customers';
 import {
   changeSubstatus,

@@ -126,7 +126,7 @@ export async function syncRoutes(app: FastifyInstance) {
           )
         : ('missing' as const),
       // andamento somado dos clientes; a rodada diária agendada para depois aparece à parte
-      lastOfficeSync: fanoutJobView(await latestOfficeSync(db, officeId)),
+      lastOfficeSync: await fanoutJobView(db, await latestOfficeSync(db, officeId)),
       nextAutoSync: await nextScheduledOfficeSync(db, officeId),
       activity,
     };
@@ -136,12 +136,12 @@ export async function syncRoutes(app: FastifyInstance) {
   app.post('/robot/sync-office', { preHandler: guard('ecac.sync') }, async (req, reply) => {
     const user = requireUser(req);
     // não duplica uma sincronização na vez ou com clientes ainda em andamento
-    const current = fanoutJobView(await latestOfficeSync(db, user.officeId));
+    const current = await fanoutJobView(db, await latestOfficeSync(db, user.officeId));
     if (current && (current.status === 'queued' || current.status === 'running')) return { job: current, alreadyQueued: true };
     const job = await ctx.jobs.enqueue(ECAC_SYNC_OFFICE, {}, { officeId: user.officeId, userId: user.userId, maxAttempts: 1 });
     await audit(req, 'ecac_sync_office', 'office', user.officeId);
     reply.status(202);
-    return { job: fanoutJobView(job), alreadyQueued: false };
+    return { job: await fanoutJobView(db, job), alreadyQueued: false };
   });
 
   /** Pacotes da Central de downloads (sincronizador e extensão), para qualquer usuário logado. */

@@ -54,24 +54,27 @@ export async function getCustomerOr404(db: DbOrTx, officeId: string, customerId:
  * limite de declarações dos contratos vigentes (services/plan.ts).
  */
 export async function getOrCreateDeclaration(db: DbOrTx, officeId: string, customerId: string, exerciseYear: number): Promise<DeclarationRow> {
-  await getCustomerOr404(db, officeId, customerId);
-  const existing = await db.query.declarations.findFirst({
-    where: and(eq(declarations.customerId, customerId), eq(declarations.exerciseYear, exerciseYear)),
+  return db.transaction(async (tx) => {
+    await getCustomerOr404(tx, officeId, customerId);
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`declaration-quota:${officeId}:${exerciseYear}`}, 0))`);
+    const existing = await tx.query.declarations.findFirst({
+      where: and(eq(declarations.customerId, customerId), eq(declarations.exerciseYear, exerciseYear)),
+    });
+    if (existing) return existing;
+    await assertDeclarationQuota(tx, officeId, exerciseYear);
+    const [row] = await tx
+      .insert(declarations)
+      .values({ officeId, customerId, exerciseYear })
+      .onConflictDoNothing()
+      .returning();
+    if (row) return row;
+    // corrida: outra requisição criou ao mesmo tempo
+    const again = await tx.query.declarations.findFirst({
+      where: and(eq(declarations.customerId, customerId), eq(declarations.exerciseYear, exerciseYear)),
+    });
+    if (!again) throw new Error('Falha ao criar a declaração.');
+    return again;
   });
-  if (existing) return existing;
-  await assertDeclarationQuota(db, officeId, exerciseYear);
-  const [row] = await db
-    .insert(declarations)
-    .values({ officeId, customerId, exerciseYear })
-    .onConflictDoNothing()
-    .returning();
-  if (row) return row;
-  // corrida: outra requisição criou ao mesmo tempo
-  const again = await db.query.declarations.findFirst({
-    where: and(eq(declarations.customerId, customerId), eq(declarations.exerciseYear, exerciseYear)),
-  });
-  if (!again) throw new Error('Falha ao criar a declaração.');
-  return again;
 }
 
 /**
@@ -80,14 +83,19 @@ export async function getOrCreateDeclaration(db: DbOrTx, officeId: string, custo
  */
 export async function getOrCreateDeclarations(db: DbOrTx, officeId: string, customerIds: string[], exerciseYear: number): Promise<DeclarationRow[]> {
   if (!customerIds.length) return [];
-  await db
-    .insert(declarations)
-    .values(customerIds.map((customerId) => ({ officeId, customerId, exerciseYear })))
-    .onConflictDoNothing();
-  return db
-    .select()
-    .from(declarations)
-    .where(and(eq(declarations.officeId, officeId), eq(declarations.exerciseYear, exerciseYear), inArray(declarations.customerId, customerIds)));
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`declaration-quota:${officeId}:${exerciseYear}`}, 0))`);
+    const existing = await tx.select({ customerId: declarations.customerId }).from(declarations)
+      .where(and(eq(declarations.officeId, officeId), eq(declarations.exerciseYear, exerciseYear), inArray(declarations.customerId, customerIds)));
+    const present = new Set(existing.map((d) => d.customerId));
+    const missing = [...new Set(customerIds)].filter((id) => !present.has(id));
+    if (missing.length) {
+      await assertDeclarationQuota(tx, officeId, exerciseYear, missing.length);
+      await tx.insert(declarations).values(missing.map((customerId) => ({ officeId, customerId, exerciseYear }))).onConflictDoNothing();
+    }
+    return tx.select().from(declarations)
+      .where(and(eq(declarations.officeId, officeId), eq(declarations.exerciseYear, exerciseYear), inArray(declarations.customerId, customerIds)));
+  });
 }
 
 export async function getDeclarationOr404(db: DbOrTx, officeId: string, declarationId: string) {

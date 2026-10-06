@@ -21,6 +21,43 @@ type Journal = { entries: { tag: string }[] };
 const readJournal = (dir: string): Journal => JSON.parse(readFileSync(join(dir, 'meta/_journal.json'), 'utf8'));
 
 describe('migrações (SEG-4)', () => {
+  it('apaga senhas INSS antigas, avisa uma vez e preserva as credenciais eCAC (COB-7)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'verifco-inss-'));
+    const client = new PGlite();
+    try {
+      cpSync(MIGRATIONS, dir, { recursive: true });
+      const journal = readJournal(MIGRATIONS);
+      const journalPath = join(dir, 'meta/_journal.json');
+      const index = journal.entries.findIndex((e) => e.tag.endsWith('_remove_senha_inss'));
+      expect(index).toBeGreaterThan(0);
+      writeFileSync(journalPath, JSON.stringify({ ...journal, entries: journal.entries.slice(0, index) }));
+      const db = drizzle(client, { schema });
+      await migrate(db, { migrationsFolder: dir });
+      const [office] = await db.insert(schema.offices).values({ name: 'Escritório com INSS' }).returning();
+      await db.insert(schema.customers).values([
+        { officeId: office.id, name: 'Antigo', cpfCnpj: '52998224725', inssPasswordEnc: 'inss-cifrado', ecacPasswordEnc: 'ecac-cifrado' },
+        { officeId: office.id, name: 'Sem senha', cpfCnpj: '11144477735' },
+      ]);
+      const [role] = await db.insert(schema.roles).values({ officeId: office.id, name: 'Importações', permissions: ['worksheet.inss', 'customer.list'] }).returning();
+      writeFileSync(journalPath, JSON.stringify(journal));
+      await migrate(db, { migrationsFolder: dir });
+      await migrate(db, { migrationsFolder: dir });
+      const rows = await db.select().from(schema.customers).where(eq(schema.customers.officeId, office.id));
+      expect(rows.every((c) => c.inssPasswordEnc === null)).toBe(true);
+      expect(rows.find((c) => c.name === 'Antigo')!.ecacPasswordEnc).toBe('ecac-cifrado');
+      expect((await db.query.roles.findFirst({ where: eq(schema.roles.id, role.id) }))!.permissions).toEqual(['customer.list']);
+      const notices = await db.select().from(schema.notifications).where(eq(schema.notifications.officeId, office.id));
+      expect(notices).toHaveLength(1);
+      expect(notices[0].body).toContain('1 senha(s)');
+      const audits = await db.select().from(schema.auditLogs).where(eq(schema.auditLogs.officeId, office.id));
+      expect(audits).toHaveLength(1);
+      expect(audits[0]).toMatchObject({ action: 'inss_password.purge', data: { customers: 1 } });
+    } finally {
+      await client.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('aplicam num PGlite vazio e chegam ao mesmo banco que o schema.ts', async () => {
     const migrated = await openDatabase('pglite:memory', { sync: 'migrate' });
     const pushed = await openDatabase('pglite:memory', { sync: 'push' });

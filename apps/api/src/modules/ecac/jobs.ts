@@ -3,7 +3,7 @@ import { brazilToday } from '@verifco/shared';
 import type { AppContext } from '../../context';
 import type { Db } from '../../db/client';
 import { auditLogs, customers, darfs, ecacRecords, integrations, jobs, procurators } from '../../db/schema';
-import type { JobRow } from '../../jobs/queue';
+import { WAIT_FOR_CHILDREN, type JobHelpers, type JobRow } from '../../jobs/queue';
 import type { CustomerRow } from '../../services/customers';
 import { notify } from '../../services/notify';
 import { uploadedFromBase64 } from '../../services/uploads';
@@ -19,7 +19,7 @@ import {
   revenueCode,
   type SerproClient,
 } from './serpro';
-import { fanoutOf, type Fanout } from './util';
+import { fanoutOf, summarizeOfficeChildren } from './util';
 
 export const ECAC_SYNC = 'ecac.sync';
 export const ECAC_SYNC_OFFICE = 'ecac.sync_office';
@@ -37,8 +37,6 @@ const PAYMENT_PAGE = 100;
 const PAYMENT_MAX_PAGES = 5;
 const SITFIS_ATTEMPTS = 3;
 const SITFIS_WAIT = { min: 1_000, max: 10_000, fallback: 5_000 };
-/** Erros guardados no pai de uma sincronização geral (o total de falhas é sempre contado). */
-const MAX_FANOUT_ERRORS = 50;
 
 /** Espera entre as tentativas do relatório de situação fiscal (os testes trocam por uma espera nula). */
 export const robotTiming = { sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)) };
@@ -286,67 +284,56 @@ async function syncPayments(ctx: AppContext, client: SerproClient, customer: Cus
 // Sincronização geral: um job por cliente, com o pai somando o andamento
 // ---------------------------------------------------------------------------
 
-/** Soma no pai o resultado de um cliente; o último a terminar fecha a sincronização. */
-async function childFinished(ctx: AppContext, parentId: string, failure: Fanout['errors'][number] | null) {
-  const fan = sql`coalesce(${jobs.payload}->'fanout', '{}'::jsonb)`;
-  const errors = sql`coalesce(${jobs.payload}->'fanout'->'errors', '[]'::jsonb)`;
-  const [row] = await ctx.db
-    .update(jobs)
-    .set({
-      payload: sql`jsonb_set(${jobs.payload}, '{fanout}', ${fan} || jsonb_build_object(
-        'ok', coalesce((${jobs.payload}->'fanout'->>'ok')::int, 0) + ${failure ? 0 : 1}::int,
-        'failed', coalesce((${jobs.payload}->'fanout'->>'failed')::int, 0) + ${failure ? 1 : 0}::int,
-        'errors', case when jsonb_array_length(${errors}) >= ${MAX_FANOUT_ERRORS}::int then ${errors}
-                       else ${errors} || ${JSON.stringify(failure ? [failure] : [])}::jsonb end))`,
-    })
-    .where(and(eq(jobs.id, parentId), eq(jobs.type, ECAC_SYNC_OFFICE)))
-    .returning();
-  const counts = row ? fanoutOf(row) : null;
-  if (counts && counts.ok + counts.failed >= counts.total) await finishOfficeSync(ctx, parentId);
-}
-
 /** Fecha a sincronização geral uma vez só (último cliente ou escritório sem clientes) e avisa no sino. */
 async function finishOfficeSync(ctx: AppContext, parentId: string) {
-  const [row] = await ctx.db
-    .update(jobs)
-    .set({ payload: sql`jsonb_set(${jobs.payload}, '{fanout,finishedAt}', to_jsonb(now()))` })
-    .where(and(eq(jobs.id, parentId), sql`${jobs.payload}->'fanout'->>'finishedAt' is null`))
-    .returning();
-  const fan = row ? fanoutOf(row) : null;
-  if (!row?.officeId || !fan) return;
-  const daily = row.payload.trigger === DAILY_TRIGGER;
-  // a rodada automática só avisa quando algum cliente falhou
-  if (daily && !fan.failed) return;
-  await notify(ctx.db, {
-    officeId: row.officeId,
-    userId: row.createdByUserId,
-    title: daily ? 'Sincronização automática do eCAC com erros' : 'Sincronização eCAC concluída',
-    body: `${fan.ok} de ${fan.total} cliente(s) sincronizado(s)${fan.failed ? `, ${fan.failed} com erro` : ''}.`,
-    link: '/admin/robo',
+  await ctx.db.transaction(async (tx) => {
+    const [row] = await tx
+      .update(jobs)
+      .set({ payload: sql`jsonb_set(${jobs.payload}, '{fanout,finishedAt}', to_jsonb(now()))` })
+      .where(and(eq(jobs.id, parentId), sql`${jobs.payload}->'fanout'->>'finishedAt' is null`))
+      .returning();
+    const fan = row ? fanoutOf(row) : null;
+    if (!row?.officeId || !fan) return;
+    const daily = row.payload.trigger === DAILY_TRIGGER;
+    // a rodada automática só avisa quando algum cliente falhou
+    if (daily && !fan.failed) return;
+    await notify(tx, {
+      officeId: row.officeId,
+      userId: row.createdByUserId,
+      title: daily ? 'Sincronização automática do eCAC com erros' : 'Sincronização eCAC concluída',
+      body: `${fan.ok} de ${fan.total} cliente(s) sincronizado(s)${fan.failed ? `, ${fan.failed} com erro` : ''}.`,
+      link: '/admin/robo',
+    });
   });
 }
 
 /**
  * Divide a sincronização do escritório em um `ecac.sync` por cliente ativo com procurador. O pai
- * só confere o SERPRO (falha cedo, com aviso) e guarda o total; cada filho soma o seu resultado.
+ * confere o SERPRO e espera os estados definitivos dos filhos para somar o resultado.
  */
-async function fanOutOfficeSync(ctx: AppContext, job: JobRow) {
+async function fanOutOfficeSync(ctx: AppContext, job: JobRow, helpers: JobHelpers) {
   const { db } = ctx;
   const officeId = job.officeId!;
+  const children = await helpers.children();
+  if (children.length) {
+    if (children.some((k) => k.status === 'queued' || k.status === 'running')) return WAIT_FOR_CHILDREN;
+    const fanout = summarizeOfficeChildren(children);
+    // Soma os estados definitivos, incluindo filhos abandonados, sem contar uma tentativa duas vezes.
+    const current = await db.query.jobs.findFirst({ where: eq(jobs.id, job.id) });
+    await db.update(jobs).set({ payload: { ...job.payload, fanout: { ...fanout, finishedAt: fanoutOf(current ?? job)?.finishedAt } } }).where(eq(jobs.id, job.id));
+    await finishOfficeSync(ctx, job.id);
+    return { ...fanout };
+  }
   await requireSerpro(ctx, officeId);
-  const list = await db
-    .select({ id: customers.id })
-    .from(customers)
+  const list = await db.select({ id: customers.id, name: customers.name }).from(customers)
     .where(and(eq(customers.officeId, officeId), isNull(customers.deletedAt), isNotNull(customers.procuratorId), eq(customers.status, 'active')))
     .orderBy(asc(customers.name));
-  const fanout: Fanout = { total: list.length, ok: 0, failed: 0, errors: [] };
-  // o total vai para o pai antes de os filhos existirem (eles somam nele ao terminar)
-  await db.update(jobs).set({ payload: { ...job.payload, fanout } }).where(eq(jobs.id, job.id));
-  for (const c of list) {
-    await ctx.jobs.enqueue(ECAC_SYNC, { customerId: c.id, parentJobId: job.id }, { officeId, userId: job.createdByUserId, idempotencyKey: `${job.id}:${c.id}`, maxAttempts: 2 });
-  }
-  if (!list.length) await finishOfficeSync(ctx, job.id);
-  return { total: list.length };
+  // A fila grava todos os filhos numa transação e retoma o pai depois do último estado definitivo.
+  await helpers.spawn(list.map((c) => ({ type: ECAC_SYNC, payload: { customerId: c.id, customerName: c.name, parentJobId: job.id }, idempotencyKey: `${job.id}:${c.id}`, maxAttempts: 2 })));
+  await db.update(jobs).set({ payload: { ...job.payload, fanout: { total: list.length, ok: 0, failed: 0, errors: [] } } }).where(eq(jobs.id, job.id));
+  if (list.length) return WAIT_FOR_CHILDREN;
+  await finishOfficeSync(ctx, job.id);
+  return { total: 0, ok: 0, failed: 0, errors: [] };
 }
 
 // ---------------------------------------------------------------------------
@@ -431,7 +418,6 @@ export async function registerJobs(ctx: AppContext) {
     const officeId = job.officeId;
     const customerId = String(job.payload.customerId ?? '');
     const parentJobId = typeof job.payload.parentJobId === 'string' ? job.payload.parentJobId : null;
-    let name = customerId;
     let result: Awaited<ReturnType<typeof syncCustomerViaSerpro>> | undefined;
     let failure: unknown = null;
     try {
@@ -440,15 +426,10 @@ export async function registerJobs(ctx: AppContext) {
         where: and(eq(customers.id, customerId), eq(customers.officeId, officeId), isNull(customers.deletedAt)),
       });
       if (!customer) throw new Error('Cliente não encontrado.');
-      name = customer.name;
       const client = await requireSerpro(ctx, officeId);
       result = await syncCustomerViaSerpro(ctx, client, customer, { thorough: !parentJobId });
     } catch (err) {
       failure = err;
-    }
-    // a fila repete enquanto attempts < maxAttempts: o pai só recebe o resultado definitivo
-    if (parentJobId && (!failure || job.attempts >= job.maxAttempts)) {
-      await childFinished(ctx, parentJobId, failure ? { customerId, name, error: errMsg(failure) } : null).catch(() => undefined);
     }
     if (failure) throw failure;
     return result;
@@ -460,30 +441,22 @@ export async function registerJobs(ctx: AppContext) {
    * sincronização inteira falha (ex.: SERPRO não configurado); a rodada diária avisa o escritório
    * só quando há erro.
    */
-  ctx.jobs.register(ECAC_SYNC_OFFICE, async (job) => {
+  ctx.jobs.register(ECAC_SYNC_OFFICE, async (job, helpers) => {
     const officeId = job.officeId;
     if (!officeId) throw new Error('Job sem escritório.');
-    try {
-      if (job.payload.trigger === DAILY_TRIGGER) {
-        // SERPRO desativado depois do agendamento: a cadeia para aqui
-        if (!(await serproEnabled(ctx, officeId))) return { skipped: true, reason: 'Integração SERPRO desativada.' };
-        // agenda a próxima antes de começar, para a cadeia não parar se esta falhar
-        await scheduleEcacDailySync(ctx, officeId, { afterDay: dailyRunDay(job) });
-      }
-      return await fanOutOfficeSync(ctx, job);
-    } catch (err) {
-      // a fila repete enquanto attempts < maxAttempts: avisa só quando não haverá nova tentativa
-      if (job.attempts >= job.maxAttempts) {
-        await notify(db, {
-          officeId,
-          userId: job.createdByUserId,
-          title: 'Sincronização do eCAC falhou',
-          body: errMsg(err),
-          link: '/admin/robo',
-        }).catch(() => undefined);
-      }
-      throw err;
+    if (job.payload.trigger === DAILY_TRIGGER) {
+      // SERPRO desativado depois do agendamento: a cadeia para aqui
+      if (!(await serproEnabled(ctx, officeId))) return { skipped: true, reason: 'Integração SERPRO desativada.' };
+      // agenda a próxima antes de começar, para a cadeia não parar se esta falhar
+      await scheduleEcacDailySync(ctx, officeId, { afterDay: dailyRunDay(job) });
     }
+    return fanOutOfficeSync(ctx, job, helpers);
+  }, {
+    // Também cobre a queda do processo com as tentativas esgotadas (sem executar o handler).
+    onFailed: async (job, error) => {
+      if (!job.officeId) return;
+      await notify(db, { officeId: job.officeId, userId: job.createdByUserId, title: 'Sincronização do eCAC falhou', body: error, link: '/admin/robo' });
+    },
   });
 
   await ensureDailySchedules(ctx).catch(() => undefined);

@@ -29,6 +29,20 @@
       "when": 1791275844819,
       "tag": "0003_checklist_validade_links",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1791291727925,
+      "tag": "0004_onda2",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1791291897404,
+      "tag": "0005_remove_senha_inss",
+      "breakpoints": true
     }
   ]
 }

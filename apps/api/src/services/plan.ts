@@ -17,7 +17,7 @@ import { and, count, eq, isNull } from 'drizzle-orm';
 import type { FastifyRequest } from 'fastify';
 import { todayIso } from '@verifco/shared';
 import type { AppContext } from '../context';
-import type { Db } from '../db/client';
+import type { DbOrTx } from '../db/client';
 import { contracts, customers, declarations } from '../db/schema';
 import { HttpError, conflict } from '../lib/errors';
 
@@ -36,14 +36,14 @@ export interface PlanStatus {
   expired: boolean;
 }
 
-export async function planStatus(db: Db, officeId: string, today = todayIso()): Promise<PlanStatus> {
+export async function planStatus(db: DbOrTx, officeId: string, today = todayIso()): Promise<PlanStatus> {
   const rows = await db.select().from(contracts).where(eq(contracts.officeId, officeId));
   const active = rows.filter((c) => isContractActive(c, today));
   return { hasContracts: rows.length > 0, active, expired: rows.length > 0 && active.length === 0 };
 }
 
 /** Contratos vigentes do escritório. */
-export async function activeContracts(db: Db, officeId: string, today = todayIso()): Promise<ContractRow[]> {
+export async function activeContracts(db: DbOrTx, officeId: string, today = todayIso()): Promise<ContractRow[]> {
   return (await planStatus(db, officeId, today)).active;
 }
 
@@ -58,7 +58,7 @@ export function declarationLimit(active: Pick<ContractRow, 'year' | 'declaration
  * Confere, antes de criar uma declaração, se o exercício ainda cabe no limite dos contratos
  * vigentes. Contam as declarações do exercício de clientes não excluídos.
  */
-export async function assertDeclarationQuota(db: Db, officeId: string, exerciseYear: number) {
+export async function assertDeclarationQuota(db: DbOrTx, officeId: string, exerciseYear: number, incoming = 1) {
   const limit = declarationLimit(await activeContracts(db, officeId), exerciseYear);
   if (limit === null) return;
   const [{ n }] = await db
@@ -66,7 +66,7 @@ export async function assertDeclarationQuota(db: Db, officeId: string, exerciseY
     .from(declarations)
     .innerJoin(customers, eq(customers.id, declarations.customerId))
     .where(and(eq(declarations.officeId, officeId), eq(declarations.exerciseYear, exerciseYear), isNull(customers.deletedAt)));
-  if (n >= limit) {
+  if (n + incoming > limit) {
     throw conflict(`Limite de declarações do contrato atingido: ${limit} no exercício ${exerciseYear}. Para ampliar o limite, fale com o suporte do Verifco.`);
   }
 }

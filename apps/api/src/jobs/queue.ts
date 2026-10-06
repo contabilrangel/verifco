@@ -165,6 +165,11 @@ export class JobQueue {
     };
   }
 
+  /** Valores para inserção em lote numa transação, com as mesmas políticas de `enqueue`. */
+  enqueueValues(type: string, payload: Record<string, unknown>, opts: EnqueueOptions = {}) {
+    return this.rowValues(type, payload, opts);
+  }
+
   /**
    * Enfileira. Com `idempotencyKey`, repetir devolve o job existente; se ele falhou de vez, é
    * reaberto (nova rodada de tentativas, mesmo payload).

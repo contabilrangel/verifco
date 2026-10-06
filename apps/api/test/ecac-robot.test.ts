@@ -268,6 +268,21 @@ describe('sincronização pelo SERPRO (COB-1)', () => {
 });
 
 describe('sincronização geral em um job por cliente (DAD-2)', () => {
+  it('retoma o pai quando um filho foi abandonado sem tentativas e não perde o aviso (A + E)', async () => {
+    const office = await officeWithSerpro();
+    const customerId = await office.addCustomer('Cliente interrompido', VALID_CPFS[0]);
+    const parent = await env.ctx.jobs.enqueue('ecac.sync_office', {}, { officeId: office.officeId, userId: office.userId, maxAttempts: 1 });
+    await env.ctx.db.update(jobs).set({ status: 'running', attempts: 1, lockedAt: null, payload: { fanout: { total: 1, ok: 0, failed: 0, errors: [] } } }).where(eq(jobs.id, parent.id));
+    await env.ctx.db.insert(jobs).values({ type: 'ecac.sync', officeId: office.officeId, parentId: parent.id, status: 'running', attempts: 2, maxAttempts: 2, lockedAt: new Date(Date.now() - 600_000), payload: { customerId, customerName: 'Cliente interrompido', parentJobId: parent.id } });
+    await env.ctx.jobs.drain();
+    const overview = (await office.api.get('/api/robot/overview')).body;
+    expect(overview.lastOfficeSync).toMatchObject({ id: parent.id, status: 'done', result: { total: 1, ok: 0, failed: 1, errors: [expect.objectContaining({ customerId, error: expect.stringContaining('interrompida') })] } });
+    await env.ctx.jobs.drain();
+    const notes = (await office.api.get('/api/notifications')).body.filter((n: any) => n.title === 'Sincronização eCAC concluída');
+    expect(notes).toHaveLength(1);
+    expect(notes[0].body).toBe('0 de 1 cliente(s) sincronizado(s), 1 com erro.');
+  });
+
   it('o pai soma o andamento dos clientes e avisa quem pediu quando o último termina', async () => {
     const office = await officeWithSerpro();
     const requester = await createEmployee(env, office.api, ['ecac.sync']);
