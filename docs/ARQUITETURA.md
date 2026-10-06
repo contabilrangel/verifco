@@ -107,11 +107,23 @@ export const module: VerifcoModule = {
 };
 ```
 
-Ordem das abas do perfil do cliente: Painel (10), IRPF (20), IA (30), eCAC (40),
-Ações eCAC (45), Identificação (60), Endereço (70), IRPFM (80), Copiloto (85),
-Livro caixa (90), Mensagens (95).
+Além de `routes`, `publicRoutes` e `profileTabs`, um módulo pode registrar `adminTabs`
+(abas de `/admin/<path>`), `reportTabs` (abas de `/relatorios/<path>`) e `irpfSteps`
+(etapas da aba IRPF do cliente, `/clientes/:id/irpf/<path>`). As páginas com abas e a aba
+IRPF são montadas em `src/app/routes.tsx` e `src/app/TabbedPage.tsx`.
 
 O menu lateral fica em `src/app/nav.ts` e já tem todos os destinos.
+
+### Mapa de rotas, abas e etapas
+
+| Onde | path (ordem) → módulo |
+| --- | --- |
+| Rotas | `''` dashboard e `kanban` → declarations · `radar`, `backup` → advisory · `clientes` → customers · `importacoes/:tipo` → imports (exceto `importacoes/orcamentos` → finance) · `financeiro/metodos`, `financeiro/tabelas` → finance · `comunicacao/*`, `ajuda` → communication · `elaboracao`, `pre-preenchidas`, `downloads` → ecac · `conta`, `conta/preferencias` → imports (conta do usuário) |
+| Rotas públicas | `/portal/*`, `/checklist/:token` → checklist · `/orcamento/:token` → finance |
+| Perfil do cliente | `''` Painel (10) → declarations · `irpf` (20) → núcleo · `ia` (30), `irpfm` (80), `copiloto` (85), `livro-caixa` (90) → advisory · `ecac` (40), `acoes-ecac` (45) → ecac · `identificacao` (60), `endereco` (70) → customers · `mensagens` (95) → checklist |
+| Etapas IRPF | `orcamento` (10) → finance · `declaracao` (20), `darf` (40), `pendencias` (60), `documentos` (65) → declarations · `documentacao` (30) → checklist · `relatorios` (50) → communication · `holding` (70) → advisory |
+| Administração | `empresa` (10), `preferencias` (20), `colaboradores` (30), `funcoes` (40), `grupos` (50), `procuradores` (60), `contratos` (70) → imports/admin · `integracoes` (80) → integrations · `robo` (85) → ecac · `copiloto` (90) → advisory |
+| Relatórios | `faturamento` (10) → finance · `resultados` (20), `documentos-faltantes` (30), `restituicao` (40) → communication |
 
 ### Design system (`src/ds/`)
 
