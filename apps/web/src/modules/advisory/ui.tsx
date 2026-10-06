@@ -39,10 +39,10 @@ export function SimulationNotice({ children }: { children?: ReactNode }) {
 
 export function Kpi({ label, value, hint, strong }: { label: ReactNode; value: ReactNode; hint?: ReactNode; strong?: boolean }) {
   return (
-    <div className={cx('vf-kpi', strong && 'vf-kpi--strong')}>
-      <span className="vf-kpi__label">{label}</span>
-      <span className="vf-kpi__value">{value}</span>
-      {hint && <span className="vf-kpi__hint">{hint}</span>}
+    <div className={cx('vf-adv-kpi', strong && 'vf-adv-kpi--strong')}>
+      <span className="vf-adv-kpi__label">{label}</span>
+      <span className="vf-adv-kpi__value">{value}</span>
+      {hint && <span className="vf-adv-kpi__hint">{hint}</span>}
     </div>
   );
 }
@@ -482,7 +482,7 @@ export function ChatPanel({
       {attachments.length > 0 && (
         <div className="vf-inline" style={{ '--gap': '6px' } as React.CSSProperties}>
           {attachments.map((a) => (
-            <span key={a.id} className="vf-chip">
+            <span key={a.id} className="vf-adv-chip">
               {a.kind === 'doc' ? <FolderOpen /> : <Paperclip />}
               <span title={a.name}>{a.name}</span>
               <button

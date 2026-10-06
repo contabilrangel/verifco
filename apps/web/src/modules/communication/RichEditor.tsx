@@ -1,6 +1,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState, type ReactNode } from 'react';
-import { Bold, CodeXml, Heading2, ImagePlus, Italic, Link2, List, ListOrdered, Palette, Redo2, RemoveFormatting, Underline, Undo2 } from 'lucide-react';
-import { Button, Input, Modal } from '../../ds';
+import { Bold, CodeXml, Heading2, Highlighter, ImagePlus, Italic, Link2, List, ListOrdered, Palette, Redo2, RemoveFormatting, Underline, Undo2, Video } from 'lucide-react';
+import { Alert, Button, DropFile, Input, Modal, Tabs } from '../../ds';
+import { escapeHtml, imageFileToDataUrl, imageHtml, isLinkUrl, isPublicUrl, videoHtml } from './editorMedia';
 
 /**
  * Editor de HTML para os templates: `contentEditable` + `document.execCommand`
@@ -27,7 +28,8 @@ export const RichEditor = forwardRef<RichEditorHandle, { value: string; onChange
   const [mode, setMode] = useState<Mode>('visual');
   const [active, setActive] = useState<Record<string, boolean>>({});
   const [color, setColor] = useState('#3468e6');
-  const [dialog, setDialog] = useState<null | 'link' | 'image'>(null);
+  const [background, setBackground] = useState('#fff3b0');
+  const [dialog, setDialog] = useState<null | 'link' | 'image' | 'video'>(null);
 
   // mantém o conteúdo editável em sincronia quando o valor muda por fora (carregar, restaurar, modo HTML)
   useEffect(() => {
@@ -149,7 +151,25 @@ export const RichEditor = forwardRef<RichEditorHandle, { value: string; onChange
             }}
           />
         </span>
-        {btn('Inserir imagem por URL', <ImagePlus />, () => setDialog('image'))}
+        <span className="vf-editor__btn vf-editor__color" title="Cor de fundo" aria-disabled={disabled || mode === 'html'}>
+          <Highlighter />
+          <span className="vf-editor__swatch" style={{ background }} />
+          <input
+            type="color"
+            aria-label="Cor de fundo"
+            value={background}
+            disabled={disabled || mode === 'html'}
+            onChange={(e) => {
+              setBackground(e.target.value);
+              // hiliteColor pinta só o trecho selecionado; backColor é o nome antigo do mesmo comando
+              if (!document.queryCommandSupported?.('hiliteColor')) exec('backColor', e.target.value);
+              else exec('hiliteColor', e.target.value);
+            }}
+          />
+        </span>
+        <span className="vf-editor__sep" />
+        {btn('Inserir imagem', <ImagePlus />, () => setDialog('image'))}
+        {btn('Inserir vídeo', <Video />, () => setDialog('video'))}
         {btn('Limpar formatação', <RemoveFormatting />, () => exec('removeFormat'))}
         <span className="vf-grow" />
         <button
@@ -183,25 +203,32 @@ export const RichEditor = forwardRef<RichEditorHandle, { value: string; onChange
         <textarea ref={html} className="vf-editor__html" aria-label={`${label} (HTML)`} spellCheck={false} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)} />
       )}
       <UrlDialog
-        kind={dialog}
+        kind={dialog === 'link' || dialog === 'video' ? dialog : null}
         onClose={() => setDialog(null)}
         onConfirm={(url, text) => {
           setDialog(null);
-          const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
-          if (dialog === 'image') {
-            exec('insertHTML', `<img src="${esc(url)}" alt="${esc(text)}" style="max-width: 100%;" />`);
+          if (dialog === 'video') {
+            exec('insertHTML', videoHtml(url, text));
             return;
           }
           const hasSelection = saved.current && !saved.current.collapsed;
           if (hasSelection) exec('createLink', url);
-          else exec('insertHTML', `<a href="${esc(url)}">${esc(text || url)}</a>`);
+          else exec('insertHTML', `<a href="${escapeHtml(url)}">${escapeHtml(text || url)}</a>`);
+        }}
+      />
+      <ImageDialog
+        open={dialog === 'image'}
+        onClose={() => setDialog(null)}
+        onConfirm={(src, alt) => {
+          setDialog(null);
+          exec('insertHTML', imageHtml(src, alt));
         }}
       />
     </div>
   );
 });
 
-function UrlDialog({ kind, onClose, onConfirm }: { kind: null | 'link' | 'image'; onClose: () => void; onConfirm: (url: string, text: string) => void }) {
+function UrlDialog({ kind, onClose, onConfirm }: { kind: null | 'link' | 'video'; onClose: () => void; onConfirm: (url: string, text: string) => void }) {
   const [url, setUrl] = useState('https://');
   const [text, setText] = useState('');
   useEffect(() => {
@@ -210,11 +237,11 @@ function UrlDialog({ kind, onClose, onConfirm }: { kind: null | 'link' | 'image'
       setText('');
     }
   }, [kind]);
-  const valid = /^(https?:\/\/[^\s]+|mailto:[^\s]+|\{\{[A-Z0-9_]+\}\})$/.test(url.trim());
+  const valid = kind === 'video' ? isPublicUrl(url) : isLinkUrl(url);
   return (
     <Modal
       open={kind !== null}
-      title={kind === 'image' ? 'Inserir imagem' : 'Inserir link'}
+      title={kind === 'video' ? 'Inserir vídeo' : 'Inserir link'}
       onClose={onClose}
       width={480}
       footer={
@@ -229,20 +256,115 @@ function UrlDialog({ kind, onClose, onConfirm }: { kind: null | 'link' | 'image'
       }
     >
       <div className="vf-stack">
+        {kind === 'video' && (
+          <Alert>Programas de e-mail não tocam vídeo dentro da mensagem. O vídeo entra como link: vídeos do YouTube aparecem com a miniatura, os demais como um botão “Assistir ao vídeo”.</Alert>
+        )}
         <Input
-          label={kind === 'image' ? 'Endereço da imagem' : 'Endereço do link'}
+          label={kind === 'video' ? 'Endereço do vídeo' : 'Endereço do link'}
           value={url}
           autoFocus
           onChange={(e) => setUrl(e.target.value)}
-          help={kind === 'image' ? 'Use uma imagem hospedada (https://...). Ela aparece no e-mail como foi publicada.' : 'Aceita https://, mailto: ou uma variável como {{LINK}}.'}
+          help={kind === 'video' ? 'YouTube, Vimeo, Google Drive ou outro endereço público (https://...).' : 'Aceita https://, mailto: ou uma variável como {{LINK}}.'}
           error={url.length > 8 && !valid ? 'Endereço inválido.' : undefined}
         />
         <Input
-          label={kind === 'image' ? 'Descrição da imagem' : 'Texto do link'}
+          label={kind === 'video' ? 'Título do vídeo' : 'Texto do link'}
           value={text}
           onChange={(e) => setText(e.target.value)}
-          help={kind === 'image' ? 'Exibida quando o leitor bloqueia imagens.' : 'Se houver texto selecionado no editor, ele vira o link.'}
+          help={kind === 'video' ? 'Aparece no link. Sem título, fica “Assistir ao vídeo”.' : 'Se houver texto selecionado no editor, ele vira o link.'}
         />
+      </div>
+    </Modal>
+  );
+}
+
+/** Imagem por endereço público ou enviada do computador (fica embutida no e-mail). */
+function ImageDialog({ open, onClose, onConfirm }: { open: boolean; onClose: () => void; onConfirm: (src: string, alt: string) => void }) {
+  const [source, setSource] = useState<'url' | 'file'>('url');
+  const [url, setUrl] = useState('https://');
+  const [alt, setAlt] = useState('');
+  const [embedded, setEmbedded] = useState<{ name: string; data: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [reading, setReading] = useState(false);
+  useEffect(() => {
+    if (open) {
+      setSource('url');
+      setUrl('https://');
+      setAlt('');
+      setEmbedded(null);
+      setError(null);
+    }
+  }, [open]);
+  const pick = async (file: File | undefined) => {
+    if (!file) return;
+    setError(null);
+    setReading(true);
+    try {
+      setEmbedded({ name: file.name, data: await imageFileToDataUrl(file) });
+      if (!alt) setAlt(file.name.replace(/\.[^.]+$/, ''));
+    } catch (e) {
+      setEmbedded(null);
+      setError(e instanceof Error ? e.message : 'Não foi possível ler a imagem.');
+    } finally {
+      setReading(false);
+    }
+  };
+  const src = source === 'url' ? (isPublicUrl(url) ? url.trim() : null) : (embedded?.data ?? null);
+  return (
+    <Modal
+      open={open}
+      title="Inserir imagem"
+      onClose={onClose}
+      width={520}
+      footer={
+        <>
+          <Button kind="secondary" onClick={onClose}>
+            Cancelar
+          </Button>
+          <Button disabled={!src || reading} onClick={() => src && onConfirm(src, alt.trim())}>
+            Inserir
+          </Button>
+        </>
+      }
+    >
+      <div className="vf-stack">
+        <Tabs
+          value={source}
+          onChange={setSource}
+          items={[
+            { value: 'url', label: 'Endereço na internet' },
+            { value: 'file', label: 'Enviar do computador' },
+          ]}
+        />
+        {source === 'url' ? (
+          <Input
+            label="Endereço da imagem"
+            value={url}
+            autoFocus
+            onChange={(e) => setUrl(e.target.value)}
+            help="Endereço público da imagem (https://...), por exemplo no site do escritório. Ela precisa abrir sem login para aparecer no e-mail do cliente."
+            error={url.length > 8 && !isPublicUrl(url) ? 'Use um endereço completo, começando por https://.' : undefined}
+          />
+        ) : (
+          <>
+            <Alert tone="warning">
+              A imagem enviada do computador fica embutida no próprio e-mail (reduzida para até 640 px de largura). O Gmail e algumas versões do Outlook não exibem imagens embutidas; para
+              logo, banner ou assinatura, prefira o endereço público da imagem.
+            </Alert>
+            {embedded ? (
+              <div className="vf-inline vf-between">
+                <img src={embedded.data} alt="" className="vf-editor__thumb" />
+                <Button kind="tertiary" size="sm" onClick={() => setEmbedded(null)}>
+                  Trocar imagem
+                </Button>
+              </div>
+            ) : (
+              <DropFile onFiles={(fs) => void pick(fs[0])} accept="image/png,image/jpeg,image/webp,image/gif" title={reading ? 'Lendo a imagem...' : 'Arraste a imagem ou clique em “Selecionar”'} hint="PNG, JPG, WEBP ou GIF" />
+            )}
+            {error && <Alert tone="danger">{error}</Alert>}
+          </>
+        )}
+        <Input label="Descrição da imagem" value={alt} onChange={(e) => setAlt(e.target.value)} help="Exibida quando o programa de e-mail bloqueia imagens." />
       </div>
     </Modal>
   );

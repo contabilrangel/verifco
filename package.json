@@ -10,6 +10,7 @@
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
+    "check:css": "pnpm --filter @verifco/web check:css",
     "db:generate": "pnpm --filter @verifco/api db:generate",
     "db:seed": "pnpm --filter @verifco/api db:seed"
   }

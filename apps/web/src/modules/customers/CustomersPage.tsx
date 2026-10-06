@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { useQueryClient } from '@tanstack/react-query';
-import { ChevronDown, Download, FileSpreadsheet, Filter, Mail, Package, Plus, Search, Tag as TagIcon, Trash2, UserCog, Users } from 'lucide-react';
+import { ChevronDown, Download, FileSpreadsheet, Filter, Mail, Package, Plus, Search, StickyNote, Tag as TagIcon, Trash2, UserCog, Users } from 'lucide-react';
 import { CND_STATUS, DECLARATION_SUBSTATUS, PROCURATION_STATUS, isValidCpfCnpj } from '@verifco/shared';
 import {
   Button,
@@ -325,6 +325,13 @@ export function CustomersPage() {
                           {c.name}
                         </Link>
                         <span className="vf-text-xs vf-muted">{c.email || 'sem e-mail'}</span>
+                        {c.notes?.trim() && (
+                          <span className="vf-cus-notes" title={c.notes}>
+                            <StickyNote aria-hidden />
+                            <span className="sr-only">Observações: </span>
+                            {c.notes}
+                          </span>
+                        )}
                         {(c.groups.length > 0 || c.status === 'inactive' || c.ecacMailboxMessages > 0) && (
                           <div className="vf-inline" style={{ '--gap': '4px' } as React.CSSProperties}>
                             {c.status === 'inactive' && <Tag tone="danger">Inativo</Tag>}

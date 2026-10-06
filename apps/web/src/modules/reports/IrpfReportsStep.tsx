@@ -101,7 +101,7 @@ function ReportsStepContent({ ctx }: { ctx: ReportsContext }) {
           {can('office.edit') ? <Link to="/admin/empresa">cadastre-o em Administração › Empresa</Link> : 'peça ao administrador para cadastrá-lo'} (PNG ou JPG).
         </Alert>
       )}
-      <div className="vf-grid" style={{ gridTemplateColumns: 'minmax(0, 1.5fr) minmax(0, 1fr)', alignItems: 'start' } as React.CSSProperties}>
+      <div className="vf-grid" style={{ '--grid-template': 'minmax(0, 1.5fr) minmax(0, 1fr)', alignItems: 'start' } as React.CSSProperties}>
         <Card
           title="Relatórios"
           actions={

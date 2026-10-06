@@ -194,13 +194,13 @@ function FichasCard({ declaration, canEdit, ensure, onChanged }: { declaration: 
 
   return (
     <Card flush title="Fichas da declaração" actions={canEdit && <Button icon={<Plus />} onClick={() => setEditing({ ficha, item: null })}>Adicionar em {ficha.title}</Button>}>
-      <div className="vf-chips" role="tablist" aria-label="Fichas da declaração">
+      <div className="vf-dec-chips" role="tablist" aria-label="Fichas da declaração">
         {FICHAS.map((f) => {
           const n = byFicha[f.id]?.length ?? 0;
           return (
-            <button key={f.id} type="button" role="tab" aria-selected={f.id === tab} className={`vf-chip${n ? '' : ' vf-chip--empty'}`} onClick={() => setTab(f.id)}>
+            <button key={f.id} type="button" role="tab" aria-selected={f.id === tab} className={`vf-dec-chip${n ? '' : ' vf-dec-chip--empty'}`} onClick={() => setTab(f.id)}>
               {f.title}
-              {n > 0 && <span className="vf-chip__n">{n}</span>}
+              {n > 0 && <span className="vf-dec-chip__n">{n}</span>}
             </button>
           );
         })}

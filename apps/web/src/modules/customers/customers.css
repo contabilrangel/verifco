@@ -1,0 +1,8 @@
+/* Clientes: listagem e perfil. Prefixo vf-cus-, só tokens do design system. */
+
+/* observações do cliente na listagem: até duas linhas, texto completo no title */
+.vf-cus-notes {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  max-width: 420px; font: var(--text-xs-regular); letter-spacing: 0; color: var(--color-text-medium); white-space: pre-line;
+}
+.vf-cus-notes > svg { width: 12px; height: 12px; margin-right: 4px; vertical-align: -1px; color: var(--color-yellow-100); }

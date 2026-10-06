@@ -181,7 +181,7 @@ export function KanbanPage() {
           description={debounced || group ? 'Revise a busca ou o grupo.' : 'Cadastre clientes para acompanhar as declarações aqui.'}
         />
       ) : (
-        <div className="vf-kanban" style={{ opacity: k.isFetching ? 0.7 : 1, transition: 'opacity 200ms' } as CSSProperties}>
+        <div className="vf-kanban vf-dec-board" style={{ opacity: k.isFetching ? 0.7 : 1, transition: 'opacity 200ms' } as CSSProperties}>
           {columns.map((col) => (
             <section
               key={col.stage}

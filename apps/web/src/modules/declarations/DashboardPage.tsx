@@ -195,7 +195,7 @@ export function DashboardPage() {
         <h2 id="dash-ind" className="vf-section-title">
           Desempenho
         </h2>
-        <div className="vf-kpis vf-kpis--6">
+        <div className="vf-dec-kpis vf-dec-kpis--6">
           <Kpi icon={<Users />} label="Clientes ativos" value={fmtInt(ind.activeCustomers)} />
           <Kpi icon={<FileText />} label="Declarações" value={fmtInt(ind.declarations)} hint="iniciadas no exercício" />
           <Kpi icon={<Send />} label="Transmitidas" value={fmtInt(ind.transmitted)} hint={`${share(ind.transmitted, ind.declarations)} das declarações`} />
@@ -293,15 +293,15 @@ export function DashboardPage() {
 
 function Kpi({ icon, label, value, hint, tone, title }: { icon: ReactNode; label: string; value: string; hint?: string; tone?: 'danger' | 'success'; title?: string }) {
   return (
-    <div className="vf-kpi">
-      <span className="vf-kpi__label">
+    <div className="vf-dec-kpi">
+      <span className="vf-dec-kpi__label">
         {icon}
         {label}
       </span>
-      <span className={`vf-kpi__value${tone ? ` vf-kpi__value--${tone}` : ''}`} title={title}>
+      <span className={`vf-dec-kpi__value${tone ? ` vf-dec-kpi__value--${tone}` : ''}`} title={title}>
         {value}
       </span>
-      {hint && <span className="vf-kpi__hint">{hint}</span>}
+      {hint && <span className="vf-dec-kpi__hint">{hint}</span>}
     </div>
   );
 }

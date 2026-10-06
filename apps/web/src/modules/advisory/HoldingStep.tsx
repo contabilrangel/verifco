@@ -151,7 +151,7 @@ export function HoldingStep() {
           <p className="vf-muted">
             Bens da simulação: <strong>{used.length}</strong> de {props.length} imóveis utilizados no cálculo.
           </p>
-          <div className="vf-kpis">
+          <div className="vf-adv-kpis">
             <Kpi label="Patrimônio declarado" value={formatMoney(r.totals.declaredValueCents)} hint={`Mercado ${formatMoney(r.totals.marketValueCents)}`} />
             <Kpi label="Aluguel mensal" value={formatMoney(r.totals.monthlyRentCents)} hint={`${formatMoney(r.totals.annualRentCents)} por ano`} />
             <Kpi label="ITBI na integralização" value={formatMoney(r.rows.find((x) => x.key === 'itbi')!.holdingCents)} hint={r.params.itbiImmune ? 'Com imunidade' : `${r.params.itbiPercent}% do valor de mercado`} />
@@ -188,9 +188,9 @@ export function HoldingStep() {
               { value: 'market', label: 'Valor de mercado das quotas (LC 227/2026)' },
               { value: 'declared', label: 'Valor declarado (lei estadual antiga)' },
             ]}
-            style={{ gridColumn: 'span 2' }}
+            span={2}
           />
-          <div className="vf-field" style={{ gridColumn: 'span 2', justifyContent: 'flex-end' }}>
+          <div className="vf-field vf-span-2" style={{ justifyContent: 'flex-end' }}>
             <Switch label="Aplicar imunidade de ITBI na integralização (CF, art. 156, § 2º, I)" checked={params.itbiImmune} onChange={(v) => set('itbiImmune', v)} />
           </div>
         </div>

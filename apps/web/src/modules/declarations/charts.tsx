@@ -203,19 +203,19 @@ function arcPath(cx: number, cy: number, R: number, r: number, a0: number, a1: n
 
 function Legend({ items, total, active, onHover }: { items: Datum[]; total: number; active?: string | null; onHover?: (k: string | null) => void }) {
   return (
-    <ul className="vf-legend">
+    <ul className="vf-dec-legend">
       {items.map((d) => (
         <li
           key={d.key}
-          className="vf-legend__item"
+          className="vf-dec-legend__item"
           style={{ opacity: active && active !== d.key ? 0.6 : 1 } as CSSProperties}
           onPointerEnter={() => onHover?.(d.key)}
           onPointerLeave={() => onHover?.(null)}
         >
-          <span className="vf-legend__swatch" style={{ background: d.color }} aria-hidden />
-          <span className="vf-legend__label">{d.label}</span>
-          <span className="vf-legend__value">{shown(d)}</span>
-          <span className="vf-legend__pct">{pct(d.value, total)}</span>
+          <span className="vf-dec-legend__swatch" style={{ background: d.color }} aria-hidden />
+          <span className="vf-dec-legend__label">{d.label}</span>
+          <span className="vf-dec-legend__value">{shown(d)}</span>
+          <span className="vf-dec-legend__pct">{pct(d.value, total)}</span>
         </li>
       ))}
     </ul>

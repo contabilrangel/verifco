@@ -26,7 +26,7 @@ export function DocumentationStep() {
     <div className="vf-stack" style={{ '--gap': '24px' } as CSSProperties}>
       <div className="vf-grid" style={{ '--cols': canDigital && canPdf ? 3 : 1, alignItems: 'start' } as CSSProperties}>
         {canDigital && (
-          <div style={{ gridColumn: canPdf ? 'span 2' : undefined, minWidth: 0 }}>
+          <div className={canPdf ? 'vf-span-2' : undefined} style={{ minWidth: 0 }}>
             <DigitalCard data={data} queryKey={key} />
           </div>
         )}

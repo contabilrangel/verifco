@@ -133,9 +133,15 @@ grid de 8px, raios, elevações) com o tema Verifco: `Button`, `IconButton`, `Ca
 `MoneyInput`, `Select`, `Textarea`, `Checkbox`, `Switch`, `Field`, `Tag`, `Alert`, `Modal`,
 `Drawer`, `ConfirmDialog`, `Menu`/`MenuItem`, `Tabs`, `Loading`, `Spinner`, `EmptyState`,
 `Avatar`, `Stat`, `Progress`, `Pagination`, `DropFile`, `useToast`.
-Classes utilitárias: `vf-stack`, `vf-inline`, `vf-grid` (`--cols`), `vf-table`, `vf-muted`,
-`vf-text-*`, `vf-kanban*`, `vf-steps`/`vf-step`, `vf-chat`/`vf-bubble`.
+Classes utilitárias: `vf-stack`, `vf-inline`, `vf-grid` (`--cols` ou `--grid-template`), `vf-span-2`/
+`vf-span-3`/`vf-span-full` (ou a prop `span` dos campos; nunca `gridColumn` em linha), `vf-table`,
+`vf-muted`, `vf-text-*`, `vf-kanban*`, `vf-steps`/`vf-step`, `vf-chat`/`vf-bubble`. Barras de abas
+usam `TabBar` (setas e aba ativa sempre à vista).
 Use os tokens CSS (`var(--color-...)`, `var(--size-spacing-..)`), nunca cores soltas.
+O CSS de cada módulo fica em `modules/<nome>/<nome>.css` (importado no módulo), com classes novas
+prefixadas pelo módulo (`vf-adv-`, `vf-dec-`, `vf-fin-`, `vf-ecac-`, `vf-int-`, `vf-cus-`...);
+ajustes de componentes do design system só com escopo do módulo. `pnpm check:css` (também na
+CI) confere a sintaxe de todo o CSS e recusa classe repetida entre módulos.
 
 ### Dados
 

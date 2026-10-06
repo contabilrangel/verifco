@@ -8,6 +8,7 @@ import {
   useContext,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
   type ButtonHTMLAttributes,
@@ -90,6 +91,13 @@ export function Card({
 }
 
 // ---------------------------------------------------------------- Form
+/**
+ * Quantas colunas o campo ocupa dentro de uma `.vf-grid`. Use em vez de `gridColumn` em linha:
+ * no celular a grade tem uma coluna só e a classe volta a ocupar uma coluna.
+ */
+export type GridSpan = 2 | 3 | 'full';
+export const spanClass = (span?: GridSpan) => (span ? `vf-span-${span}` : undefined);
+
 export function Field({
   label,
   help,
@@ -98,6 +106,7 @@ export function Field({
   children,
   htmlFor,
   style,
+  span,
 }: {
   label?: ReactNode;
   help?: ReactNode;
@@ -106,9 +115,10 @@ export function Field({
   children: ReactNode;
   htmlFor?: string;
   style?: CSSProperties;
+  span?: GridSpan;
 }) {
   return (
-    <div className="vf-field" style={style}>
+    <div className={cx('vf-field', spanClass(span))} style={style}>
       {label && (
         <label className="vf-field__label" htmlFor={htmlFor}>
           {label}
@@ -121,8 +131,8 @@ export function Field({
   );
 }
 
-type InputProps = InputHTMLAttributes<HTMLInputElement> & { label?: ReactNode; help?: ReactNode; error?: ReactNode; icon?: ReactNode; suffix?: ReactNode };
-export function Input({ label, help, error, icon, suffix, id, required, style, className, ...rest }: InputProps) {
+type InputProps = InputHTMLAttributes<HTMLInputElement> & { label?: ReactNode; help?: ReactNode; error?: ReactNode; icon?: ReactNode; suffix?: ReactNode; span?: GridSpan };
+export function Input({ label, help, error, icon, suffix, id, required, style, className, span, ...rest }: InputProps) {
   const auto = useId();
   const inputId = id ?? auto;
   const input = <input id={inputId} className={cx('vf-input', className)} aria-invalid={error ? true : undefined} required={required} {...rest} />;
@@ -136,19 +146,19 @@ export function Input({ label, help, error, icon, suffix, id, required, style, c
     ) : (
       input
     );
-  if (!label && !help && !error) return <div style={style}>{control}</div>;
+  if (!label && !help && !error) return <div className={spanClass(span)} style={style}>{control}</div>;
   return (
-    <Field label={label} help={help} error={error} required={required} htmlFor={inputId} style={style}>
+    <Field label={label} help={help} error={error} required={required} htmlFor={inputId} style={style} span={span}>
       {control}
     </Field>
   );
 }
 
-export function Textarea({ label, help, error, id, required, style, ...rest }: TextareaHTMLAttributes<HTMLTextAreaElement> & { label?: ReactNode; help?: ReactNode; error?: ReactNode }) {
+export function Textarea({ label, help, error, id, required, style, span, ...rest }: TextareaHTMLAttributes<HTMLTextAreaElement> & { label?: ReactNode; help?: ReactNode; error?: ReactNode; span?: GridSpan }) {
   const auto = useId();
   const tid = id ?? auto;
   return (
-    <Field label={label} help={help} error={error} required={required} htmlFor={tid} style={style}>
+    <Field label={label} help={help} error={error} required={required} htmlFor={tid} style={style} span={span}>
       <textarea id={tid} className="vf-textarea" aria-invalid={error ? true : undefined} required={required} {...rest} />
     </Field>
   );
@@ -164,8 +174,9 @@ export function Select({
   id,
   required,
   style,
+  span,
   ...rest
-}: SelectHTMLAttributes<HTMLSelectElement> & { label?: ReactNode; help?: ReactNode; error?: ReactNode; options: SelectOption[]; placeholder?: string }) {
+}: SelectHTMLAttributes<HTMLSelectElement> & { label?: ReactNode; help?: ReactNode; error?: ReactNode; options: SelectOption[]; placeholder?: string; span?: GridSpan }) {
   const auto = useId();
   const sid = id ?? auto;
   const select = (
@@ -178,9 +189,9 @@ export function Select({
       ))}
     </select>
   );
-  if (!label && !help && !error) return <div style={style}>{select}</div>;
+  if (!label && !help && !error) return <div className={spanClass(span)} style={style}>{select}</div>;
   return (
-    <Field label={label} help={help} error={error} required={required} htmlFor={sid} style={style}>
+    <Field label={label} help={help} error={error} required={required} htmlFor={sid} style={style} span={span}>
       {select}
     </Field>
   );
@@ -418,16 +429,106 @@ export function MenuItem({ icon, children, onClick, danger, disabled }: { icon?:
 }
 
 // ---------------------------------------------------------------- Tabs
+/** Margem deixada entre a aba ativa e a borda (a seta ocupa esse espaço). */
+const TAB_EDGE = 48;
+
+/**
+ * Quanto rolar a barra para a aba [left, right] (em px, relativos ao início da barra) ficar inteira à vista.
+ * Devolve a nova posição de rolagem, ou null se a aba já está visível.
+ */
+export function scrollToReveal(scrollLeft: number, viewport: number, left: number, right: number, edge = TAB_EDGE): number | null {
+  if (left - edge < scrollLeft) return Math.max(0, left - edge);
+  if (right + edge > scrollLeft + viewport) return Math.max(0, right + edge - viewport);
+  return null;
+}
+
+/**
+ * Barra de abas com rolagem horizontal: quando há abas fora da área visível aparecem setas
+ * (e um esmaecimento) nas bordas, e a aba ativa (`.active` ou `aria-selected="true"`) é
+ * trazida para a vista sempre que `activeKey` muda.
+ */
+export function TabBar({
+  label,
+  activeKey,
+  role,
+  children,
+  style,
+  className,
+}: {
+  label?: string;
+  activeKey?: string;
+  role?: 'tablist';
+  children: ReactNode;
+  style?: CSSProperties;
+  className?: string;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [edges, setEdges] = useState({ prev: false, next: false });
+
+  const measure = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    const prev = el.scrollLeft > 1;
+    const next = el.scrollLeft + el.clientWidth < el.scrollWidth - 1;
+    setEdges((e) => (e.prev === prev && e.next === next ? e : { prev, next }));
+  }, []);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const active = el.querySelector<HTMLElement>('.active, [aria-selected="true"]');
+    if (active) {
+      const target = scrollToReveal(el.scrollLeft, el.clientWidth, active.offsetLeft, active.offsetLeft + active.offsetWidth);
+      if (target !== null) el.scrollLeft = target;
+    }
+    measure();
+  }, [activeKey, measure]);
+
+  // abas que entram ou saem (permissões carregadas, rótulos) mudam a largura do conteúdo
+  useEffect(() => measure());
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [measure]);
+
+  const page = (dir: -1 | 1) => {
+    const el = ref.current;
+    if (el) el.scrollBy({ left: dir * Math.max(120, el.clientWidth * 0.7), behavior: 'smooth' });
+  };
+  const Bar = label ? 'nav' : 'div';
+  return (
+    <div className={cx('vf-tabbar', className)} style={style}>
+      {edges.prev && (
+        <button type="button" className="vf-tabbar__arrow vf-tabbar__arrow--prev" aria-label="Ver abas anteriores" title="Ver abas anteriores" tabIndex={-1} onClick={() => page(-1)}>
+          <ChevronLeft />
+        </button>
+      )}
+      <Bar ref={ref} className="vf-tabs" aria-label={label} role={role} onScroll={measure}>
+        {children}
+      </Bar>
+      {edges.next && (
+        <button type="button" className="vf-tabbar__arrow vf-tabbar__arrow--next" aria-label="Ver mais abas" title="Ver mais abas" tabIndex={-1} onClick={() => page(1)}>
+          <ChevronRight />
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function Tabs<T extends string>({ value, onChange, items }: { value: T; onChange: (v: T) => void; items: { value: T; label: ReactNode; icon?: ReactNode }[] }) {
   return (
-    <div className="vf-tabs" role="tablist">
+    <TabBar role="tablist" activeKey={value}>
       {items.map((it) => (
         <button key={it.value} type="button" role="tab" className="vf-tab" aria-selected={it.value === value} onClick={() => onChange(it.value)}>
           {it.icon}
           {it.label}
         </button>
       ))}
-    </div>
+    </TabBar>
   );
 }
 

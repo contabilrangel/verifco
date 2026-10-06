@@ -442,7 +442,7 @@ function RecipientsStep({
   const employees = useApi<{ id: string; name: string }[]>(['employees'], mode === 'filters' ? '/employees' : null);
   const set = (patch: Partial<Filters>) => setFilters({ ...filters, ...patch });
   return (
-    <div className="vf-two-col" style={{ gridTemplateColumns: mode === 'filters' ? '320px minmax(0, 1fr)' : 'minmax(0, 1fr)' }}>
+    <div className={cx('vf-two-col', mode === 'filters' ? 'vf-two-col--filters' : 'vf-two-col--single')}>
       {mode === 'filters' && (
         <Card title="Filtros">
           <div className="vf-stack" style={{ '--gap': '20px' } as React.CSSProperties}>
