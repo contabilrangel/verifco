@@ -64,6 +64,9 @@ export const PERMISSION_CATEGORIES: PermissionCategory[] = [
       p('pre_declaration.edit', 'Edição da pré-declaração'),
       p('elaboration.export', 'Exportação na elaboração'),
       p('prefilled.download', 'Download das pré-preenchidas'),
+      p('darf.view', 'Visualização das quotas do DARF'),
+      p('darf.edit', 'Gestão das quotas do DARF'),
+      p('darf.send', 'Envio do DARF ao cliente'),
     ],
   },
   {

@@ -41,8 +41,10 @@ describe('análise de caixa', () => {
     expect(r.balanceCents).toBe(-15_000_000);
   });
 
-  it('avisa quando o exercício não tem parâmetros confirmados', () => {
-    expect(cashAnalysis({ exerciseYear: 2031, items: [] }).warnings[0]).toMatch(/não confirmados/);
+  it('avisa quando o exercício não tem parâmetros ou não foram conferidos', () => {
+    expect(cashAnalysis({ exerciseYear: 2031, items: [] }).warnings[0]).toMatch(/Não há parâmetros do exercício 2031; foram usados os de 2026/);
+    expect(cashAnalysis({ exerciseYear: 2026, items: [] }).warnings[0]).toMatch(/ainda não foram conferidos/);
+    expect(cashAnalysis({ exerciseYear: 2025, items: [] }).warnings).toEqual([]);
   });
 
   it('soma totais da declaração', () => {

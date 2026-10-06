@@ -54,8 +54,10 @@ export function cashAnalysis(input: CashAnalysisInput): CashAnalysisResult {
   const by = (kind: DeclarationItem['kind']) => input.items.filter((i) => i.kind === kind);
   const warnings: string[] = [];
   const params = taxParams(input.exerciseYear);
-  if (params.fallback || !params.confirmed) {
-    warnings.push(`Parâmetros do exercício ${input.exerciseYear} não confirmados; usando os de ${params.exercise}.`);
+  if (params.fallback) {
+    warnings.push(`Não há parâmetros do exercício ${input.exerciseYear}; foram usados os de ${params.exercise}. Confira com a legislação vigente.`);
+  } else if (!params.confirmed) {
+    warnings.push(`Os parâmetros do exercício ${input.exerciseYear} (como o limite do desconto simplificado) ainda não foram conferidos com a legislação.`);
   }
 
   const pj = by('income_pj');
