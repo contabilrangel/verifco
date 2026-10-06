@@ -53,6 +53,8 @@ export const documentOriginLabel = (o: string) => DOCUMENT_ORIGINS[o as Document
 
 /**
  * O arquivo pode ficar visível no portal do cliente? Só os enviados pelo escritório: os do
- * próprio cliente e os da sincronização (que contam nos arquivos do programa IRPF) não.
+ * próprio cliente e os da sincronização (que contam nos arquivos do programa IRPF) não. Os do
+ * copiloto também não: a categoria `copilot` os mantém no copiloto e define quem pode abri-los.
  */
-export const canShareWithCustomer = (uploadedBy: string) => uploadedBy === 'office';
+export const canShareWithCustomer = (doc: { uploadedBy: string; category: string }) =>
+  doc.uploadedBy === 'office' && doc.category !== 'copilot';

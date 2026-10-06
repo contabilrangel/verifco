@@ -213,6 +213,10 @@ describe('documentos do escritório no portal (INT-3)', () => {
     expect(refused.body.error).toMatch(/enviados pelo escritório/);
     const synced = await shareDoc(a.officeId, a.customerId, 'recibo.rec', { category: 'irpf_receipt', uploadedBy: 'sync' });
     expect((await a.api.patch(`/api/documents/${synced}`, { category: 'shared_with_customer' })).status).toBe(400);
+    // arquivo do copiloto continua no copiloto: compartilhar mudaria a categoria e o tiraria de lá
+    const fromCopilot = await shareDoc(a.officeId, a.customerId, 'copiloto.pdf', { category: 'copilot' });
+    expect((await a.api.patch(`/api/documents/${fromCopilot}`, { category: 'shared_with_customer' })).status).toBe(400);
+    expect((await env.ctx.db.select().from(documents).where(eq(documents.id, fromCopilot)))[0].category).toBe('copilot');
     // mesmo gravados direto no banco com a categoria, não aparecem
     const forcedCustomer = await shareDoc(a.officeId, a.customerId, 'forcado-cliente.pdf', { uploadedBy: 'customer' });
     const forcedSync = await shareDoc(a.officeId, a.customerId, 'forcado-sync.pdf', { uploadedBy: 'sync' });

@@ -64,9 +64,10 @@ describe('templates', () => {
 
 describe('documentos do cliente (INT-3)', () => {
   it('só arquivos do escritório ficam visíveis no portal; categorias do sistema têm rótulo', () => {
-    expect(canShareWithCustomer('office')).toBe(true);
-    expect(canShareWithCustomer('customer')).toBe(false);
-    expect(canShareWithCustomer('sync')).toBe(false);
+    expect(canShareWithCustomer({ uploadedBy: 'office', category: 'darf' })).toBe(true);
+    expect(canShareWithCustomer({ uploadedBy: 'customer', category: 'checklist' })).toBe(false);
+    expect(canShareWithCustomer({ uploadedBy: 'sync', category: 'irpf_receipt' })).toBe(false);
+    expect(canShareWithCustomer({ uploadedBy: 'office', category: 'copilot' })).toBe(false);
     expect(documentCategoryLabel(SHARED_WITH_CUSTOMER)).toBe('Visível no portal do cliente');
     expect(documentCategoryLabel('irpf_receipt')).toBe('Recibo de entrega (.REC)');
     expect(documentCategoryLabel('desconhecida')).toBe('desconhecida');

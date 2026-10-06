@@ -114,8 +114,8 @@ export async function documentRoutes(app: FastifyInstance) {
     const { category } = parse(z.object({ category: categoryEnum }), req.body);
     const doc = await getDocumentForUser(app.ctx, user, id);
     const shared = category === SHARED_WITH_CUSTOMER;
-    if (shared && !canShareWithCustomer(doc.uploadedBy)) {
-      throw badRequest('Só arquivos enviados pelo escritório podem ficar visíveis no portal do cliente.');
+    if (shared && !canShareWithCustomer(doc)) {
+      throw badRequest('Só arquivos enviados pelo escritório, fora do copiloto, podem ficar visíveis no portal do cliente.');
     }
     const [row] = await db.update(documents).set({ category }).where(eq(documents.id, doc.id)).returning();
     const wasShared = doc.category === SHARED_WITH_CUSTOMER;

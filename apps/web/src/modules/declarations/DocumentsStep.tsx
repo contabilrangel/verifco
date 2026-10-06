@@ -39,7 +39,7 @@ const NOT_SHAREABLE_OPTIONS = CATEGORY_OPTIONS.filter((o) => o.value !== SHARED_
 
 /** Opções da categoria de um arquivo da lista (a categoria gravada pelo sistema continua na lista). */
 const categoryOptionsFor = (d: DocumentRow) => {
-  const base = canShareWithCustomer(d.uploadedBy) ? CATEGORY_OPTIONS : NOT_SHAREABLE_OPTIONS;
+  const base = canShareWithCustomer(d) ? CATEGORY_OPTIONS : NOT_SHAREABLE_OPTIONS;
   return base.some((o) => o.value === d.category) ? base : [{ value: d.category, label: documentCategoryLabel(d.category) }, ...base];
 };
 const ORIGIN_TONE: Record<string, Tone> = { office: 'primary', customer: 'highlight', sync: 'neutral' };
@@ -192,7 +192,7 @@ export function DocumentsStep() {
                         <Download />
                       </IconButton>
                       {canEdit &&
-                        canShareWithCustomer(d.uploadedBy) &&
+                        canShareWithCustomer(d) &&
                         (d.category === SHARED_WITH_CUSTOMER ? (
                           <IconButton label="Tirar do portal do cliente" disabled={share.isPending} onClick={() => share.mutate({ id: d.id, shared: false })}>
                             <Undo2 />
