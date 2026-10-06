@@ -36,6 +36,12 @@ export function daysBetweenIso(from: string, to: string): number {
   return Math.round((utc(to) - utc(from)) / 86_400_000);
 }
 
+/** Dia da semana de uma data AAAA-MM-DD (0 = domingo ... 6 = sábado), sem passar por fuso horário. */
+export function weekdayIso(iso: string): number {
+  const [y, m, d] = iso.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+}
+
 /**
  * Data AAAA-MM-DD de um instante em UTC. Só para datas que já vêm sem fuso, como as células de
  * data do Excel (meia-noite UTC); para "hoje" ou para a data de um registro, use `todayIso`.

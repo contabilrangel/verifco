@@ -9,7 +9,7 @@ import { addDaysIso as addDays, brazilToday } from '@verifco/shared';
 import { auditLogs, customers, darfs, declarations, ecacRecords, integrations, jobs, procurators } from '../src/db/schema';
 import type { Providers } from '../src/integrations/providers';
 import { clearSerproTokens } from '../src/integrations/serpro';
-import { DAILY_TRIGGER, nextDailyRun, registerJobs, robotTiming, scheduleEcacDailySync } from '../src/modules/ecac/jobs';
+import { DAILY_TRIGGER, nextDailyRun, registerJobs, robotTiming, scheduleEcacAutoSync } from '../src/modules/ecac/jobs';
 import { VALID_CPFS, createEmployee, createTestEnv, registerOffice, type TestEnv } from './helpers';
 import { sitfisPendingPdf } from './sitfis-helpers';
 
@@ -72,7 +72,8 @@ async function officeWithSerpro() {
     .returning();
   const saved = await office.api.put('/api/integrations/serpro', {
     enabled: true,
-    config: { contractorCnpj: '11.222.333/0001-81', procuratorId: cert.id },
+    // rodada diária, como as integrações ativas antes da opção (as novas começam desligadas)
+    config: { contractorCnpj: '11.222.333/0001-81', procuratorId: cert.id, autoSync: 'daily' },
     secrets: { consumerKey: 'consumer-key', consumerSecret: 'consumer-secret' },
   });
   expect(saved.status).toBe(200);
@@ -412,7 +413,7 @@ describe('rodada diária do robô', () => {
     expect(first.runAt.getTime()).toBeGreaterThan(Date.now());
 
     // agendar de novo (outro salvamento, nova chamada, API reiniciando) não duplica
-    expect((await scheduleEcacDailySync(env.ctx, office.officeId)).id).toBe(first.id);
+    expect((await scheduleEcacAutoSync(env.ctx, office.officeId))!.id).toBe(first.id);
     await office.api.put('/api/integrations/serpro', { enabled: true });
     await registerJobs(env.ctx);
     expect(await daily()).toHaveLength(1);

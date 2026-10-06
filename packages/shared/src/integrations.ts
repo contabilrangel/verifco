@@ -4,6 +4,7 @@
  * instruções de onde obter cada credencial. A API valida a configuração a partir
  * daqui e a tela de Administração › Integrações monta os formulários.
  */
+import { addDaysIso, weekdayIso } from './dates';
 import type { IntegrationProvider } from './enums';
 import { WHATSAPP_TEMPLATE_TYPES, parseWhatsAppTemplates } from './whatsapp';
 
@@ -67,6 +68,65 @@ export const INTEGRATION_CATEGORIES = {
   government: 'Receita Federal',
   ai: 'Inteligência artificial',
 } as const;
+
+// ---------------------------------------------------------------------------
+// Sincronização automática do eCAC (SERPRO): desligada, diária ou semanal
+// ---------------------------------------------------------------------------
+
+/** Frequência da rodada automática do eCAC (campo `autoSync` da integração SERPRO). */
+export const ECAC_AUTO_SYNC_MODES = {
+  off: 'Desligada (só quando você pedir)',
+  daily: 'Diária, de madrugada',
+  weekly: 'Semanal, de madrugada',
+} as const;
+export type EcacAutoSyncMode = keyof typeof ECAC_AUTO_SYNC_MODES;
+
+/** Dias da semana (índice = `weekdayIso`, 0 = domingo). */
+export const WEEKDAY_LABELS = ['Domingo', 'Segunda-feira', 'Terça-feira', 'Quarta-feira', 'Quinta-feira', 'Sexta-feira', 'Sábado'] as const;
+
+export interface EcacAutoSyncSetting {
+  mode: EcacAutoSyncMode;
+  /** Dia da semana da rodada semanal (0 = domingo). */
+  weekday: number;
+}
+
+/**
+ * Frequência configurada na integração SERPRO. Sem o campo (integração nova) ou com valor
+ * desconhecido, fica desligada: cada consulta é cobrada. As integrações que já estavam ativas antes
+ * da opção existir ficaram com "diária" gravada pela migração 0009, como sempre funcionaram.
+ */
+export function ecacAutoSyncSetting(config: Record<string, unknown> | null | undefined): EcacAutoSyncSetting {
+  const raw = config?.autoSync;
+  const mode: EcacAutoSyncMode = raw === 'daily' || raw === 'weekly' ? raw : 'off';
+  const weekday = Number(config?.autoSyncWeekday ?? 1);
+  return { mode, weekday: Number.isInteger(weekday) && weekday >= 0 && weekday <= 6 ? weekday : 1 };
+}
+
+/** A rodada automática roda nesta data (AAAA-MM-DD, Brasília)? */
+export function isEcacAutoSyncDay(setting: EcacAutoSyncSetting, day: string): boolean {
+  if (setting.mode === 'daily') return true;
+  if (setting.mode === 'weekly') return weekdayIso(day) === setting.weekday;
+  return false;
+}
+
+/** Primeira data a partir de `from` (inclusive) com rodada automática; `null` se desligada. */
+export function nextEcacAutoSyncDay(setting: EcacAutoSyncSetting, from: string): string | null {
+  if (setting.mode === 'off') return null;
+  for (let i = 0; i < 7; i++) {
+    const day = addDaysIso(from, i);
+    if (isEcacAutoSyncDay(setting, day)) return day;
+  }
+  return null;
+}
+
+/**
+ * Período da rodada (vai na chave de idempotência do job): o próprio dia na diária e a segunda-feira
+ * da semana na semanal. Assim há no máximo uma rodada por período, mesmo com vários workers ou com
+ * o dia da semana trocado depois de a rodada da semana já ter rodado.
+ */
+export function ecacAutoSyncPeriod(mode: Exclude<EcacAutoSyncMode, 'off'>, day: string): string {
+  return mode === 'weekly' ? addDaysIso(day, -((weekdayIso(day) + 6) % 7)) : day;
+}
 
 const whatsappEvolution: IntegrationCondition = { field: 'mode', in: ['evolution'] };
 const whatsappMeta: IntegrationCondition = { field: 'mode', in: ['meta'] };
@@ -320,7 +380,7 @@ export const INTEGRATION_CATALOG: IntegrationDef[] = [
     description: 'Consulta a Receita Federal pela API oficial do SERPRO: procurações, caixa postal, situação fiscal e pagamentos das quotas do DARF.',
     capabilities: [
       'Autentica com as chaves do contrato e o certificado digital do escritório',
-      'Sincroniza todo dia os clientes com procuração: procuração eletrônica e mensagens da caixa postal do e-CAC',
+      'Sincroniza os clientes com procuração quando você pede e, se ligada, numa rodada automática diária ou semanal: procuração eletrônica e mensagens da caixa postal do e-CAC',
       'Emite o relatório de situação fiscal (a cada 30 dias) e marca como pagas as quotas do DARF encontradas no PAGTOWEB',
       'Não informa a situação da declaração (malha, lote de restituição) nem emite a CND de pessoa física: o SERPRO não oferece esses serviços',
     ],
@@ -341,6 +401,25 @@ export const INTEGRATION_CATALOG: IntegrationDef[] = [
       },
       { key: 'consumerKey', label: 'Consumer Key', type: 'secret', required: true },
       { key: 'consumerSecret', label: 'Consumer Secret', type: 'secret', required: true },
+      {
+        key: 'autoSync',
+        label: 'Sincronização automática',
+        type: 'select',
+        default: 'off',
+        options: Object.entries(ECAC_AUTO_SYNC_MODES).map(([value, label]) => ({ value, label })),
+        help:
+          'Consulta todos os clientes ativos com procurador, de madrugada (entre 3h e 6h de Brasília). Cada consulta ao Integra Contador é cobrada pelo SERPRO conforme o seu contrato. ' +
+          '“Sincronizar agora”, no robô, e “Solicitar sincronização”, na aba eCAC do cliente, funcionam com qualquer opção.',
+        wide: true,
+      },
+      {
+        key: 'autoSyncWeekday',
+        label: 'Dia da sincronização semanal',
+        type: 'select',
+        default: '1',
+        options: WEEKDAY_LABELS.map((label, i) => ({ value: String(i), label })).slice(1).concat({ value: '0', label: WEEKDAY_LABELS[0] }),
+        when: { field: 'autoSync', in: ['weekly'] },
+      },
     ],
     steps: [
       { text: 'Contrate a API Integra Contador na Loja Serpro (loja.serpro.gov.br) com o e-CNPJ do escritório.' },
