@@ -1,8 +1,62 @@
 # Produção no Dokploy
 
 Crie um serviço **Docker Compose** no projeto Verifco. Configure o GitHub/Git com
-`contabilrangel/verifco`, branch principal `claude/laughing-brown-xsyey5` e caminho
-`./compose.dokploy.yml`. A stack contém web (Nginx), API, worker e dois PostgreSQL na mesma VM.
+`contabilrangel/verifco`, branch principal `claude/laughing-brown-xsyey5`.
+
+## Bancos como serviços do Dokploy (instalação atual)
+
+Em **Create Service → Database → PostgreSQL**, crie dois serviços no mesmo
+ambiente e servidor da aplicação, com senhas diferentes:
+
+| Serviço | App Name | Database Name | Database User | Imagem |
+| --- | --- | --- | --- | --- |
+| Verifco — escritórios | `verifco-escritorios` | `verifco` | `verifco` | `postgres:16-bookworm` |
+| Verifco — plataforma | `verifco-plataforma` | `verifco_platform` | `verifco_platform` | `postgres:16-bookworm` |
+
+Implante os dois bancos e espere ficarem prontos **antes** de implantar a aplicação.
+Em **Credentials**, copie a **Internal Connection URL** do primeiro para
+`DATABASE_URL` e a do segundo para `PLATFORM_DATABASE_URL`. Não use o IP público
+da VM nem `localhost` nessas URLs. Não configure uma porta externa para os bancos.
+O Dokploy fornece as conexões e os recursos de backup em cada serviço; backups
+agendados ainda precisam de um destino e de uma política de retenção.
+
+Na aplicação **Verifco completo**, use o caminho
+`./compose.dokploy-managed.yml` e o modelo de ambiente
+`deploy/dokploy-managed.env.example`. O Compose contém apenas **web, API e worker**.
+API e worker participam de `dokploy-network` para acessar os bancos gerenciados,
+além de `backend` para comunicação com a web. A rede externa deve existir no servidor
+do Dokploy; confira o resultado em **Preview Compose**. Os bancos permanecem em
+serviços independentes e não reiniciam durante uma atualização da aplicação.
+
+### Troca dos bancos que já estão em execução
+
+Criar os serviços novos **não transfere os dados**. Antes de mudar as URLs ou o
+caminho do Compose:
+
+1. Preserve `JWT_SECRET`, `ENCRYPTION_KEY`, o volume `uploads` e as URLs antigas
+   fora do Git. Confirme que os novos bancos estão vazios e prontos para receber dados.
+2. Interrompa temporariamente API e worker para impedir novas gravações. Faça um
+   dump de cada banco antigo com `pg_dump` do PostgreSQL 16 e guarde uma cópia protegida.
+3. Restaure cada dump no destino correspondente, sem reaproveitar proprietários ou
+   permissões SQL antigos (`--no-owner --no-acl`). Confira as tabelas, registros e
+   histórico de migrações dos dois destinos. Não restaure o banco operacional no
+   administrativo. Se houver falha, mantenha as URLs antigas e retome os serviços antigos.
+4. Salve as duas URLs internas novas, altere o Compose Path para a variante gerenciada
+   e implante. Confira saúde da API, worker, web e acesso às contas existentes.
+5. Mantenha os volumes `database` e `platform-database` antigos até concluir a
+   verificação e o período de recuperação. A variante gerenciada mantém as declarações
+   desses volumes, mas não os monta. Não use **Fresh Volumes** e não apague os bancos
+   antigos automaticamente. Para voltar, restaure o caminho e as URLs anteriores;
+   se houve novas gravações depois da troca, planeje a cópia delas antes de voltar.
+
+Consulte as [conexões de bancos no Dokploy](https://docs.dokploy.com/docs/core/databases/connection)
+e a [rede do Compose](https://docs.dokploy.com/docs/core/docker-compose/domains).
+
+## Alternativa: bancos dentro do Compose
+
+O caminho `./compose.dokploy.yml` mantém web (Nginx), API, worker e dois PostgreSQL
+na mesma VM, com volumes independentes. Use esse caminho somente para a instalação
+com os bancos no próprio Compose. O ambiente dessa alternativa está detalhado abaixo.
 
 Os cinco serviços não publicam portas no host. Adicione o domínio no Dokploy para
 o serviço **web**, porta **80**, com HTTPS e Let's Encrypt. A web encaminha `/api/`
@@ -105,7 +159,10 @@ pnpm platform:owner
 unset PLATFORM_OWNER_NAME PLATFORM_OWNER_EMAIL PLATFORM_OWNER_PASSWORD
 ```
 
-Use Bash para esse comando (`bash` no terminal). O proprietário acessa `/sistema`;
+Selecione o container **api** no Docker Terminal, não `web`, e use Bash para esse
+comando. Execute antes `cd /app/apps/api`. A imagem `web` é Nginx/Alpine e oferece
+`/bin/sh`, sem Bash; ela não contém o comando de criação do proprietário.
+O proprietário acessa `/sistema`;
 os contadores acessam `/entrar` e criam os escritórios em `/cadastro`. Nenhuma conta
 de demonstração é criada automaticamente. Configure as chaves reais de IA no
 painel do proprietário em `/sistema/ia`.
