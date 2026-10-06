@@ -16,7 +16,7 @@ import { customers, darfs, declarations, ecacRecords, procurators } from '../../
 import { getOrCreateDeclaration } from '../../services/declarations';
 import { getOfficeSettings } from '../../services/settings';
 import type { CustomerRow } from '../../services/customers';
-import { guessMimeType } from '../sync/multipart';
+import type { UploadedFile } from '../../services/uploads';
 import { jobView, latestJob, normalizeDate } from './util';
 
 export type EcacRecordRow = typeof ecacRecords.$inferSelect;
@@ -54,7 +54,7 @@ export async function saveEcacRecord(
     officeId: string;
     customer: CustomerRow;
     source: EcacRecordSource;
-    file?: { buffer: Buffer; filename: string; mimeType: string } | null;
+    file?: UploadedFile | null;
     userId?: string | null;
   },
 ): Promise<{ record: EcacRecordRow; effects: string[]; duplicate: boolean }> {
@@ -67,9 +67,9 @@ export async function saveEcacRecord(
   if (input.file) {
     const saved = await ctx.files.save({
       officeId,
-      data: input.file.buffer,
+      data: input.file.data,
       filename: input.file.filename,
-      mimeType: guessMimeType(input.file.filename, input.file.mimeType),
+      mimeType: input.file.mimeType,
       userId: input.userId ?? null,
     });
     fileId = saved.id;

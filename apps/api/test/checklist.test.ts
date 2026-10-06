@@ -171,7 +171,7 @@ describe('checklist digital (escritório)', () => {
 });
 
 describe('checklist do cliente', () => {
-  it('entra com CPF + código e limita as tentativas', async () => {
+  it('entra com CPF + código e recusa erros', async () => {
     const o = await withChecklist(VALID_CPFS[0]);
     const { token, code } = await issueAccess(o.api, o.checklist.id);
     const info = await env.app.inject({ method: 'POST', url: '/api/portal/checklist-link', payload: { token } });
@@ -180,11 +180,9 @@ describe('checklist do cliente', () => {
 
     expect((await customerLogin(env, token, VALID_CPFS[1], code)).status).toBe(401);
     const wrong = code === '000000' ? '111111' : '000000';
-    for (let i = 0; i < 4; i++) expect((await customerLogin(env, token, VALID_CPFS[0], wrong)).status).toBe(401);
-    // 5 falhas: bloqueia mesmo com o código certo
-    const blocked = await customerLogin(env, token, VALID_CPFS[0], code);
-    expect(blocked.status).toBe(429);
-    expect(blocked.body.error).toMatch(/Aguarde/);
+    expect((await customerLogin(env, token, VALID_CPFS[0], wrong)).status).toBe(401);
+    // o limite de falhas por link (no banco, entre instâncias) é testado em security-auth.test.ts
+    expect((await customerLogin(env, token, VALID_CPFS[0], code)).status).toBe(200);
 
     const o2 = await withChecklist(VALID_CPFS[1]);
     const a2 = await issueAccess(o2.api, o2.checklist.id);

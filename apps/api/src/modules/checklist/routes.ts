@@ -23,7 +23,8 @@ import {
   removeDocument,
   rotateAccess,
 } from './service';
-import { readChecklistUploads, sendStoredFile } from './uploads';
+import { sendStoredFile } from '../../services/uploads';
+import { readChecklistUploads } from './uploads';
 
 const sectionEnum = z.enum(CHECKLIST_FILLABLE_SECTIONS as [ChecklistSection, ...ChecklistSection[]]);
 const itemStatusEnum = z.enum(Object.keys(CHECKLIST_ITEM_STATUS) as [ChecklistItemStatus, ...ChecklistItemStatus[]]);
@@ -255,7 +256,8 @@ export async function checklistRoutes(app: FastifyInstance) {
 
   /**
    * Gera um novo link e código de acesso e envia pelos canais escolhidos.
-   * Só os hashes ficam gravados; por isso cada envio gera um par novo e os anteriores deixam de valer.
+   * Só os hashes ficam gravados (o histórico de envios guarda a mensagem com link e código mascarados);
+   * por isso cada envio gera um par novo e os anteriores deixam de valer. O par vale 30 dias.
    * Sem canais, apenas gera (para o escritório repassar ao cliente).
    */
   app.post('/checklists/:checklistId/access', { preHandler: guard('checklist_digital.send') }, async (req) => {
@@ -266,7 +268,7 @@ export async function checklistRoutes(app: FastifyInstance) {
     const unique = [...new Set(channels)];
     if (unique.includes('email') && !customer.email) throw badRequest('O cliente não tem e-mail cadastrado.');
     if (unique.includes('whatsapp') && !customer.mobile) throw badRequest('O cliente não tem celular cadastrado.');
-    const { token, code } = await rotateAccess(db, checklistId);
+    const { token, code, expiresAt } = await rotateAccess(db, checklistId);
     const link = `${ctx.config.WEB_URL.replace(/\/$/, '')}/checklist/${token}`;
     for (const channel of unique) {
       await queueDelivery(ctx, {
@@ -275,13 +277,15 @@ export async function checklistRoutes(app: FastifyInstance) {
         channel,
         templateKey: 'checklist_digital',
         values: { LINK: link, CODIGO: code },
+        // link e código só na mensagem entregue; o histórico (envios e mensagens) guarda a versão mascarada
+        redact: [token, code],
         exerciseYear: declaration.exerciseYear,
         userId: user.userId,
       });
     }
     if (unique.length) await db.update(checklists).set({ sentAt: new Date() }).where(eq(checklists.id, checklistId));
     await audit(req, unique.length ? 'send_access' : 'regenerate_access', 'checklist', checklistId, { channels: unique });
-    return { link, code, channels: unique };
+    return { link, code, channels: unique, expiresAt };
   });
 
   // ------------------------------------------------------------------ checklist em PDF

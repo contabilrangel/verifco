@@ -16,7 +16,7 @@ import { getOrCreateDeclaration } from '../../services/declarations';
 import type { CustomerRow } from '../../services/customers';
 import { isExtractable, refreshElaborationStatus } from '../elaboration/service';
 import type { MachineAuth } from './tokens';
-import { guessMimeType, type UploadedFile } from './multipart';
+import type { UploadedFile } from '../../services/uploads';
 
 /** Cliente do escritório pelo CPF/CNPJ (só dígitos); 404 quando não existe. */
 export async function customerByDoc(ctx: AppContext, officeId: string, doc: string): Promise<CustomerRow> {
@@ -73,7 +73,7 @@ export async function ingestSyncFile(ctx: AppContext, auth: MachineAuth, file: U
   const { cpf, year, type, info } = resolveFileTarget(file, fields);
   const customer = await customerByDoc(ctx, auth.officeId, cpf);
   const decl = await getOrCreateDeclaration(db, auth.officeId, customer.id, year);
-  const hash = sha256(file.buffer);
+  const hash = sha256(file.data);
   const [dup] = await db
     .select({ id: documents.id, fileId: documents.fileId })
     .from(documents)
@@ -83,8 +83,8 @@ export async function ingestSyncFile(ctx: AppContext, auth: MachineAuth, file: U
   const base = { customer: { id: customer.id, name: customer.name }, year, type, cpf, pattern: info.pattern };
   if (dup) return { ...base, duplicate: true, documentId: dup.id, fileId: dup.fileId };
 
-  const mimeType = guessMimeType(file.filename, file.mimeType);
-  const saved = await ctx.files.save({ officeId: auth.officeId, data: file.buffer, filename: file.filename, mimeType });
+  const { mimeType } = file;
+  const saved = await ctx.files.save({ officeId: auth.officeId, data: file.data, filename: file.filename, mimeType });
   const [doc] = await db
     .insert(documents)
     .values({

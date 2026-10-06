@@ -19,6 +19,7 @@ import { HttpError, badRequest } from '../../lib/errors';
 import { audit, can, guard, parse, requireUser, yearSchema } from '../../lib/http';
 import { customerScope } from '../../services/customers';
 import { getOrCreateDeclaration } from '../../services/declarations';
+import { SHEET_TYPES, readUploads } from '../../services/uploads';
 import { buildWorkbook, parseDate, readSheet, sheetMoneyToCents } from '../../services/xlsx';
 import { applyStatus, resolveBudgetValues, userName, type BudgetRow, type PaymentMethodRow } from './service';
 import { brDate, budgetStatusLabel, categoryLabel } from './text';
@@ -126,16 +127,14 @@ export async function importRoutes(app: FastifyInstance) {
 
   app.post('/finance/budget-import', { preHandler: guard('worksheet.budget') }, async (req) => {
     const user = requireUser(req);
-    let year: number | null = null;
-    let file: { data: Buffer; filename: string; mimeType: string } | null = null;
-    for await (const part of req.parts()) {
-      if (part.type === 'file') file = { data: await part.toBuffer(), filename: part.filename, mimeType: part.mimetype };
-      else if (part.fieldname === 'year') year = parse(yearSchema, part.value);
-    }
+    // o tipo gravado sai da extensão conferida com o conteúdo, nunca do que o navegador informa
+    const { files, fields } = await readUploads(req, { types: SHEET_TYPES, maxFiles: 1, accepted: 'a planilha em .xlsx ou .csv' });
+    const file = files[0];
+    let year: number | null = fields.year ? parse(yearSchema, fields.year) : null;
     const q = (req.query as Record<string, unknown>)?.year;
     if (!year && q) year = parse(yearSchema, q);
     if (!year) throw badRequest('Informe o ano-exercício.');
-    if (!file || !/\.(xlsx|csv)$/i.test(file.filename)) throw badRequest('Envie a planilha em .xlsx ou .csv.');
+    if (!file) throw badRequest('Envie a planilha em .xlsx ou .csv.');
     let sheet: Awaited<ReturnType<typeof readSheet>>;
     try {
       sheet = await readSheet(file.data, file.filename);

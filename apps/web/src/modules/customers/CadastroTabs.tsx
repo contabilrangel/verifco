@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { KeyRound, Save } from 'lucide-react';
+import { KeyRound, Save, ShieldOff } from 'lucide-react';
 import { SEX_OPTIONS, formatCep } from '@verifco/shared';
-import { Button, Card, Checkbox, Input, Select, Textarea } from '../../ds';
+import { Button, Card, Checkbox, ConfirmDialog, Input, Select, Textarea } from '../../ds';
 import { api } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { useAction, useApi } from '../../lib/hooks';
@@ -31,6 +31,14 @@ export function IdentificationTab() {
     success: (r) => (r.code ? `Acesso enviado por e-mail (código ${r.code}).` : 'Acesso enviado por e-mail ao cliente.'),
     onSuccess: refetch,
   });
+  const [revokeOpen, setRevokeOpen] = useState(false);
+  const revoke = useAction(() => api.del(`/customers/${c.id}/portal-access`), {
+    success: 'Acesso ao portal revogado. O código enviado deixou de valer.',
+    onSuccess: () => {
+      setRevokeOpen(false);
+      refetch();
+    },
+  });
   const readOnly = !can('customer.edit');
 
   return (
@@ -38,12 +46,29 @@ export function IdentificationTab() {
       title="Identificação"
       actions={
         can('customer.portal_access') && (
-          <Button kind="secondary" icon={<KeyRound />} loading={portal.isPending} disabled={!c.email} onClick={() => portal.mutate(undefined)} title={!c.email ? 'Cadastre o e-mail do cliente' : undefined}>
-            {c.portalEnabled ? 'Reenviar acesso ao portal' : 'Gerar acesso ao portal do cliente'}
-          </Button>
+          <>
+            {c.portalEnabled && (
+              <Button kind="tertiary" icon={<ShieldOff />} onClick={() => setRevokeOpen(true)}>
+                Revogar acesso
+              </Button>
+            )}
+            <Button kind="secondary" icon={<KeyRound />} loading={portal.isPending} disabled={!c.email} onClick={() => portal.mutate(undefined)} title={!c.email ? 'Cadastre o e-mail do cliente' : undefined}>
+              {c.portalEnabled ? 'Reenviar acesso ao portal' : 'Gerar acesso ao portal do cliente'}
+            </Button>
+          </>
         )
       }
     >
+      <ConfirmDialog
+        open={revokeOpen}
+        danger
+        title="Revogar acesso ao portal"
+        message={`${c.name} não vai mais conseguir entrar no portal com o código enviado. Para liberar de novo, gere um novo acesso.`}
+        confirmLabel="Revogar"
+        loading={revoke.isPending}
+        onConfirm={() => revoke.mutate(undefined)}
+        onClose={() => setRevokeOpen(false)}
+      />
       <fieldset disabled={readOnly} style={{ border: 0, padding: 0, margin: 0 }}>
         <div className="vf-grid" style={{ '--cols': 3 } as React.CSSProperties}>
           <Input label="Nome completo" required value={form.name} onChange={set('name')} style={{ gridColumn: 'span 2' }} />

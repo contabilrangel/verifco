@@ -9,9 +9,10 @@ export type CustomerToken = { typ: 'customer'; cid: string; oid: string; scope: 
 type Token = UserToken | CustomerToken;
 
 /**
- * Lê o token Bearer (ou `?token=` em downloads) e carrega o usuário com as permissões
+ * Lê o token do cabeçalho `Authorization: Bearer` e carrega o usuário com as permissões
  * atuais da função. Como as permissões vêm do banco a cada requisição, revogar uma
- * permissão vale imediatamente.
+ * permissão vale imediatamente. O token de sessão nunca é aceito na URL (`?token=`), onde
+ * vazaria para logs, histórico do navegador e cabeçalho Referer.
  */
 export const authPlugin = fp(async (app: FastifyInstance) => {
   await app.register(jwt, { secret: app.ctx.config.JWT_SECRET });
@@ -21,8 +22,7 @@ export const authPlugin = fp(async (app: FastifyInstance) => {
 
   app.addHook('onRequest', async (req: FastifyRequest) => {
     const header = req.headers.authorization;
-    const query = (req.query as Record<string, unknown> | undefined)?.token;
-    const raw = header?.startsWith('Bearer ') ? header.slice(7) : typeof query === 'string' ? query : null;
+    const raw = header?.startsWith('Bearer ') ? header.slice(7) : null;
     if (!raw) return;
     let payload: Token;
     try {
@@ -61,10 +61,4 @@ export function signUserToken(app: FastifyInstance, user: { id: string; officeId
 export function signCustomerToken(app: FastifyInstance, c: { id: string; officeId: string }, scope: string) {
   const payload: CustomerToken = { typ: 'customer', cid: c.id, oid: c.officeId, scope };
   return app.jwt.sign(payload, { expiresIn: '2h' });
-}
-
-/** Token curto para links de download abertos em nova aba. */
-export function signDownloadToken(app: FastifyInstance, user: { userId: string; officeId: string }, tokenVersion: number) {
-  const payload: UserToken = { typ: 'user', sub: user.userId, oid: user.officeId, tv: tokenVersion };
-  return app.jwt.sign(payload, { expiresIn: '5m' });
 }

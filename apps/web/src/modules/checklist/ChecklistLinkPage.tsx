@@ -3,7 +3,7 @@ import { useParams } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { ListChecks, LogOut } from 'lucide-react';
 import { Alert, Button, Card, EmptyState, Input, Loading } from '../../ds';
-import { ApiError } from '../../lib/api';
+import { ApiError, errorMessage } from '../../lib/api';
 import { CustomerChecklist } from './CustomerChecklist';
 import { checklistSession, customerClient, maskCpfInput, publicApi, type ChecklistSession } from './customerApi';
 import { PublicFrame } from './PublicFrame';
@@ -41,7 +41,7 @@ export function ChecklistLinkPage() {
           <EmptyState
             icon={<ListChecks />}
             title={notFound ? 'Este link não vale mais' : 'Não foi possível abrir o checklist'}
-            description={notFound ? 'O escritório pode ter enviado um link mais novo. Procure a mensagem mais recente ou peça um novo link ao escritório.' : 'Verifique sua conexão e tente de novo.'}
+            description={notFound ? 'O link vale 30 dias e o escritório pode ter enviado um mais novo. Procure a mensagem mais recente ou peça um novo link ao escritório.' : 'Verifique sua conexão e tente de novo.'}
           />
         </Card>
       </PublicFrame>
@@ -92,7 +92,7 @@ function LinkLogin({ token, officeName, exerciseYear, expired, onLogged }: { tok
       const r = await publicApi.post<{ token: string; checklistId: string }>('/portal/checklist-login', { token, cpf, code });
       onLogged({ link: token, token: r.token, checklistId: r.checklistId });
     } catch (err) {
-      setError(err instanceof ApiError ? (err.status === 404 ? 'Este link não vale mais. Peça um novo ao escritório.' : err.message) : 'Não foi possível entrar.');
+      setError(err instanceof ApiError && err.status === 404 ? 'Este link não vale mais. Peça um novo ao escritório.' : errorMessage(err, 'Não foi possível entrar.'));
     } finally {
       setLoading(false);
     }

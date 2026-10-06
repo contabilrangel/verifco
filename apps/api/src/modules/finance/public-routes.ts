@@ -13,6 +13,7 @@ import { sha256 } from '../../lib/crypto';
 import { HttpError, conflict, notFound, unauthorized } from '../../lib/errors';
 import { optionalText, parse, uuidParam } from '../../lib/http';
 import { notify } from '../../services/notify';
+import { sendStoredFile } from '../../services/uploads';
 import { approveBudget, linkExpiresAt, rejectBudget, type BudgetRow } from './service';
 import { categoryLabel } from './text';
 
@@ -53,6 +54,7 @@ async function notifyOffice(ctx: AppContext, b: BudgetRow, approved: boolean, vi
   await notify(ctx.db, {
     officeId: b.officeId,
     userId: c?.responsibleUserId ?? null,
+    customerId: b.customerId,
     title: approved ? 'Orçamento aprovado pelo cliente' : 'Orçamento recusado pelo cliente',
     body: `${c?.name ?? 'Cliente'} ${approved ? 'aprovou' : 'recusou'} a proposta de ${categoryLabel(b.category)} ${b.exerciseYear} (${via}).`,
     link: `/clientes/${b.customerId}/irpf/orcamento`,
@@ -94,7 +96,7 @@ export async function publicRoutes(app: FastifyInstance) {
     if (!office?.logoFileId) throw notFound('Logo');
     const { row, data } = await ctx.files.get(office.id, office.logoFileId);
     if (!/^image\//.test(row.mimeType)) throw notFound('Logo');
-    return reply.header('Content-Type', row.mimeType).header('Cache-Control', 'private, max-age=3600').send(data);
+    return sendStoredFile(reply, row, data, true, 'private, max-age=3600');
   });
 
   /** Aprovação idempotente: repetir não gera outro faturamento. */

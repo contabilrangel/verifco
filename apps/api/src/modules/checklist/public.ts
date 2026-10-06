@@ -16,9 +16,11 @@ import { badRequest, conflict, forbidden, notFound, unauthorized } from '../../l
 import { emptyToNull, parse } from '../../lib/http';
 import { signCustomerToken } from '../../plugins/auth';
 import { setDeclarationSubstatus } from '../../services/declarations';
-import { loginLimiter, requireChecklistAccess } from '../portal/access';
-import { attachFiles, checklistCodeHash, customerView, loadBundle, lockOf, notifyOffice, refreshFinished, removeDocument } from './service';
-import { readChecklistUploads, sendStoredFile } from './uploads';
+import { CUSTOMER_LOGIN_RULE, check, fail, resetLimit } from '../../services/rate-limit';
+import { requireChecklistAccess } from '../portal/access';
+import { attachFiles, checklistAccessValid, checklistCodeHash, customerView, loadBundle, lockOf, notifyOffice, refreshFinished, removeDocument } from './service';
+import { sendStoredFile } from '../../services/uploads';
+import { readChecklistUploads } from './uploads';
 
 const sectionEnum = z.enum(CHECKLIST_FILLABLE_SECTIONS as [ChecklistSection, ...ChecklistSection[]]);
 const idParam = z.object({ id: z.uuid() });
@@ -36,11 +38,11 @@ const MAX_CUSTOMER_ITEMS = 100;
 export async function checklistPublicRoutes(app: FastifyInstance) {
   const { ctx } = app;
   const { db } = ctx;
-  const limiter = loginLimiter(ctx);
 
   async function byLinkToken(token: string) {
     const c = await db.query.checklists.findFirst({ where: eq(checklists.accessTokenHash, sha256(token)) });
-    if (!c) return null;
+    // link vencido vale como inexistente: o escritório precisa enviar um novo acesso
+    if (!c || !checklistAccessValid(c)) return null;
     const declaration = await db.query.declarations.findFirst({ where: eq(declarations.id, c.declarationId) });
     const customer = declaration ? await db.query.customers.findFirst({ where: eq(customers.id, declaration.customerId) }) : null;
     if (!declaration || !customer || customer.deletedAt) return null;
@@ -58,6 +60,10 @@ export async function checklistPublicRoutes(app: FastifyInstance) {
       .where(and(eq(checklists.id, checklistId), eq(checklists.officeId, auth.officeId), eq(declarations.customerId, auth.customerId)))
       .limit(1);
     if (!row) throw notFound('Checklist');
+    // sessão aberta pelo link: termina junto com a validade do link (o portal tem acesso próprio)
+    if (auth.scope !== 'portal' && !checklistAccessValid(row.checklist)) {
+      throw unauthorized('O link do checklist venceu. Peça um novo acesso ao escritório.');
+    }
     const lock = await lockOf(db, row.checklist.officeId, row.declaration);
     return { ...row, lock };
   }
@@ -99,21 +105,22 @@ export async function checklistPublicRoutes(app: FastifyInstance) {
 
   app.post('/portal/checklist-login', async (req) => {
     const body = parse(z.object({ token: z.string().min(16).max(200), cpf: z.string().max(20), code: z.string().max(12) }), req.body);
+    // falhas por link no banco (valem para todas as instâncias), além do limite por IP de app.ts
     const key = `checklist:${sha256(body.token)}`;
-    limiter.check(key);
+    await check(ctx, key, CUSTOMER_LOGIN_RULE);
     const found = await byLinkToken(body.token);
     if (!found) {
-      limiter.fail(key);
+      await fail(ctx, key, CUSTOMER_LOGIN_RULE);
       throw notFound('Link');
     }
     const { checklist, customer } = found;
     const cpfOk = onlyDigits(body.cpf) === customer.cpfCnpj;
     const codeOk = safeEqual(checklist.accessCodeHash, checklistCodeHash(checklist.id, onlyDigits(body.code)));
     if (!cpfOk || !codeOk) {
-      limiter.fail(key);
+      await fail(ctx, key, CUSTOMER_LOGIN_RULE);
       throw unauthorized('CPF ou código incorretos. Confira os dados que o escritório enviou.');
     }
-    limiter.reset(key);
+    await resetLimit(ctx, key);
     await db.update(checklists).set({ lastCustomerAccessAt: new Date() }).where(eq(checklists.id, checklist.id));
     return { token: signCustomerToken(app, customer, `checklist:${checklist.id}`), checklistId: checklist.id };
   });

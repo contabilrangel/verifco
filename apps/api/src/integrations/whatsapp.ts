@@ -16,6 +16,7 @@
 import { onlyDigits } from '@verifco/shared';
 import type { AppContext } from '../context';
 import { IntegrationError, ensureOk, httpRequest } from './http';
+import { assertSafeBaseUrl } from './ssrf';
 import type { OutgoingWhatsApp, WhatsAppSender } from './providers';
 import { loadIntegration, type LoadedIntegration } from './store';
 
@@ -61,12 +62,13 @@ export class EvolutionClient {
     private instance: string,
     private apiKey: string,
   ) {
-    this.baseUrl = baseUrl.replace(/\/+$/, '');
+    // a URL vem do escritório: só https público, sem usuário/senha, "?" ou "#" (proteção contra SSRF)
+    this.baseUrl = assertSafeBaseUrl('evolution', baseUrl).toString().replace(/\/+$/, '');
   }
 
   private async request<T>(method: string, path: string, body?: unknown, timeoutMs?: number) {
-    const res = await httpRequest<T>(this.fetchImpl, 'evolution', `${this.baseUrl}${path}`, { method, body, headers: { apikey: this.apiKey }, timeoutMs });
-    return ensureOk('evolution', res, describeEvolutionError);
+    const res = await httpRequest<T>(this.fetchImpl, 'evolution', `${this.baseUrl}${path}`, { method, body, headers: { apikey: this.apiKey }, timeoutMs, opaqueErrors: true });
+    return ensureOk('evolution', res, describeEvolutionError, { rawBody: false });
   }
 
   async connectionState() {
@@ -168,20 +170,21 @@ export class MetaWhatsAppClient {
 
 type LoadedWhatsApp = LoadedIntegration<WhatsAppConfig, WhatsAppSecrets>;
 
-function clientFor(fetchImpl: typeof fetch, loaded: LoadedWhatsApp) {
+/** `userFetch` é o fetch usado com a URL informada pelo escritório (Evolution). */
+function clientFor(fetchImpl: typeof fetch, loaded: LoadedWhatsApp, userFetch: typeof fetch = fetchImpl) {
   const { config: c, secrets: s } = loaded;
   if (c.mode === 'meta') {
     if (!c.phoneNumberId || !s.accessToken) throw new IntegrationError('whatsapp', 'Informe o Phone number ID e o token de acesso da Meta em Administração › Integrações.');
     return { mode: 'meta' as const, client: new MetaWhatsAppClient(fetchImpl, c.phoneNumberId, s.accessToken, c.apiVersion) };
   }
   if (!c.baseUrl || !c.instance || !s.apiKey) throw new IntegrationError('whatsapp', 'Informe a URL, a instância e a API key da Evolution API em Administração › Integrações.');
-  return { mode: 'evolution' as const, client: new EvolutionClient(fetchImpl, c.baseUrl, c.instance, s.apiKey) };
+  return { mode: 'evolution' as const, client: new EvolutionClient(userFetch, c.baseUrl, c.instance, s.apiKey) };
 }
 
-async function deliver(fetchImpl: typeof fetch, loaded: LoadedWhatsApp, msg: OutgoingWhatsApp) {
+async function deliver(fetchImpl: typeof fetch, loaded: LoadedWhatsApp, msg: OutgoingWhatsApp, userFetch?: typeof fetch) {
   const to = onlyDigits(msg.to);
   if (to.length < 10) throw new IntegrationError('whatsapp', `Número de WhatsApp inválido: ${msg.to}`);
-  const c = clientFor(fetchImpl, loaded);
+  const c = clientFor(fetchImpl, loaded, userFetch);
   const doc = msg.document;
   const text = msg.text?.trim() ?? '';
   if (!doc) return c.client.sendText(to, text);
@@ -193,19 +196,19 @@ async function deliver(fetchImpl: typeof fetch, loaded: LoadedWhatsApp, msg: Out
   return c.mode === 'meta' ? c.client.sendDocument(to, doc, text) : c.client.sendMedia(to, doc, text);
 }
 
-export function createWhatsAppSender(ctx: AppContext, getFetch: () => typeof fetch): WhatsAppSender {
+export function createWhatsAppSender(ctx: AppContext, getFetch: () => typeof fetch, getUserFetch: () => typeof fetch = getFetch): WhatsAppSender {
   return {
     async send(officeId, msg) {
       const loaded = await loadIntegration<WhatsAppConfig, WhatsAppSecrets>(ctx, officeId, 'whatsapp');
       if (!loaded || !loaded.row.enabled) throw new IntegrationError('whatsapp', 'Configure o WhatsApp em Administração › Integrações.');
-      return { messageId: await deliver(getFetch(), loaded, msg) };
+      return { messageId: await deliver(getFetch(), loaded, msg, getUserFetch()) };
     },
   };
 }
 
 /** Teste: confere a conexão; com `sendTo`, envia uma mensagem de teste. */
-export async function testWhatsApp(fetchImpl: typeof fetch, loaded: LoadedWhatsApp, opts: { sendTo?: string } = {}) {
-  const c = clientFor(fetchImpl, loaded);
+export async function testWhatsApp(fetchImpl: typeof fetch, loaded: LoadedWhatsApp, opts: { sendTo?: string } = {}, userFetch: typeof fetch = fetchImpl) {
+  const c = clientFor(fetchImpl, loaded, userFetch);
   let message: string;
   if (c.mode === 'evolution') {
     const state = await c.client.connectionState();
@@ -218,7 +221,7 @@ export async function testWhatsApp(fetchImpl: typeof fetch, loaded: LoadedWhatsA
     message = `Número ${info.display_phone_number ?? loaded.config.phoneNumberId}${info.verified_name ? ` (${info.verified_name})` : ''} conectado.`;
   }
   if (opts.sendTo) {
-    await deliver(fetchImpl, loaded, { to: opts.sendTo, text: 'Mensagem de teste do Verifco: a integração com o WhatsApp está funcionando.' });
+    await deliver(fetchImpl, loaded, { to: opts.sendTo, text: 'Mensagem de teste do Verifco: a integração com o WhatsApp está funcionando.' }, userFetch);
     message += ` Mensagem de teste enviada para ${opts.sendTo}.`;
   }
   return message;

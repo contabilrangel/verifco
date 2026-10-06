@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router';
-import { Bell, KeyRound, LogOut, Save, ShieldCheck } from 'lucide-react';
+import { Bell, BellOff, KeyRound, LogOut, Save, ShieldCheck, Trash2, Upload } from 'lucide-react';
 import { formatCpfCnpj, type PermissionCategory } from '@verifco/shared';
-import { Alert, Avatar, Button, Card, ConfirmDialog, Input, Loading, Switch, Tag } from '../../ds';
+import { Alert, Avatar, Button, Card, ConfirmDialog, DropFile, Input, Loading, Select, Switch, Tag, useToast } from '../../ds';
 import { PageHeader } from '../../app/Shell';
 import { api, setToken } from '../../lib/api';
 import { useAuth, type Me } from '../../lib/auth';
+import { browserNotificationsSupported, getDeviceId } from '../../lib/deviceNotifications';
 import { useAction, useApi } from '../../lib/hooks';
 import { formatDate } from '../../lib/format';
 import { AUTH_TYPES, SettingLabel, type ProcuratorRow } from './shared';
@@ -26,7 +27,7 @@ export function AccountPage() {
         </div>
         <div className="vf-stack" style={{ '--gap': '24px' } as React.CSSProperties}>
           <PasswordCard />
-          <ProcuratorCard userId={me.user.id} />
+          <ProcuratorCard />
           <SessionsCard />
         </div>
       </div>
@@ -165,35 +166,111 @@ function PasswordCard() {
   );
 }
 
-/** Se o usuário é procurador cadastrado, mostra a forma de acesso e o certificado. */
-function ProcuratorCard({ userId }: { userId: string }) {
+/**
+ * Se o usuário é procurador cadastrado: forma de autenticação e certificado A1, que ele mesmo
+ * configura aqui (sem precisar das permissões de Administração › Procuradores).
+ */
+function ProcuratorCard() {
   const { can } = useAuth();
-  const list = useApi<ProcuratorRow[]>(['procurators'], '/procurators');
-  const mine = (list.data ?? []).filter((p) => p.userId === userId);
+  const list = useApi<ProcuratorRow[]>(['account-procurator'], '/account/procurator');
+  const mine = list.data ?? [];
   if (!mine.length) return null;
   return (
     <Card title="Você como procurador">
-      <div className="vf-stack">
+      <div className="vf-stack" style={{ '--gap': '24px' } as React.CSSProperties}>
         {mine.map((p) => (
-          <div key={p.id} className="vf-stack" style={{ '--gap': '4px' } as React.CSSProperties}>
-            <span className="vf-text-sm-bold">
-              {p.name} · <span className="vf-mono">{formatCpfCnpj(p.cpfCnpj)}</span>
-            </span>
-            <span className="vf-inline">
-              <Tag tone={p.authType === 'certificate_cloud' ? 'primary' : 'neutral'}>{AUTH_TYPES[p.authType]}</Tag>
-              {p.hasCertificate && <Tag tone="success">Certificado guardado</Tag>}
-              {p.certificateExpiresAt && <span className="vf-text-xs vf-muted">Validade {formatDate(p.certificateExpiresAt)}</span>}
-            </span>
-            <span className="vf-text-xs vf-muted">{p.customers} cliente(s) associados.</span>
-          </div>
+          <OwnProcurator key={p.id} p={p} />
         ))}
         {can('procuration.edit', 'procuration.certificate') && (
           <Link to="/admin/procuradores" className="vf-text-sm-bold">
-            Gerenciar em Administração › Procuradores
+            Gerenciar todos em Administração › Procuradores
           </Link>
         )}
       </div>
     </Card>
+  );
+}
+
+function OwnProcurator({ p }: { p: ProcuratorRow }) {
+  const toast = useToast();
+  const [file, setFile] = useState<File | null>(null);
+  const [password, setPassword] = useState('');
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const invalidate = [['account-procurator'], ['procurators']];
+  const authType = useAction((v: ProcuratorRow['authType']) => api.patch(`/procurators/${p.id}/auth-type`, { authType: v }), {
+    success: 'Forma de autenticação atualizada.',
+    invalidate,
+  });
+  const upload = useAction(() => api.upload(`/procurators/${p.id}/certificate`, file!, { password }), {
+    success: 'Certificado guardado com segurança.',
+    invalidate,
+    onSuccess: () => {
+      setFile(null);
+      setPassword('');
+    },
+  });
+  const remove = useAction(() => api.del(`/procurators/${p.id}/certificate`), {
+    success: 'Certificado removido.',
+    invalidate,
+    onSuccess: () => setConfirmRemove(false),
+  });
+  return (
+    <div className="vf-stack">
+      <div className="vf-stack" style={{ '--gap': '4px' } as React.CSSProperties}>
+        <span className="vf-text-sm-bold">
+          {p.name} · <span className="vf-mono">{formatCpfCnpj(p.cpfCnpj)}</span>
+        </span>
+        <span className="vf-inline">
+          {p.hasCertificate ? <Tag tone="success">Certificado guardado</Tag> : <Tag>Sem certificado na nuvem</Tag>}
+          {p.certificateExpiresAt && <span className="vf-text-xs vf-muted">Validade {formatDate(p.certificateExpiresAt)}</span>}
+        </span>
+        <span className="vf-text-xs vf-muted">{p.customers} cliente(s) associados.</span>
+      </div>
+      <Select
+        label="Forma de autenticação no eCAC"
+        value={p.authType}
+        disabled={authType.isPending}
+        onChange={(e) => authType.mutate(e.target.value as ProcuratorRow['authType'])}
+        options={(Object.keys(AUTH_TYPES) as ProcuratorRow['authType'][]).map((k) => ({ value: k, label: AUTH_TYPES[k] }))}
+      />
+      {p.authType === 'certificate_cloud' && (
+        <div className="vf-stack">
+          <p className="vf-muted vf-text-xs">O arquivo e a senha ficam cifrados e são usados só pelo robô para acessar o eCAC dos clientes com procuração.</p>
+          <DropFile
+            accept=".pfx,.p12"
+            title={file ? file.name : p.hasCertificate ? 'Arraste um novo .pfx ou .p12 para trocar' : 'Arraste o arquivo .pfx ou .p12'}
+            hint={file ? 'Clique em Selecionar para trocar o arquivo' : 'Somente certificado A1 (arquivo)'}
+            onFiles={(files) => {
+              const f = files[0];
+              if (!f) return;
+              if (!/\.(pfx|p12)$/i.test(f.name)) return toast.error('Envie o arquivo .pfx ou .p12 do certificado A1.');
+              setFile(f);
+            }}
+          />
+          <Input label="Senha de instalação do certificado" type="password" autoComplete="off" value={password} onChange={(e) => setPassword(e.target.value)} />
+          <div className="vf-inline vf-end">
+            {p.hasCertificate && (
+              <Button kind="tertiary" icon={<Trash2 />} onClick={() => setConfirmRemove(true)}>
+                Remover certificado
+              </Button>
+            )}
+            <Button icon={<Upload />} disabled={!file || !password} loading={upload.isPending} onClick={() => upload.mutate(undefined)}>
+              {p.hasCertificate ? 'Trocar certificado' : 'Salvar certificado'}
+            </Button>
+          </div>
+        </div>
+      )}
+      <ConfirmDialog
+        open={confirmRemove}
+        danger
+        title="Remover certificado"
+        message="O robô deixa de acessar o eCAC com este certificado até que um novo seja enviado."
+        confirmLabel="Remover"
+        loading={remove.isPending}
+        onConfirm={() => remove.mutate(undefined)}
+        onClose={() => setConfirmRemove(false)}
+      />
+    </div>
   );
 }
 
@@ -237,15 +314,39 @@ function useLogoutAll() {
   return { run: () => action.mutate(undefined), pending: action.isPending };
 }
 
-/** Preferências pessoais: notificações e revogação de sessões. */
+/** Preferências pessoais: notificações (geral e por navegador) e revogação de sessões. */
 export function AccountPreferencesPage() {
   const { me, refresh } = useAuth();
+  const toast = useToast();
   const [open, setOpen] = useState(false);
+  const [revokeOpen, setRevokeOpen] = useState(false);
   const { run, pending } = useLogoutAll();
   const enabled = me?.user.notificationPrefs?.enabled !== false;
   const save = useAction((v: boolean) => api.put('/auth/preferences', { notificationsEnabled: v }), {
     success: 'Preferência salva.',
     onSuccess: () => void refresh(),
+  });
+  const supported = browserNotificationsSupported();
+  const deviceId = getDeviceId();
+  const devices = me?.user.notificationPrefs?.devices ?? [];
+  const thisDevice = supported && devices.includes(deviceId) && Notification.permission === 'granted';
+  const device = useAction((on: boolean) => (on ? api.post('/account/notification-devices', { deviceId }) : api.del(`/account/notification-devices/${deviceId}`)), {
+    success: 'Preferência deste navegador salva.',
+    onSuccess: () => void refresh(),
+  });
+  const toggleDevice = async (on: boolean) => {
+    // o navegador pede a permissão de notificação na primeira vez
+    if (on && (await Notification.requestPermission()) !== 'granted') {
+      return toast.error('O navegador bloqueou as notificações. Libere nas configurações do site e tente de novo.');
+    }
+    device.mutate(on);
+  };
+  const revokeAll = useAction(() => api.del('/account/notification-devices'), {
+    success: 'Notificações desligadas em todos os navegadores.',
+    onSuccess: () => {
+      setRevokeOpen(false);
+      void refresh();
+    },
   });
   if (!me) return <Loading />;
   return (
@@ -257,14 +358,37 @@ export function AccountPreferencesPage() {
             <Switch
               label={
                 <SettingLabel
-                  title="Receber notificações nesta conta"
-                  help="Avisos no sino sobre documentos enviados por clientes, checklists concluídos, mudanças no eCAC e tarefas finalizadas. Vale para todos os dispositivos."
+                  title="Configuração global"
+                  help="Avisos no sino sobre documentos enviados por clientes, checklists concluídos, mudanças no eCAC e tarefas finalizadas. Desligado, nenhum dispositivo recebe avisos."
                 />
               }
               checked={save.isPending ? !enabled : enabled}
               disabled={save.isPending}
               onChange={(v) => save.mutate(v)}
             />
+            <Switch
+              label={
+                <SettingLabel
+                  title="Este navegador"
+                  help={
+                    supported
+                      ? 'Controla as notificações deste dispositivo: os avisos do sino aparecem também como notificação do sistema enquanto o Verifco estiver aberto em alguma aba.'
+                      : 'Este navegador não oferece notificações do sistema.'
+                  }
+                />
+              }
+              checked={device.isPending ? !thisDevice : thisDevice}
+              disabled={!supported || !enabled || device.isPending}
+              onChange={(v) => void toggleDevice(v)}
+            />
+            <div className="vf-inline vf-between" style={{ alignItems: 'center' }}>
+              <span className="vf-text-xs vf-muted">
+                {devices.length ? `${devices.length} navegador(es) com notificações ligadas.` : 'Nenhum navegador com notificações ligadas.'}
+              </span>
+              <Button kind="secondary" size="sm" icon={<BellOff />} disabled={!devices.length} onClick={() => setRevokeOpen(true)}>
+                Revogar todas notificações
+              </Button>
+            </div>
           </div>
         </Card>
         <Card title="Sessões e acesso" actions={<LogOut size={20} className="vf-muted" />}>
@@ -287,6 +411,16 @@ export function AccountPreferencesPage() {
         loading={pending}
         onConfirm={run}
         onClose={() => setOpen(false)}
+      />
+      <ConfirmDialog
+        open={revokeOpen}
+        danger
+        title="Revogar todas as notificações"
+        message="As notificações do sistema serão desligadas em todos os navegadores. Os avisos continuam no sino, e as sessões seguem abertas."
+        confirmLabel="Revogar"
+        loading={revokeAll.isPending}
+        onConfirm={() => revokeAll.mutate(undefined)}
+        onClose={() => setRevokeOpen(false)}
       />
     </>
   );

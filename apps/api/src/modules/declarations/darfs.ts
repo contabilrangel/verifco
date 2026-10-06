@@ -10,6 +10,7 @@ import { audit, dateStr, guard, parse, requireUser, uuidParam } from '../../lib/
 import { getCustomerForUser } from '../../services/customers';
 import { queueDelivery } from '../../services/delivery';
 import { getOfficeSettings } from '../../services/settings';
+import { PDF_TYPES, readUploads } from '../../services/uploads';
 import { getDeclarationForUser } from './access';
 
 type DarfRow = typeof darfs.$inferSelect;
@@ -182,12 +183,11 @@ export async function darfRoutes(app: FastifyInstance) {
     const user = requireUser(req);
     const { id } = parse(uuidParam, req.params);
     const { darf, customer } = await getDarfForUser(app.ctx, user, id);
-    const file = await req.file();
+    const {
+      files: [file],
+    } = await readUploads(req, { types: PDF_TYPES, maxFiles: 1, accepted: 'a guia em PDF' });
     if (!file) throw badRequest('Envie o PDF da guia.');
-    const data = await file.toBuffer();
-    const isPdf = file.mimetype === 'application/pdf' || /\.pdf$/i.test(file.filename);
-    if (!isPdf || data.subarray(0, 4).toString() !== '%PDF') throw badRequest('Envie a guia em PDF.');
-    const saved = await app.ctx.files.save({ officeId: user.officeId, data, filename: file.filename || `darf-quota-${darf.quotaNumber}.pdf`, mimeType: 'application/pdf', userId: user.userId });
+    const saved = await app.ctx.files.save({ officeId: user.officeId, data: file.data, filename: file.filename, mimeType: file.mimeType, userId: user.userId });
     const [row] = await db.update(darfs).set({ fileId: saved.id, sendStatus: 'not_sent' }).where(eq(darfs.id, darf.id)).returning();
     if (darf.fileId) await app.ctx.files.remove(user.officeId, darf.fileId);
     await audit(req, 'upload', 'darf', darf.id);

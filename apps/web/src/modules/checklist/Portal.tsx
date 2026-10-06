@@ -18,7 +18,7 @@ import {
 } from 'lucide-react';
 import { BUDGET_CATEGORIES } from '@verifco/shared';
 import { Alert, Button, Card, ConfirmDialog, Input, Loading, Progress, Tag, cx, useToast } from '../../ds';
-import { ApiError } from '../../lib/api';
+import { ApiError, errorMessage } from '../../lib/api';
 import { formatDate, formatMoney } from '../../lib/format';
 import { ChatThread, Composer, timeOf, type ChatEntry } from './Chat';
 import { CustomerChecklist } from './CustomerChecklist';
@@ -31,7 +31,6 @@ interface PortalCtx {
   client: CustomerClient;
 }
 const usePortal = () => useOutletContext<PortalCtx>();
-const errMsg = (e: unknown) => (e instanceof ApiError ? e.message : 'Não foi possível concluir. Tente de novo.');
 
 // ---------------------------------------------------------------------------
 // Layout e login
@@ -130,7 +129,7 @@ function PortalLogin({ expired, onLogged }: { expired: boolean; onLogged: (s: Po
       }
       if (r.token) onLogged({ token: r.token, firstName: r.customer?.firstName ?? '', officeName: r.office?.name ?? '' });
     } catch (err) {
-      setError(errMsg(err));
+      setError(errorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -222,12 +221,12 @@ export function PortalHome() {
       setDeciding(null);
       void qc.invalidateQueries({ queryKey: ['portal'] });
     },
-    onError: (e) => toast.error(errMsg(e)),
+    onError: (e) => toast.error(errorMessage(e)),
   });
-  const download = (d: { id: string; filename: string }) => client.open(`/portal/documents/${d.id}`, d.filename, false).catch((e) => toast.error(errMsg(e)));
+  const download = (d: { id: string; filename: string }) => client.open(`/portal/documents/${d.id}`, d.filename, false).catch((e) => toast.error(errorMessage(e)));
 
   if (overview.isLoading) return <Loading />;
-  if (!overview.data) return <Alert tone="danger">{errMsg(overview.error)}</Alert>;
+  if (!overview.data) return <Alert tone="danger">{errorMessage(overview.error)}</Alert>;
   const o = overview.data;
   const pendingBudgets = (budgets.data ?? []).filter((b) => !b.status || b.status === 'sent');
   const [current, previous] = o.declarations;
@@ -408,10 +407,10 @@ export function PortalMessages() {
       qc.setQueryData(key, r);
       toast.success('Mensagem enviada ao escritório.');
     },
-    onError: (e) => toast.error(errMsg(e)),
+    onError: (e) => toast.error(errorMessage(e)),
   });
   if (q.isLoading) return <Loading />;
-  if (!q.data) return <Alert tone="danger">{errMsg(q.error)}</Alert>;
+  if (!q.data) return <Alert tone="danger">{errorMessage(q.error)}</Alert>;
   const entries: ChatEntry[] = q.data.messages.map((m) => ({
     id: m.id,
     mine: m.fromMe,

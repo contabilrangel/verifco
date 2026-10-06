@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { EllipsisVertical, Search } from 'lucide-react';
 import { IconButton, Input, Menu } from '../../ds';
-import { getToken } from '../../lib/api';
+import { getToken, isViewableType } from '../../lib/api';
 
 export interface OfficeData {
   id: string;
@@ -62,7 +62,6 @@ export interface ProcuratorRow {
   cpfCnpj: string;
   authType: 'govbr' | 'certificate_local' | 'certificate_cloud';
   userId: string | null;
-  certificateFileId: string | null;
   certificateExpiresAt: string | null;
   loginStatus: string;
   lastValidatedAt: string | null;
@@ -92,6 +91,8 @@ export function useAuthedFileUrl(fileId: string | null | undefined) {
       .then((r) => (r.ok ? r.blob() : Promise.reject(new Error(String(r.status)))))
       .then((blob) => {
         if (cancelled) return;
+        // só imagens da lista de tipos visualizáveis viram URL local
+        if (!blob.type.startsWith('image/') || !isViewableType(blob.type)) return setUrl(null);
         objectUrl = URL.createObjectURL(blob);
         setUrl(objectUrl);
       })

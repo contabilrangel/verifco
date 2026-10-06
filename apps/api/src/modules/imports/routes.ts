@@ -7,6 +7,7 @@ import { files, importBatches, users } from '../../db/schema';
 import { badRequest, forbidden, notFound } from '../../lib/errors';
 import { audit, can, paginate, paginationSchema, parse, requirePermission, requireUser, uuidParam } from '../../lib/http';
 import { buildWorkbook } from '../../services/xlsx';
+import { SHEET_TYPES, readUploads } from '../../services/uploads';
 import { PROCESSORS } from './processors';
 import { COLUMNS, hasColumn, readImportFile, type SheetRow } from './sheet';
 import { buildTemplate } from './templates';
@@ -64,10 +65,11 @@ export async function importRoutes(app: FastifyInstance) {
     const def = IMPORT_KINDS[kind];
     const user = requirePermission(req, def.permission);
 
-    const file = await req.file();
+    const {
+      files: [file],
+    } = await readUploads(req, { types: SHEET_TYPES, maxFiles: 1, accepted: 'um arquivo .xlsx ou .csv' });
     if (!file) throw badRequest('Envie a planilha (.xlsx ou .csv).');
-    if (!/\.(xlsx|csv)$/i.test(file.filename)) throw badRequest('Formato não aceito. Envie um arquivo .xlsx ou .csv.');
-    const data = await file.toBuffer();
+    const { data } = file;
 
     let rows: SheetRow[];
     try {
@@ -94,7 +96,7 @@ export async function importRoutes(app: FastifyInstance) {
     // planilhas com senha não são guardadas: o conteúdo já foi cifrado nos clientes
     const saved = def.hasSecrets
       ? null
-      : await app.ctx.files.save({ officeId: user.officeId, data, filename: file.filename, mimeType: file.mimetype, userId: user.userId });
+      : await app.ctx.files.save({ officeId: user.officeId, data, filename: file.filename, mimeType: file.mimeType, userId: user.userId });
 
     const [batch] = await db
       .insert(importBatches)

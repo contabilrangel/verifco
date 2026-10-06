@@ -113,11 +113,6 @@ async function sheetToText(data: Buffer): Promise<string> {
   return out.join('\n');
 }
 
-/** Tipos aceitos como anexo para a IA. */
-export function isSupportedAttachment(filename: string, mimeType: string) {
-  return MEDIA.test(mimeType) || /\.(csv|txt|xlsx)$/i.test(filename) || /^text\//.test(mimeType);
-}
-
 /**
  * Converte arquivos do escritório em anexos da mensagem para a IA:
  * PDF e imagens vão como arquivo; CSV, TXT e XLSX viram texto.

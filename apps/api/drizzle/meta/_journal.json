@@ -15,6 +15,20 @@
       "when": 1791255560879,
       "tag": "0001_robo_tokens",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791267037205,
+      "tag": "0002_seguranca_conta_mensagens",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1791275844819,
+      "tag": "0003_checklist_validade_links",
+      "breakpoints": true
     }
   ]
 }

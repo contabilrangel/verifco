@@ -30,6 +30,40 @@ export class ApiError extends Error {
 
 const BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? '';
 
+export const OFFLINE_MESSAGE = 'Sem conexão com o servidor. Verifique sua internet e tente de novo.';
+
+/** Mensagem de erro para a interface (os erros da API já vêm em português). */
+export function errorMessage(e: unknown, fallback = 'Não foi possível concluir. Tente de novo.'): string {
+  if (e instanceof ApiError) return e.message || fallback;
+  if (e instanceof TypeError) return OFFLINE_MESSAGE;
+  return fallback;
+}
+
+/**
+ * Tipos que podem abrir numa aba do navegador sem rodar script (PDF e imagens; nunca HTML/SVG).
+ * É a única lista do app: botões de "Visualizar" e aberturas de arquivo usam {@link isViewableType}.
+ */
+export const VIEWABLE_TYPES: ReadonlySet<string> = new Set(['application/pdf', 'image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+
+/** O tipo (com ou sem parâmetros, como `; charset=...`) pode abrir no navegador? */
+export const isViewableType = (mime: string | null | undefined) => VIEWABLE_TYPES.has((mime ?? '').split(';')[0].trim().toLowerCase());
+
+const filenameOf = (res: Response, fallback: string) => {
+  const cd = res.headers.get('content-disposition') ?? '';
+  const m = /filename\*=UTF-8''([^;]+)/.exec(cd) ?? /filename="?([^";]+)"?/.exec(cd);
+  return m ? decodeURIComponent(m[1]) : fallback;
+};
+
+/** Dispara o download como binário (o navegador não interpreta o conteúdo). */
+function saveBlob(data: ArrayBuffer, name: string) {
+  const url = URL.createObjectURL(new Blob([data], { type: 'application/octet-stream' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
 let onUnauthorized: (() => void) | null = null;
 export const setUnauthorizedHandler = (fn: () => void) => {
   onUnauthorized = fn;
@@ -45,7 +79,13 @@ async function request<T>(method: string, path: string, body?: unknown, opts: { 
     headers['Content-Type'] = 'application/json';
     payload = JSON.stringify(body);
   }
-  const res = await fetch(`${BASE}/api${path}`, { method, headers, body: payload });
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/api${path}`, { method, headers, body: payload });
+  } catch {
+    // sem rede, o navegador lança "Failed to fetch" (em inglês): a interface recebe a mensagem em português
+    throw new ApiError(0, OFFLINE_MESSAGE);
+  }
   if (res.status === 401 && !opts.token && token) onUnauthorized?.();
   if (!res.ok) {
     let msg = `Erro ${res.status}`;
@@ -80,22 +120,21 @@ export const api = {
   /** Baixa um arquivo autenticado e dispara o download no navegador. */
   download: async (path: string, fallbackName = 'arquivo', body?: unknown) => {
     const res = await request<Response>(body ? 'POST' : 'GET', path, body, { raw: true });
-    const blob = await res.blob();
-    const cd = res.headers.get('content-disposition') ?? '';
-    const m = /filename\*=UTF-8''([^;]+)/.exec(cd) ?? /filename="?([^";]+)"?/.exec(cd);
-    const name = m ? decodeURIComponent(m[1]) : fallbackName;
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = name;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    saveBlob(await res.arrayBuffer(), filenameOf(res, fallbackName));
   },
-  /** Abre um arquivo autenticado em nova aba (PDF, imagem). */
-  open: async (path: string) => {
+  /**
+   * Abre um arquivo autenticado em nova aba. Só PDF e imagens abrem (com o tipo fixado no blob,
+   * que tem a origem do app); qualquer outro tipo é baixado, para um HTML/SVG enviado como
+   * documento não rodar script com a sessão de quem abre.
+   */
+  open: async (path: string, fallbackName = 'arquivo') => {
     const res = await request<Response>('GET', path, undefined, { raw: true });
-    const url = URL.createObjectURL(await res.blob());
+    const type = (res.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
+    const data = await res.arrayBuffer();
+    if (!isViewableType(type)) return saveBlob(data, filenameOf(res, fallbackName));
+    const url = URL.createObjectURL(new Blob([data], { type }));
     window.open(url, '_blank', 'noopener');
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
   },
 };
 

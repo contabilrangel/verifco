@@ -8,6 +8,8 @@ import { randomToken, sha256 } from '../../lib/crypto';
 import { badRequest, conflict, unauthorized } from '../../lib/errors';
 import { parse, requireUser } from '../../lib/http';
 import { signUserToken } from '../../plugins/auth';
+import { FORGOT_PER_ACCOUNT_RULE, LOGIN_EMAIL_RULE, allow, check, fail, resetLimit } from '../../services/rate-limit';
+import { LOCKOUT_NOTICE_JOB, PASSWORD_RESET_JOB } from './jobs';
 import { seedOfficeDefaults } from './seed-office';
 
 const password = z.string().min(8, 'A senha precisa ter ao menos 8 caracteres').max(200);
@@ -19,11 +21,14 @@ export async function serializeMe(app: FastifyInstance, userId: string) {
   const office = await db.query.offices.findFirst({ where: eq(offices.id, user.officeId) });
   const role = user.roleId ? await db.query.roles.findFirst({ where: eq(roles.id, user.roleId) }) : null;
   const favorites = await db.select().from(userFavorites).where(eq(userFavorites.userId, user.id));
+  const permissions = user.isOwner ? ALL_PERMISSIONS : (role?.permissions ?? []);
+  // as preferências do escritório só para quem pode vê-las (Administração › Preferências)
+  const canSeeSettings = permissions.includes('settings.view') || permissions.includes('settings.edit');
   return {
     user: { id: user.id, name: user.name, email: user.email, isOwner: user.isOwner, notificationPrefs: user.notificationPrefs },
-    office: office && { id: office.id, name: office.name, logoFileId: office.logoFileId, settings: office.settings },
+    office: office && { id: office.id, name: office.name, logoFileId: office.logoFileId, settings: canSeeSettings ? office.settings : {} },
     role: role && { id: role.id, name: role.name },
-    permissions: user.isOwner ? ALL_PERMISSIONS : (role?.permissions ?? []),
+    permissions,
     favorites: favorites.map((f) => ({ path: f.path, label: f.label })),
   };
 }
@@ -86,11 +91,25 @@ export async function authRoutes(app: FastifyInstance) {
     return { token, ...(await serializeMe(app, result.user.id)) };
   });
 
+  /**
+   * Login. Além do limite por IP (app.ts), as falhas contam por e-mail: depois de 10 em 15 minutos
+   * o e-mail fica bloqueado até a janela acabar, e o dono da conta recebe um aviso.
+   */
   app.post('/auth/login', async (req) => {
-    const body = parse(z.object({ email: z.email(), password: z.string().min(1) }), req.body);
-    const user = await db.query.users.findFirst({ where: sql`lower(${users.email}) = ${body.email.toLowerCase()}` });
+    const body = parse(z.object({ email: z.email('Informe um e-mail válido.'), password: z.string().min(1, 'Informe a senha.') }), req.body);
+    const email = body.email.toLowerCase();
+    const emailKey = `login-email:${email}`;
+    await check(app.ctx, emailKey, LOGIN_EMAIL_RULE, 'Muitas tentativas sem sucesso para este e-mail. Aguarde alguns minutos ou use “Esqueci minha senha”.');
+    const user = await db.query.users.findFirst({ where: sql`lower(${users.email}) = ${email}` });
     const ok = user?.passwordHash ? await bcrypt.compare(body.password, user.passwordHash) : false;
-    if (!user || !ok || !user.isActive) throw unauthorized('E-mail ou senha incorretos.');
+    if (!user || !ok || !user.isActive) {
+      const failures = await fail(app.ctx, emailKey, LOGIN_EMAIL_RULE);
+      if (user?.isActive && failures === LOGIN_EMAIL_RULE.max) {
+        await app.ctx.jobs.enqueue(LOCKOUT_NOTICE_JOB, { userId: user.id }, { officeId: user.officeId });
+      }
+      throw unauthorized('E-mail ou senha incorretos.');
+    }
+    await resetLimit(app.ctx, emailKey);
     await db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id));
     return { token: signUserToken(app, user), ...(await serializeMe(app, user.id)) };
   });
@@ -115,28 +134,23 @@ export async function authRoutes(app: FastifyInstance) {
     return { token: signUserToken(app, updated) };
   });
 
-  /** Solicita link de redefinição. Responde igual exista ou não a conta. */
+  /**
+   * Solicita link de redefinição. Responde igual (e no mesmo tempo) exista ou não a conta: o
+   * e-mail sai pela fila, com o token cifrado no job. No máximo um envio a cada 5 minutos por conta.
+   */
   app.post('/auth/forgot-password', async (req) => {
-    const body = parse(z.object({ email: z.email() }), req.body);
+    const body = parse(z.object({ email: z.email('Informe um e-mail válido.') }), req.body);
     const user = await db.query.users.findFirst({ where: sql`lower(${users.email}) = ${body.email.toLowerCase()}` });
-    if (user?.isActive) {
+    if (user?.isActive && (await allow(app.ctx, `forgot-account:${user.id}`, FORGOT_PER_ACCOUNT_RULE))) {
       const token = randomToken();
       await db.insert(passwordResets).values({ userId: user.id, tokenHash: sha256(token), expiresAt: new Date(Date.now() + 3600_000) });
-      const link = `${app.ctx.config.WEB_URL}/redefinir-senha?token=${token}`;
-      await app.ctx.providers.email
-        .send(user.officeId, {
-          to: user.email,
-          toName: user.name,
-          subject: 'Redefinição de senha — Verifco',
-          html: `<p>Olá, ${user.name}.</p><p>Para criar uma nova senha, acesse: <a href="${link}">${link}</a></p><p>O link vale por 1 hora. Se não foi você, ignore este e-mail.</p>`,
-        })
-        .catch((err) => req.log.warn({ err }, 'falha ao enviar e-mail de redefinição'));
+      await app.ctx.jobs.enqueue(PASSWORD_RESET_JOB, { userId: user.id, token: app.ctx.secrets.encrypt(token) }, { officeId: user.officeId });
     }
     return { ok: true };
   });
 
   app.post('/auth/reset-password', async (req) => {
-    const body = parse(z.object({ token: z.string().min(10), password }), req.body);
+    const body = parse(z.object({ token: z.string({ error: 'Link inválido ou expirado.' }).min(10, 'Link inválido ou expirado.'), password }), req.body);
     const reset = await db.query.passwordResets.findFirst({
       where: and(eq(passwordResets.tokenHash, sha256(body.token)), isNull(passwordResets.usedAt), gt(passwordResets.expiresAt, new Date())),
     });
@@ -163,7 +177,12 @@ export async function authRoutes(app: FastifyInstance) {
   app.put('/auth/preferences', async (req) => {
     const auth = requireUser(req);
     const body = parse(z.object({ notificationsEnabled: z.boolean() }), req.body);
-    await db.update(users).set({ notificationPrefs: { enabled: body.notificationsEnabled } }).where(eq(users.id, auth.userId));
+    const me = await db.query.users.findFirst({ where: eq(users.id, auth.userId) });
+    // mantém os navegadores cadastrados (Conta › Preferências › Este navegador)
+    await db
+      .update(users)
+      .set({ notificationPrefs: { ...(me?.notificationPrefs ?? {}), enabled: body.notificationsEnabled } })
+      .where(eq(users.id, auth.userId));
     return serializeMe(app, auth.userId);
   });
 

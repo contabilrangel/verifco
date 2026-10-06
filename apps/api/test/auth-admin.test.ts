@@ -48,6 +48,7 @@ describe('autenticação', () => {
   it('redefine senha por link enviado por e-mail', async () => {
     const office = await registerOffice(env);
     await env.app.inject({ method: 'POST', url: '/api/auth/forgot-password', payload: { email: office.email } });
+    await env.ctx.jobs.drain(); // o e-mail sai pela fila
     const mail = env.providers.sentEmails.at(-1)!;
     const token = /token=([\w-]+)/.exec(mail.html)![1];
     const res = await env.app.inject({ method: 'POST', url: '/api/auth/reset-password', payload: { token, password: 'outra-senha-789' } });

@@ -47,6 +47,8 @@ export interface OfficeChecklist {
   id: string;
   createdAt: string;
   sentAt: string | null;
+  /** Validade do link e do código atuais (30 dias a partir da geração); null = nunca gerado. */
+  accessExpiresAt: string | null;
   lastCustomerAccessAt: string | null;
   finishedAt: string | null;
   progress: Progress;

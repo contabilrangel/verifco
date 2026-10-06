@@ -9,7 +9,7 @@ import { audit, guard, parse, requireUser, uuidParam, yearSchema } from '../../l
 import { customerScope, getCustomerForUser } from '../../services/customers';
 import { listItems, recomputeTotals } from '../../services/declarations';
 import { jobView } from '../ecac/util';
-import { safeName } from '../sync/multipart';
+import { safeZipName, sendStoredFile } from '../../services/uploads';
 import {
   computeElaborationStatus,
   docCounts,
@@ -136,7 +136,7 @@ export async function elaborationRoutes(app: FastifyInstance) {
     };
   });
 
-  app.post('/elaboration/process', { preHandler: guard('elaboration.process') }, async (req, reply) => {
+  app.post('/elaboration/process', { preHandler: guard('elaboration.process', 'pre_declaration.create') }, async (req, reply) => {
     const user = requireUser(req);
     const body = parse(selectionSchema, req.body);
     const ids = await scopedIds(req, body.customerIds);
@@ -165,7 +165,7 @@ export async function elaborationRoutes(app: FastifyInstance) {
   }
 
   /** Decisão sobre uma linha extraída (aceitar/recusar), usada para resolver conflitos. */
-  app.put('/elaboration/documents/:id/lines/:index', { preHandler: guard('elaboration.process') }, async (req) => {
+  app.put('/elaboration/documents/:id/lines/:index', { preHandler: guard('elaboration.process', 'pre_declaration.edit') }, async (req) => {
     const user = requireUser(req);
     const params = parse(z.object({ id: z.uuid(), index: z.coerce.number().int().min(0) }), req.params);
     const body = parse(z.object({ decision: z.enum(['accept', 'reject']).nullable() }), req.body);
@@ -187,7 +187,7 @@ export async function elaborationRoutes(app: FastifyInstance) {
    * Novas → incluídas; conflito aceito → substitui os valores da linha existente;
    * conflito sem decisão → fica pendente; recusadas e repetidas → ignoradas.
    */
-  app.post('/elaboration/validate', { preHandler: guard('elaboration.process') }, async (req) => {
+  app.post('/elaboration/validate', { preHandler: guard('elaboration.process', 'pre_declaration.create') }, async (req) => {
     const user = requireUser(req);
     const body = parse(selectionSchema, req.body);
     const ids = await scopedIds(req, body.customerIds);
@@ -306,8 +306,7 @@ export async function elaborationRoutes(app: FastifyInstance) {
       .where(and(eq(declarations.officeId, user.officeId), eq(declarations.exerciseYear, body.year), inArray(declarations.customerId, ids)));
     const fileIds = rows.flatMap((r) => (r.fileId ? [r.fileId] : []));
     if (!fileIds.length) throw notFound('Pacote exportado');
-    const send = (name: string, data: Buffer) =>
-      reply.header('Content-Type', 'application/zip').header('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(name)}`).send(data);
+    const send = (name: string, data: Buffer) => sendStoredFile(reply, { filename: name, mimeType: 'application/zip' }, data);
     if (fileIds.length === 1) {
       const { row, data } = await app.ctx.files.get(user.officeId, fileIds[0]);
       return send(row.filename, data);
@@ -315,7 +314,7 @@ export async function elaborationRoutes(app: FastifyInstance) {
     const zip = new JSZip();
     for (const id of fileIds) {
       const { row, data } = await app.ctx.files.get(user.officeId, id);
-      zip.file(safeName(row.filename), data);
+      zip.file(safeZipName(row.filename), data);
     }
     return send(`conferencia-${body.year}.zip`, await zip.generateAsync({ type: 'nodebuffer' }));
   });

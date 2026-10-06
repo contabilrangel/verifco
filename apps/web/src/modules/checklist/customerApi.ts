@@ -3,7 +3,7 @@
  * Usa um token próprio (não o do escritório), guardado só na aba do navegador (sessionStorage).
  */
 import { CHECKLIST_MAX_UPLOAD_BYTES, checklistUploadMime } from '@verifco/shared';
-import { ApiError } from '../../lib/api';
+import { ApiError, OFFLINE_MESSAGE, isViewableType } from '../../lib/api';
 
 const BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? '';
 
@@ -30,7 +30,7 @@ async function call<T>(method: string, path: string, body: unknown, token: strin
   try {
     res = await fetch(`${BASE}/api${path}`, { method, headers, body: payload });
   } catch {
-    throw new ApiError(0, 'Sem conexão com o servidor. Verifique sua internet e tente de novo.');
+    throw new ApiError(0, OFFLINE_MESSAGE);
   }
   if (res.status === 401 && token) onExpired?.();
   if (!res.ok) {
@@ -68,8 +68,12 @@ export function customerClient(token: string, onExpired: () => void): CustomerCl
     },
     open: async (path, filename, inline) => {
       const res = await call<Response>('GET', `${path}${inline ? '?inline=1' : ''}`, undefined, token, onExpired, true);
-      const url = URL.createObjectURL(await res.blob());
-      if (inline) window.open(url, '_blank', 'noopener');
+      const type = (res.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
+      const data = await res.arrayBuffer();
+      // só PDF e imagens abrem no navegador (lista única de lib/api); o resto baixa como binário
+      const view = inline && isViewableType(type);
+      const url = URL.createObjectURL(new Blob([data], { type: view ? type : 'application/octet-stream' }));
+      if (view) window.open(url, '_blank', 'noopener');
       else {
         const a = document.createElement('a');
         a.href = url;
@@ -163,4 +167,3 @@ export function checkFiles(files: File[]): string | null {
   return null;
 }
 
-export const isViewable = (mime: string) => /^(application\/pdf|image\/(png|jpeg|gif|webp))$/.test(mime);

@@ -262,6 +262,7 @@ export async function pollOmiePayments(ctx: AppContext, officeId: string) {
       const customer = await db.query.customers.findFirst({ where: eq(customers.id, customerId) });
       await notify(db, {
         officeId,
+        customerId,
         title: 'Pagamento baixado no Omie',
         body: `${customer?.name ?? 'Cliente'}: parcela ${inst.number} paga (${formatMoney(paidAmountCents)}).`,
         link: `/clientes/${customerId}`,

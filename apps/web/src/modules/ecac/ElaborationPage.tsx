@@ -165,7 +165,8 @@ export function ElaborationPage() {
           <div className="vf-inline" style={{ padding: '12px 16px', borderBottom: '1px solid var(--color-border)', background: 'var(--color-surface-low)' }}>
             <span className="vf-text-sm-bold">{ids.length} selecionado(s)</span>
             <div className="vf-grow" />
-            {can('elaboration.process') && (
+            {/* o servidor aceita elaboration.process ou pre_declaration.create (processar e validar) */}
+            {can('elaboration.process', 'pre_declaration.create') && (
               <>
                 <Button kind="secondary" size="sm" icon={<Cpu />} disabled={!ids.length || running} loading={run.isPending && run.variables === 'process'} onClick={() => run.mutate('process')}>
                   Processar documentos
@@ -326,7 +327,9 @@ function ReviewDrawer({ row, year, onClose }: { row: ElaborationRow | null; year
   );
   const validate = useAction(() => api.post('/elaboration/validate', { year, customerIds: [row!.customerId] }), { success: 'Linhas aceitas aplicadas na declaração.', invalidate: [['elaboration']] });
   const d = q.data;
-  const editable = can('elaboration.process');
+  // mesmas permissões do servidor: decidir linhas (pre_declaration.edit) e validar (pre_declaration.create)
+  const editable = can('elaboration.process', 'pre_declaration.edit');
+  const canValidate = can('elaboration.process', 'pre_declaration.create');
   return (
     <Drawer
       open={Boolean(row)}
@@ -338,7 +341,7 @@ function ReviewDrawer({ row, year, onClose }: { row: ElaborationRow | null; year
           <Button kind="secondary" onClick={onClose}>
             Fechar
           </Button>
-          {editable && (
+          {canValidate && (
             <Button icon={<FileCheck />} loading={validate.isPending} disabled={!d?.counts.pendingLines} onClick={() => validate.mutate(undefined)}>
               Validar
             </Button>

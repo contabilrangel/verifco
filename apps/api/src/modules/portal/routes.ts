@@ -19,9 +19,10 @@ import { safeEqual, sha256 } from '../../lib/crypto';
 import { HttpError, badRequest, notFound } from '../../lib/errors';
 import { parse } from '../../lib/http';
 import { signCustomerToken } from '../../plugins/auth';
+import { CUSTOMER_LOGIN_RULE, check, fail, resetLimit } from '../../services/rate-limit';
 import { getOfficeSettings } from '../../services/settings';
-import { sendStoredFile } from '../checklist/uploads';
-import { firstName, loginLimiter, maskCpf, requirePortal } from './access';
+import { sendStoredFile } from '../../services/uploads';
+import { firstName, maskCpf, requirePortal } from './access';
 
 /**
  * Portal do cliente: login com CPF + código do portal (gerado em
@@ -31,7 +32,6 @@ import { firstName, loginLimiter, maskCpf, requirePortal } from './access';
 export async function portalRoutes(app: FastifyInstance) {
   const { ctx } = app;
   const { db } = ctx;
-  const limiter = loginLimiter(ctx);
 
   app.post('/portal/login', async (req) => {
     const body = parse(
@@ -41,8 +41,9 @@ export async function portalRoutes(app: FastifyInstance) {
     const cpf = onlyDigits(body.cpf);
     if (!isValidCpfCnpj(cpf)) throw badRequest('Informe um CPF válido.');
     const code = onlyDigits(body.code);
+    // falhas por CPF no banco (valem para todas as instâncias), além do limite por IP de app.ts
     const key = `portal:${cpf}`;
-    limiter.check(key);
+    await check(ctx, key, CUSTOMER_LOGIN_RULE);
 
     const candidates = await db
       .select({ customer: customers, officeName: offices.name })
@@ -61,14 +62,14 @@ export async function portalRoutes(app: FastifyInstance) {
     const valid = codeMatches.filter((c) => !c.customer.portalCodeExpiresAt || c.customer.portalCodeExpiresAt.getTime() > Date.now());
     if (!valid.length) {
       if (codeMatches.length) throw new HttpError(401, 'Seu código expirou. Peça um novo código ao seu escritório.');
-      limiter.fail(key);
+      await fail(ctx, key, CUSTOMER_LOGIN_RULE);
       throw new HttpError(401, 'CPF ou código incorretos. Confira os dados que o escritório enviou.');
     }
     // o mesmo CPF com o mesmo código em mais de um escritório: o cliente escolhe pelo nome
     if (valid.length > 1) {
       return { needsOffice: true, offices: valid.map((v) => ({ id: v.customer.officeId, name: v.officeName })).sort((a, b) => a.name.localeCompare(b.name)) };
     }
-    limiter.reset(key);
+    await resetLimit(ctx, key);
     const { customer, officeName } = valid[0];
     await db.insert(auditLogs).values({ officeId: customer.officeId, userId: null, action: 'portal_login', entity: 'customer', entityId: customer.id });
     return {

@@ -11,8 +11,10 @@ import { jobView, latestJob, pendingJob } from '../ecac/util';
 import { savePrefilled } from '../prefilled/service';
 import { customerByDoc, ingestSyncFile, machineAudit, resolveFileTarget } from './ingest';
 import { readMultipart } from './multipart';
+import { uploadedFromBase64 } from '../../services/uploads';
 import { PACKAGES, buildPackageZip, type PackageName } from './packages';
 import { generateMachineToken, publicToken, requireMachine } from './tokens';
+import { customerScope } from '../../services/customers';
 
 const SCOPES = Object.keys(MACHINE_TOKEN_SCOPES) as [MachineTokenScope, ...MachineTokenScope[]];
 
@@ -80,19 +82,21 @@ export async function syncRoutes(app: FastifyInstance) {
       .from(customers)
       .where(and(eq(customers.officeId, officeId), isNull(customers.deletedAt), isNotNull(customers.procuratorId)));
     const [{ n: activeTokens }] = await db.select({ n: count() }).from(apiTokens).where(and(eq(apiTokens.officeId, officeId), isNull(apiTokens.revokedAt)));
+    // a atividade cita clientes: respeita a restrição "contadores veem só seus clientes"
+    const scope = await customerScope(ctx, user);
     const recentFiles = await db
       .select({ at: documents.createdAt, name: customers.name, customerId: customers.id, filename: files.filename, category: documents.category })
       .from(documents)
       .innerJoin(files, eq(files.id, documents.fileId))
       .innerJoin(customers, eq(customers.id, documents.customerId))
-      .where(and(eq(documents.officeId, officeId), eq(documents.uploadedBy, 'sync')))
+      .where(and(eq(documents.officeId, officeId), eq(documents.uploadedBy, 'sync'), scope))
       .orderBy(desc(documents.createdAt))
       .limit(15);
     const recentRecords = await db
       .select({ at: ecacRecords.fetchedAt, name: customers.name, customerId: customers.id, kind: ecacRecords.kind, source: ecacRecords.source })
       .from(ecacRecords)
       .innerJoin(customers, eq(customers.id, ecacRecords.customerId))
-      .where(and(eq(ecacRecords.officeId, officeId), inArray(ecacRecords.source, ['extension', 'sync', 'serpro'])))
+      .where(and(eq(ecacRecords.officeId, officeId), inArray(ecacRecords.source, ['extension', 'sync', 'serpro']), scope))
       .orderBy(desc(ecacRecords.fetchedAt))
       .limit(15);
     const recentPrefilled = await db
@@ -100,7 +104,7 @@ export async function syncRoutes(app: FastifyInstance) {
       .from(prefilledStatements)
       .innerJoin(files, eq(files.id, prefilledStatements.fileId))
       .innerJoin(customers, eq(customers.id, prefilledStatements.customerId))
-      .where(eq(prefilledStatements.officeId, officeId))
+      .where(and(eq(prefilledStatements.officeId, officeId), scope))
       .orderBy(desc(prefilledStatements.fetchedAt))
       .limit(15);
     const activity = [
@@ -172,7 +176,7 @@ export async function syncRoutes(app: FastifyInstance) {
   app.post('/sync/files', async (req, reply) => {
     const auth = await requireMachine(ctx, req, ['sync']);
     const { file, fields } = await readMultipart(req);
-    if (!file || !file.buffer.length) throw badRequest('Envie o arquivo no campo "file".');
+    if (!file) throw badRequest('Envie o arquivo no campo "file".');
     const result = await ingestSyncFile(ctx, auth, file, fields);
     reply.status(result.duplicate ? 200 : 201);
     return result;
@@ -183,7 +187,8 @@ export async function syncRoutes(app: FastifyInstance) {
    * externalId?, file?: { filename, mimeType, base64 } }] }` (ou um registro só).
    * Cada item tem resultado próprio; um CPF desconhecido não derruba o lote.
    */
-  app.post('/sync/ecac-records', async (req) => {
+  // os PDFs vêm em base64 no JSON: esta rota aceita corpo maior que o limite geral da API
+  app.post('/sync/ecac-records', { bodyLimit: 25 * 1024 * 1024 }, async (req) => {
     const auth = await requireMachine(ctx, req, ['extension']);
     const raw = req.body as { records?: unknown } | undefined;
     const list = parse(z.array(z.unknown()).min(1).max(100), Array.isArray(raw?.records) ? raw.records : raw ? [raw] : []);
@@ -193,7 +198,7 @@ export async function syncRoutes(app: FastifyInstance) {
         const input = parse(machineRecordSchema, item);
         const customer = await customerByDoc(ctx, auth.officeId, onlyDigits(input.cpf));
         const file = input.file
-          ? { buffer: Buffer.from(input.file.base64, 'base64'), filename: input.file.filename, mimeType: input.file.mimeType ?? 'application/octet-stream' }
+          ? uploadedFromBase64(input.file.filename, input.file.base64)
           : null;
         const { record, effects, duplicate } = await saveEcacRecord(ctx, { ...input, officeId: auth.officeId, customer, source: 'extension', file });
         await machineAudit(ctx, auth, 'sync_ecac_record', 'ecac_record', record.id, { kind: input.kind, customerId: customer.id });
@@ -209,7 +214,7 @@ export async function syncRoutes(app: FastifyInstance) {
   app.post('/sync/prefilled', async (req, reply) => {
     const auth = await requireMachine(ctx, req, ['extension', 'sync']);
     const { file, fields } = await readMultipart(req);
-    if (!file || !file.buffer.length) throw badRequest('Envie o arquivo no campo "file".');
+    if (!file) throw badRequest('Envie o arquivo no campo "file".');
     const { cpf, year } = resolveFileTarget(file, fields);
     const customer = await customerByDoc(ctx, auth.officeId, cpf);
     const { statement, duplicate } = await savePrefilled(ctx, { officeId: auth.officeId, customer, year, file });

@@ -36,6 +36,11 @@ export interface HttpRequest {
   /** Objeto serializado como JSON; string/FormData/URLSearchParams vão como estão. */
   body?: unknown;
   timeoutMs?: number;
+  /**
+   * Endereço informado pelo escritório: a mensagem de falha de rede não traz o motivo técnico
+   * (ECONNREFUSED etc.), para a integração não virar ferramenta de varredura de portas.
+   */
+  opaqueErrors?: boolean;
 }
 
 export interface HttpResponse<T = unknown> {
@@ -69,10 +74,12 @@ export async function httpRequest<T = unknown>(fetchImpl: typeof fetch, provider
   try {
     res = await fetchImpl(url, { method: req.method ?? (body ? 'POST' : 'GET'), headers, body, signal: AbortSignal.timeout(timeoutMs) });
   } catch (err) {
+    if (err instanceof IntegrationError) throw err;
     const e = err as { name?: string; message?: string; cause?: { code?: string; message?: string } };
     if (e?.name === 'TimeoutError' || e?.name === 'AbortError') {
       throw new IntegrationError(provider, `O ${label} não respondeu em ${Math.round(timeoutMs / 1000)} segundos. Tente novamente em instantes.`);
     }
+    if (req.opaqueErrors) throw new IntegrationError(provider, `Não foi possível conectar ao ${label}. Confira o endereço e a conexão.`);
     const reason = e?.cause?.code ?? e?.cause?.message ?? e?.message ?? 'erro de rede';
     throw new IntegrationError(provider, `Não foi possível conectar ao ${label} (${reason}). Confira o endereço e a conexão.`);
   }
@@ -92,10 +99,17 @@ export async function httpRequest<T = unknown>(fetchImpl: typeof fetch, provider
  * Lança `IntegrationError` se a resposta não for 2xx, usando `describe` para extrair a
  * mensagem do provedor. 401/403 viram uma mensagem sobre credenciais.
  */
-export function ensureOk<T>(provider: string, res: HttpResponse<T>, describe?: (data: unknown) => string | null | undefined): T {
+export function ensureOk<T>(
+  provider: string,
+  res: HttpResponse<T>,
+  describe?: (data: unknown) => string | null | undefined,
+  opts: { rawBody?: boolean } = {},
+): T {
   if (res.ok) return res.data;
   const label = PROVIDER_LABELS[provider] ?? provider;
-  const raw = describe?.(res.data) ?? (typeof res.data === 'string' ? res.data.slice(0, 300) : null);
+  // com rawBody=false (endereço informado pelo escritório) o corpo cru da resposta não volta ao usuário
+  const described = describe?.(res.data)?.slice(0, 200);
+  const raw = described ?? (opts.rawBody !== false && typeof res.data === 'string' ? res.data.slice(0, 300) : null);
   const detail = raw ? raw.trim().replace(/[.\s]+$/, '') : null;
   if (res.status === 401 || res.status === 403) {
     throw new IntegrationError(provider, `Credenciais recusadas pelo ${label} (HTTP ${res.status})${detail ? `: ${detail}` : ''}. Confira a chave configurada.`, res.status);
