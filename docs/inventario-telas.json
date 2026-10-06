@@ -1,0 +1,5621 @@
+{
+  "site": "https://portal.conferironline.com.br",
+  "dateLocal": "2026-10-05",
+  "timezone": "America/Sao_Paulo",
+  "mode": "Leitura; sem envio, salvamento, exclusão, importação ou execução de robôs.",
+  "scope": "Interface e documentação acessíveis na conta; funcionamento interno não inspecionado.",
+  "menu": [
+    {
+      "href": "javascript:void(0)",
+      "text": "Início"
+    },
+    {
+      "href": "/",
+      "text": "Dashboard"
+    },
+    {
+      "href": "/dashboard/kanban",
+      "text": "Kanban"
+    },
+    {
+      "href": "/dashboard/insights",
+      "text": "Radar"
+    },
+    {
+      "href": "javascript:void(0)",
+      "text": "Clientes"
+    },
+    {
+      "href": "/customers",
+      "text": "Listar Clientes"
+    },
+    {
+      "href": "/import-spreadsheet/new-customers",
+      "text": "Novos clientes em lote"
+    },
+    {
+      "href": "/import-spreadsheet/update-customer",
+      "text": "Atualizar cliente em lote"
+    },
+    {
+      "href": "/import-spreadsheet/procuration",
+      "text": "Procuração em lote"
+    },
+    {
+      "href": "/import-spreadsheet/inss",
+      "text": "Login inss em lote"
+    },
+    {
+      "href": "javascript:void(0)",
+      "text": "Financeiro"
+    },
+    {
+      "href": "/payment-methods",
+      "text": "Métodos de pagamento"
+    },
+    {
+      "href": "/price-tables",
+      "text": "Tabelas de cobrança"
+    },
+    {
+      "href": "/import-spreadsheet/budget",
+      "text": "Orçamento em lote"
+    },
+    {
+      "href": "/reports/billing-report",
+      "text": "Relatório de faturamento"
+    },
+    {
+      "href": "javascript:void(0)",
+      "text": "Emails"
+    },
+    {
+      "href": "/email-templates",
+      "text": "Templates de email"
+    },
+    {
+      "href": "/mailing",
+      "text": "Emails Enviados"
+    },
+    {
+      "href": "/backup",
+      "text": "Backup"
+    },
+    {
+      "href": "/reports",
+      "text": "Relatórios"
+    },
+    {
+      "href": "/admin",
+      "text": "Administrador"
+    },
+    {
+      "href": "/pre-filled-statements",
+      "text": "Pré-preenchidas IRPF"
+    },
+    {
+      "href": "/downloads-center",
+      "text": "Central de Downloads"
+    },
+    {
+      "text": "Elaboração",
+      "href": "/elaboration"
+    },
+    {
+      "text": "Detalhes da Conta",
+      "href": "/account-details"
+    },
+    {
+      "text": "Preferências do Usuário",
+      "href": "/user-preferences"
+    }
+  ],
+  "screens": [
+    {
+      "screen": "Dashboard global",
+      "url": "https://portal.conferironline.com.br/dashboard",
+      "headings": [
+        "Desempenho",
+        "Informações",
+        "Alertas",
+        "Situação Procuração Clientes",
+        "Login GovBr/Certificado Digital Procurador",
+        "Situação eCAC",
+        "Declarações (Interno)",
+        "CND",
+        "Tributação",
+        "Orçamentos",
+        "Bens e Direitos"
+      ],
+      "labels": [
+        "Ano Exercício"
+      ],
+      "buttons": [],
+      "columns": [],
+      "controls": [],
+      "tabs": []
+    },
+    {
+      "screen": "Kanban",
+      "url": "https://portal.conferironline.com.br/dashboard/kanban",
+      "headings": [
+        "Não Iniciado",
+        "Negociação - Orçamento",
+        "Em Preenchimento",
+        "Transmitida - Status eCAC",
+        "Finalizado"
+      ],
+      "labels": [
+        "Grupos de Clientes",
+        "Procurar cliente por Nome, Cpf ou Email",
+        "Ano Exercício"
+      ],
+      "buttons": [],
+      "columns": [],
+      "controls": [],
+      "tabs": []
+    },
+    {
+      "screen": "Radar de Oportunidades",
+      "url": "https://portal.conferironline.com.br/dashboard/insights",
+      "headings": [
+        "Radar de Oportunidades",
+        "Alto Patrimônio",
+        "Criptoativos"
+      ],
+      "labels": [],
+      "buttons": [
+        {
+          "text": "Atualizar Dados"
+        },
+        {
+          "text": "Ver clientes"
+        },
+        {
+          "text": "Campanha"
+        }
+      ],
+      "columns": [],
+      "controls": [],
+      "tabs": []
+    },
+    {
+      "screen": "Clientes - filtros",
+      "url": "https://portal.conferironline.com.br/customers",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Colaboradores",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Fechar",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Limpar",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Geral",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Fechar",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Limpar",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Procurações",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Fechar",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Limpar",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "CND",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Fechar",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Limpar",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Grupos de Clientes",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Fechar",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Limpar",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Filtros",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Novo Cliente",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Ações",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": "Buscar...",
+          "required": false,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": "Buscar...",
+          "required": false,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": "Buscar...",
+          "required": false,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": "Buscar...",
+          "required": false,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": "Buscar...",
+          "required": false,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        }
+      ],
+      "headings": [
+        "Ano Calendário",
+        "Colaboradores",
+        "Geral",
+        "Procurações",
+        "CND",
+        "Grupos de Clientes"
+      ],
+      "labels": [
+        "[colaborador do escritório]",
+        "[colaborador do escritório]",
+        " Clientes Com Email (138) ",
+        " Clientes Sem Email (830) ",
+        " Clientes Ativos (968) ",
+        " Clientes Inativos (0) ",
+        " Sem Procurador Associado (0) ",
+        " Com Procurador Associado (968) ",
+        " Aguardando Validação (11) ",
+        " Válida (92) ",
+        " Inválida (849) ",
+        " Inválida sem Permissões (0) ",
+        " Expirada (2) ",
+        " Cancelada (0) ",
+        " Negada (0) ",
+        " Pendente (13) ",
+        " Mensagens na Cx. Postal (1) ",
+        " Requer Nível Ouro ou Prata (0) ",
+        " Expira nos Próximos 30 Dias (0) ",
+        " Sucesso (0) ",
+        " Cpf Inválido (0) ",
+        " CPF não encontrado (0) ",
+        " Analisar Pendências E-cac (0) ",
+        " Sem Grupo (968) ",
+        " Selecionar todos"
+      ],
+      "tabs": []
+    },
+    {
+      "screen": "Clientes - adicionar (sem envio)",
+      "url": "https://portal.conferironline.com.br/customers",
+      "buttons": [
+        {
+          "disabled": true,
+          "text": "Adicionar Cliente",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": "Nome",
+          "required": false,
+          "type": "undefined"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": "Digite seu CPF",
+          "required": false,
+          "type": "undefined"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": "Email",
+          "required": false,
+          "type": "undefined"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        }
+      ],
+      "headings": [
+        "Adicionar Cliente"
+      ],
+      "labels": [
+        "Nome",
+        "CPF",
+        "Email",
+        "Responsável"
+      ],
+      "tabs": []
+    },
+    {
+      "screen": "Cliente - IRPF",
+      "url": "https://portal.conferironline.com.br/customer-profile/irpf/budgets-irpf?customerId={id}",
+      "buttons": [],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        }
+      ],
+      "headings": [],
+      "labels": [
+        "Ano Exercício"
+      ],
+      "tabs": []
+    },
+    {
+      "screen": "IRPF - orçamento carregado",
+      "url": "https://portal.conferironline.com.br/customer-profile/irpf/budgets-irpf?customerId={id}",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Novo orçamento",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        }
+      ],
+      "headings": [
+        "Nenhum orçamento encontrado"
+      ],
+      "labels": [
+        "Ano Exercício"
+      ],
+      "tabs": []
+    },
+    {
+      "screen": "IRPF - formulário de orçamento",
+      "url": "https://portal.conferironline.com.br/customer-profile/irpf/budgets-irpf?customerId={id}",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Salvar orçamento",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": "Descrição",
+          "required": false,
+          "type": "undefined"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "input"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "date"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": "Desconto (%)",
+          "required": false,
+          "type": "number"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": "Não é enviada ao cliente",
+          "required": false,
+          "type": "textarea"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        }
+      ],
+      "headings": [
+        "Novo orçamento"
+      ],
+      "labels": [
+        "Tipo de orçamento",
+        "Status do orçamento",
+        "Categoria",
+        "Descrição",
+        "Tabela de cobrança (opcional)",
+        "Valor do orçamento",
+        "Tipo de pagamento",
+        "Data inicial da cobrança",
+        "Parcelas",
+        "Desconto (%)",
+        "Observação (uso interno)",
+        " Enviar esse orçamento por email"
+      ],
+      "tabs": []
+    },
+    {
+      "screen": "IRPF - documentação",
+      "url": "https://portal.conferironline.com.br/customer-profile/irpf/documentation-irpf?customerId={id}",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Checklist DIRPF (Digital)",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Checklist DIRPF (PDF)",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        }
+      ],
+      "headings": [
+        "Checklist DIRPF (Digital)",
+        "Checklist DIRPF (PDF)"
+      ],
+      "labels": [
+        "Ano Exercício"
+      ],
+      "tabs": []
+    },
+    {
+      "screen": "Checklist DIRPF digital",
+      "url": "https://portal.conferironline.com.br/customer-profile/irpf/documentation-irpf?customerId={id}",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Checklist DIRPF (Digital)",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Checklist DIRPF (PDF)",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        }
+      ],
+      "headings": [
+        "Checklist DIRPF (Digital)",
+        "Checklist DIRPF (PDF)"
+      ],
+      "labels": [
+        "Ano Exercício"
+      ],
+      "tabs": []
+    },
+    {
+      "screen": "IRPF - checklist e envio",
+      "url": "https://portal.conferironline.com.br/customer-profile/irpf/documentation-irpf?customerId={id}",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Checklist DIRPF (Digital)",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Criar Checklist (DIGITAL)",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Checklist DIRPF (PDF)",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Enviar por email",
+          "title": null
+        },
+        {
+          "disabled": true,
+          "text": "Enviar por WhatsApp",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Download",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        }
+      ],
+      "headings": [
+        "Checklist DIRPF (Digital)",
+        "IMPORTANTE: Para que o Checklist seja gerado corretamente, é necessário atualizar o XML do ano anterior e sincronizá-lo com o sistema antes de iniciá-la. Se a atualização do XML for realizada após a geração do Checklist as informações atualizadas não serão incluídas.",
+        "Checklist DIRPF (PDF)"
+      ],
+      "labels": [
+        "Ano Exercício"
+      ],
+      "tabs": []
+    },
+    {
+      "screen": "IRPF - DARF",
+      "url": "https://portal.conferironline.com.br/customer-profile/irpf/darf-irpf?customerId={id}",
+      "buttons": [],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        }
+      ],
+      "headings": [],
+      "labels": [
+        "Ano Exercício"
+      ],
+      "tabs": []
+    },
+    {
+      "screen": "IRPF - DARF carregado",
+      "url": "https://portal.conferironline.com.br/customer-profile/irpf/darf-irpf?customerId={id}",
+      "buttons": [],
+      "columns": [
+        "VALOR",
+        "DATA DE VENCIMENTO",
+        "STATUS DA PARCELA",
+        "STATUS DO ENVIO",
+        "PDF"
+      ],
+      "controls": [
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        }
+      ],
+      "headings": [],
+      "labels": [
+        "Ano Exercício"
+      ],
+      "tabs": []
+    },
+    {
+      "screen": "IRPF - relatórios e outros gastos",
+      "url": "https://portal.conferironline.com.br/customer-profile/irpf/reports-irpf?customerId={id}",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Outros Gastos",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Salvar",
+          "title": null
+        },
+        {
+          "disabled": true,
+          "text": "Enviar por email",
+          "title": null
+        },
+        {
+          "disabled": true,
+          "text": "Enviar por WhatsApp",
+          "title": null
+        },
+        {
+          "disabled": true,
+          "text": "Gerar Relatórios",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "input"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "input"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "input"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "checkbox"
+        }
+      ],
+      "headings": [
+        "Outros Gastos",
+        "Pagamento anual Total:",
+        "Pagamento anual Total - Principal:",
+        "Relatórios",
+        "Opções",
+        "Formato de Saída"
+      ],
+      "labels": [
+        "Ano Exercício",
+        "Pagamento Anual Total - JUROS",
+        "Despesas com Cartão de Crédito",
+        "Perdas de Capital",
+        " Análise de Caixa",
+        " Detalhes do Caixa",
+        " Histórico Patrimonial",
+        " Histórico do Caixa",
+        " Planilha de Aviso - Malha Fina",
+        " Planejamento Tributário",
+        " Bens e Direitos",
+        " Exibir dados do cônjuge",
+        " PDF",
+        " Excel"
+      ],
+      "tabs": []
+    },
+    {
+      "screen": "IRPF - documentos faltantes",
+      "url": "https://portal.conferironline.com.br/customer-profile/irpf/backlogs?customerId={id}",
+      "buttons": [
+        {
+          "disabled": true,
+          "text": "Enviar por Email",
+          "title": null
+        },
+        {
+          "disabled": true,
+          "text": "Enviar por WhatsApp",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Novo Documento Faltante",
+          "title": null
+        }
+      ],
+      "columns": [
+        "DESCRIÇÃO",
+        "CRIAÇÃO",
+        "LIMITE",
+        "BAIXA",
+        "OPÇÕES"
+      ],
+      "controls": [
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        }
+      ],
+      "headings": [
+        "Documentos Faltantes"
+      ],
+      "labels": [
+        "Ano Exercício"
+      ],
+      "tabs": []
+    },
+    {
+      "screen": "Documento faltante - formulário",
+      "url": "https://portal.conferironline.com.br/customer-profile/irpf/backlogs?customerId={id}",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Salvar",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": "Descrição",
+          "required": false,
+          "type": "textarea"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "date"
+        }
+      ],
+      "headings": [
+        "Novo Documento Faltante"
+      ],
+      "labels": [
+        "Descrição",
+        "Data Limite"
+      ],
+      "tabs": []
+    },
+    {
+      "screen": "IRPF - holding",
+      "url": "https://portal.conferironline.com.br/customer-profile/irpf/holding?customerId={id}",
+      "buttons": [],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        }
+      ],
+      "headings": [
+        "Holding"
+      ],
+      "labels": [
+        "Ano Exercício"
+      ],
+      "tabs": []
+    },
+    {
+      "screen": "IA - especialista IR",
+      "url": "https://portal.conferironline.com.br/customer-profile/ia/ir?customerId={id}",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Reiniciar Conversa",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Reiniciar Conversa",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Avaliar este recurso",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Adicionar arquivos deste computador",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": "Digite sua mensagem...",
+          "required": false,
+          "type": "textarea"
+        }
+      ],
+      "headings": [],
+      "labels": [],
+      "tabs": []
+    },
+    {
+      "screen": "Cliente - eCAC",
+      "url": "https://portal.conferironline.com.br/customer-profile/ecac?customerId={id}",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Salvar",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Declarações Processadas",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Extrato de Rendimentos",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Acompanhamento Darf",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Acompanhamento Cnd",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Status Simplificado Ecac",
+          "title": null
+        }
+      ],
+      "columns": [
+        "Ano",
+        "Data de emissão",
+        "Visualizar"
+      ],
+      "controls": [
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": "Login Ecac",
+          "required": false,
+          "type": "password"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": "Senha Ecac",
+          "required": false,
+          "type": "password"
+        }
+      ],
+      "headings": [
+        " Sem login ",
+        "Declarações Processadas",
+        "Extrato de Rendimentos",
+        "Acompanhamento Darf",
+        "Acompanhamento Cnd",
+        "Status Simplificado Ecac"
+      ],
+      "labels": [
+        " Login Ecac ",
+        " Senha Ecac "
+      ],
+      "tabs": []
+    },
+    {
+      "screen": "eCAC - painéis de acompanhamento",
+      "url": "https://portal.conferironline.com.br/customer-profile/ecac?customerId={id}",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Salvar",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Declarações Processadas",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Extrato de Rendimentos",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Acompanhamento Darf",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Acompanhamento Cnd",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Status Simplificado Ecac",
+          "title": null
+        }
+      ],
+      "columns": [
+        "ANO",
+        "STATUS",
+        "TIPO",
+        "ORIGINAL/RETIFICADORA",
+        "TRIBUTAÇÃO",
+        "OPÇÕES",
+        "ANO",
+        "DATA DE EMISSÃO",
+        "VISUALIZAR",
+        "VALOR",
+        "DATA DE VENCIMENTO",
+        "STATUS DA PARCELA",
+        "STATUS DO ENVIO",
+        "PDF"
+      ],
+      "controls": [
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": "Login Ecac",
+          "required": false,
+          "type": "password"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": "Senha Ecac",
+          "required": false,
+          "type": "password"
+        }
+      ],
+      "headings": [
+        " Sem login ",
+        "Declarações Processadas",
+        "Extrato de Rendimentos",
+        "Acompanhamento Darf",
+        "Acompanhamento Cnd",
+        "O escritório ainda não marcou a opção \"Permitir geração automática de CND\" nas preferências do escritório",
+        "Status Simplificado Ecac",
+        "Caso já tenha feito o passo a passo, basta esperar o nosso robô passar em sua base!\nTutorial Status Simplificado"
+      ],
+      "labels": [
+        " Login Ecac ",
+        " Senha Ecac "
+      ],
+      "tabs": []
+    },
+    {
+      "screen": "eCAC - ações",
+      "url": "https://portal.conferironline.com.br/customer-profile/actions?customerId={id}",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Acessar",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Acessar",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Acessar",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Acessar",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [],
+      "headings": [
+        "Bem vindo ao Ações eCAC",
+        "Você pode acessar os serviços do eCAC com automação da extensão ConferIR.",
+        "Carnê Leão",
+        "Meu IRPF",
+        "CND",
+        "Fontes Pagadoras"
+      ],
+      "labels": [],
+      "tabs": []
+    },
+    {
+      "screen": "Cliente - endereço",
+      "url": "https://portal.conferironline.com.br/customer-profile/address?customerId={id}",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Salvar",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": "Digite o endereço",
+          "required": false,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": "Digite o endereço",
+          "required": false,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        }
+      ],
+      "headings": [
+        "Endereço Principal",
+        "Endereço Secundário"
+      ],
+      "labels": [
+        "Endereço",
+        "Número",
+        "Complemento",
+        "Cidade",
+        "Bairro",
+        "CEP",
+        "Endereço",
+        "Número",
+        "Complemento",
+        "Cidade",
+        "Bairro",
+        "CEP"
+      ],
+      "tabs": []
+    },
+    {
+      "screen": "IRPFM - carregado",
+      "url": "https://portal.conferironline.com.br/customer-profile/ifrm?customerId={id}",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Ver cálculo detalhado",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Reiniciar Conversa",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Estou sujeito ao IRPFM?",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Calcular IRPFM",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "O que entra na base?",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Parecer para contador",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Adicionar fotos e arquivos",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Arquivos do checklist",
+          "title": null
+        },
+        {
+          "disabled": true,
+          "text": "",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "file"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": "Digite sua pergunta",
+          "required": false,
+          "type": "textarea"
+        }
+      ],
+      "headings": [
+        "Situação IRPFM 2026",
+        "[valor monetário]",
+        "[valor monetário]",
+        "[valor monetário]",
+        "[percentual]"
+      ],
+      "labels": [],
+      "tabs": []
+    },
+    {
+      "screen": "Identificação - carregada",
+      "url": "https://portal.conferironline.com.br/customer-profile/identification?customerId={id}",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Gerar Acesso - Portal do Cliente",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Salvar",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": "Nome completo",
+          "required": false,
+          "type": "undefined"
+        },
+        {
+          "disabled": true,
+          "label": null,
+          "placeholder": "Cpf / Cnpj",
+          "required": false,
+          "type": "undefined"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": "Título de eleitor",
+          "required": false,
+          "type": "undefined"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "date"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": "Email",
+          "required": false,
+          "type": "undefined"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": "Celular",
+          "required": false,
+          "type": "undefined"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": "Telefone",
+          "required": false,
+          "type": "undefined"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "label": null,
+          "placeholder": "Observação",
+          "required": false,
+          "type": "textarea"
+        }
+      ],
+      "headings": [],
+      "labels": [
+        "Nome completo",
+        "Cpf / Cnpj",
+        "Título de eleitor",
+        "Data de nascimento",
+        "Sexo",
+        "Email",
+        "Cód. País (Cel)",
+        "Celular",
+        "Cód. País",
+        "Telefone",
+        "Grupo",
+        "Responsável",
+        "Status",
+        "Procurador",
+        "Observação"
+      ],
+      "tabs": []
+    },
+    {
+      "screen": "Copiloto - visão geral",
+      "url": "https://portal.conferironline.com.br/customer-profile/financial-copilot?customerId={id}",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Visão geral",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Orçamento",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Vencimentos",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Seguros",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "IRPFM",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Exterior",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Assessor Financeiro",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Copiloto",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Adicionar documento",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Jan",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Fev",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Mar",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Abr",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Mai",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Jun",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Jul",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Ago",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Set",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Out",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Nov",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Dez",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Ver vencimentos",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Ver seguros",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Ver documentos",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Ir para Orçamento",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Ver acompanhamento IRPFM",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Reiniciar Conversa",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": "Adicionar anexos"
+        },
+        {
+          "disabled": false,
+          "text": "Adicionar fotos e arquivos",
+          "title": null
+        },
+        {
+          "disabled": true,
+          "text": "",
+          "title": "Enviar pergunta"
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "file"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "file"
+        },
+        {
+          "disabled": false,
+          "placeholder": "Digite sua pergunta...",
+          "type": "text"
+        }
+      ],
+      "headings": [
+        "PROJEÇÃO DO IRPFM DEVIDO (DAA 2027)",
+        "Copiloto Financeiro",
+        "Copiloto Financeiro"
+      ],
+      "labels": [],
+      "tabs": [
+        "Dashboard",
+        "IRPF",
+        "IA",
+        "Ecac",
+        "Ações - Ecac",
+        "Identificação",
+        "Endereço",
+        "IRPFM",
+        "NOVO\nCopiloto Financeiro",
+        "Livro Caixa",
+        "Mensagens"
+      ]
+    },
+    {
+      "screen": "Cliente - livro caixa",
+      "url": "https://portal.conferironline.com.br/customer-profile/cash-book-feature?customerId={id}",
+      "buttons": [
+        {
+          "disabled": true,
+          "text": "Download",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Referência de preenchimento dos campos de Rendimentos",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Referência de preenchimento dos campos de Pagamentos",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Tabela com os códigos de rendimentos",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Tabela com os códigos de pagamentos gerais",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Tabela com os códigos de pagamentos do Plano de Contas Padrão",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Tabela com os códigos de ocupação",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Prosseguir",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Adicionar Documentos",
+          "title": null
+        },
+        {
+          "disabled": true,
+          "text": "Converter",
+          "title": null
+        }
+      ],
+      "columns": [
+        "Campo",
+        "Formato",
+        "Campo",
+        "Formato",
+        "Código",
+        "Descrição",
+        "Código",
+        "Descrição",
+        "Código",
+        "Descrição",
+        "Código",
+        "Descrição"
+      ],
+      "controls": [
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "file"
+        }
+      ],
+      "headings": [
+        "Modelos para rendimentos",
+        "Modelos para Pagamentos",
+        "Abaixo constam alguns link de auxilio:",
+        " Referência de preenchimento dos campos de Rendimentos ",
+        " Referência de preenchimento dos campos de Pagamentos ",
+        " Tabela com os códigos de rendimentos ",
+        " Tabela com os códigos de pagamentos gerais ",
+        " Tabela com os códigos de pagamentos do Plano de Contas Padrão ",
+        " Tabela com os códigos de ocupação ",
+        "Selecione os documentos a serem convertidos",
+        "Importante"
+      ],
+      "labels": [
+        " Modelo vazio",
+        " Modelo para Aluguel, Pensão Alimentícia e Outros rendimentos",
+        " Modelo para rendimentos de Serviços Notariais e de Registro",
+        " Modelo para rendimentos do Trabalho não Assalariado",
+        " Modelo vazio",
+        " Modelo para Pagamentos do Plano de Contas padrão",
+        " Modelo para Pagamentos"
+      ],
+      "tabs": [
+        "Dashboard",
+        "IRPF",
+        "IA",
+        "Ecac",
+        "Ações - Ecac",
+        "Identificação",
+        "Endereço",
+        "IRPFM",
+        "NOVO\nCopiloto Financeiro",
+        "Livro Caixa",
+        "Mensagens"
+      ]
+    },
+    {
+      "screen": "Cliente - mensagens",
+      "url": "https://portal.conferironline.com.br/customer-profile/messages?customerId={id}",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": null
+        },
+        {
+          "disabled": true,
+          "text": "",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "placeholder": "Digite sua mensagem...",
+          "type": "textarea"
+        }
+      ],
+      "headings": [],
+      "labels": [],
+      "tabs": [
+        "Dashboard",
+        "IRPF",
+        "IA",
+        "Ecac",
+        "Ações - Ecac",
+        "Identificação",
+        "Endereço",
+        "IRPFM",
+        "NOVO\nCopiloto Financeiro",
+        "Livro Caixa",
+        "Mensagens"
+      ]
+    },
+    {
+      "screen": "Admin - empresa",
+      "url": "https://portal.conferironline.com.br/admin/edit-accounting-office",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Adicionar Logo",
+          "title": null
+        },
+        {
+          "disabled": true,
+          "text": "Salvar",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "file"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "placeholder": "https://www.site.com.br/",
+          "type": "url"
+        }
+      ],
+      "headings": [
+        "Admin",
+        "Logo",
+        "Website"
+      ],
+      "labels": [
+        "Website"
+      ],
+      "tabs": [
+        "Empresa",
+        "Colaboradores",
+        "Grupos",
+        "Funções",
+        "Contratos",
+        "Copiloto Financeiro",
+        "Integrações",
+        "Informações do Escritório",
+        "Preferências"
+      ]
+    },
+    {
+      "screen": "Admin - preferências",
+      "url": "https://portal.conferironline.com.br/admin/edit-accounting-office",
+      "buttons": [
+        {
+          "disabled": true,
+          "text": "Salvar",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [],
+      "headings": [
+        "Admin"
+      ],
+      "labels": [],
+      "tabs": [
+        "Empresa",
+        "Colaboradores",
+        "Grupos",
+        "Funções",
+        "Contratos",
+        "Copiloto Financeiro",
+        "Integrações",
+        "Informações do Escritório",
+        "Preferências"
+      ]
+    },
+    {
+      "screen": "Preferências - carregadas",
+      "url": "https://portal.conferironline.com.br/admin/edit-accounting-office",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Salvar",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "input"
+        }
+      ],
+      "headings": [
+        "Admin",
+        "Operação",
+        "Comunicação",
+        "Robô",
+        "Relatórios",
+        "Checklist",
+        "Insights e Oportunidades",
+        "Cores do Escritório"
+      ],
+      "labels": [
+        "✓\nContadores podem ver apenas seus clientes",
+        "✓\nEnviar a guia DARF automaticamente para o e-mail dos clientes",
+        "✓\nNotificar também o e-mail principal sobre alterações no ECAC do cliente",
+        "✓\nSolicitar consulta simplificada para clientes sem procurador no Portal",
+        "✓\nPermitir geração automática de CND",
+        "✓\nImprimir 2 vias do recibo",
+        "✓\nExibir detalhamento do recibo",
+        "✓\nExibir detalhamento do Documento de Autorização",
+        "✓\nPermitir envio do Documento de Autorização sem Orçamento existente",
+        "Forma de cálculo do desconto simplificado na análise de caixa",
+        "✓\nFinalizar Checklist em modo consulta após iniciar a declaração",
+        "Bloquear checklist do cliente a partir do status",
+        "Alto Patrimônio Base",
+        "Cor do título",
+        "Cor Subtítulo",
+        "Cor da linha"
+      ],
+      "tabs": [
+        "Empresa",
+        "Colaboradores",
+        "Grupos",
+        "Funções",
+        "Contratos",
+        "Copiloto Financeiro",
+        "Integrações",
+        "Informações do Escritório",
+        "Preferências"
+      ]
+    },
+    {
+      "screen": "Admin - colaboradores",
+      "url": "https://portal.conferironline.com.br/admin/employee-management",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Novo Colaborador",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Opções",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Editar colaborador",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Excluir",
+          "title": null
+        }
+      ],
+      "columns": [
+        "NOME",
+        "EMAIL",
+        "FUNÇÃO",
+        "OPÇÕES"
+      ],
+      "controls": [],
+      "headings": [
+        "Admin",
+        "Colaboradores"
+      ],
+      "labels": [],
+      "tabs": [
+        "Empresa",
+        "Colaboradores",
+        "Grupos",
+        "Funções",
+        "Contratos",
+        "Copiloto Financeiro",
+        "Integrações"
+      ]
+    },
+    {
+      "screen": "Colaborador - formulário",
+      "url": "https://portal.conferironline.com.br/admin/employee-management",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Salvar",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "placeholder": "Nome do Colaborador",
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "placeholder": "Email",
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "text"
+        }
+      ],
+      "headings": [
+        "Novo Colaborador"
+      ],
+      "labels": [
+        "Nome do Colaborador",
+        "Email",
+        "Função do colaborador"
+      ],
+      "tabs": []
+    },
+    {
+      "screen": "Admin - grupos",
+      "url": "https://portal.conferironline.com.br/admin/customer-group",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Novo grupo",
+          "title": null
+        }
+      ],
+      "columns": [
+        "NOME",
+        "OPÇÕES"
+      ],
+      "controls": [],
+      "headings": [
+        "Admin",
+        "Grupos"
+      ],
+      "labels": [],
+      "tabs": [
+        "Empresa",
+        "Colaboradores",
+        "Grupos",
+        "Funções",
+        "Contratos",
+        "Copiloto Financeiro",
+        "Integrações"
+      ]
+    },
+    {
+      "screen": "Grupo - formulário",
+      "url": "https://portal.conferironline.com.br/admin/customer-group",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Salvar",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "placeholder": "Nome do Grupo",
+          "type": "text"
+        }
+      ],
+      "headings": [
+        "Novo grupo"
+      ],
+      "labels": [
+        "Nome do Grupo"
+      ],
+      "tabs": []
+    },
+    {
+      "screen": "Admin - funções",
+      "url": "https://portal.conferironline.com.br/admin/roles",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Nova função",
+          "title": null
+        }
+      ],
+      "columns": [
+        "NOME",
+        "OPÇÕES"
+      ],
+      "controls": [],
+      "headings": [
+        "Admin",
+        "Funções"
+      ],
+      "labels": [],
+      "tabs": [
+        "Empresa",
+        "Colaboradores",
+        "Grupos",
+        "Funções",
+        "Contratos",
+        "Copiloto Financeiro",
+        "Integrações"
+      ]
+    },
+    {
+      "screen": "Função - formulário e permissões",
+      "url": "https://portal.conferironline.com.br/admin/roles",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Operações Cliente",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações DIRPF Digital",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações DIRPF PDF",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações Pré-Declaração",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações de Pós declaração",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações de mala direta",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações orçamento",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações relatórios",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações eCAC",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações Métodos de Pagamento",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações Tabelas de Cobrança",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações Templates de Email",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações Importação de planilhas",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações Escritório",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações Colaboradores",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações Permissões",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações Grupo de Clientes",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações com Função",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações com Procuração",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Salvar",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "placeholder": "Nome da função",
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        }
+      ],
+      "headings": [
+        "Nova função",
+        "Operações Cliente",
+        "Operações DIRPF Digital",
+        "Operações DIRPF PDF",
+        "Operações Pré-Declaração",
+        "Operações de Pós declaração",
+        "Operações de mala direta",
+        "Operações orçamento",
+        "Operações relatórios",
+        "Operações eCAC",
+        "Operações Métodos de Pagamento",
+        "Operações Tabelas de Cobrança",
+        "Operações Templates de Email",
+        "Operações Importação de planilhas",
+        "Operações Escritório",
+        "Operações Colaboradores",
+        "Operações Permissões",
+        "Operações Grupo de Clientes",
+        "Operações com Função",
+        "Operações com Procuração"
+      ],
+      "labels": [
+        "Nome da função",
+        " Selecionar todos",
+        " Listagem de clientes ",
+        " Criação de clientes ",
+        " Remoção de clientes ",
+        " Edição de clientes ",
+        " Baixar Documentos ",
+        " Criação de DRIPF Digital ",
+        " Visualização de DIRPF Digital ",
+        " Edição de DIRPF Digital ",
+        " Upload na DIRPF Digital ",
+        " Download na DIRPF Digital ",
+        " Envio da DIRPF Digital ",
+        " Visualização da DIRPF PDF ",
+        " Envio da DIRPF PDF ",
+        " Download da DIRPF PDF ",
+        " Visualização da Pré-Declaração ",
+        " Edição da Pré-Declaração ",
+        " Criação da Pré-Declaração ",
+        " Envio do Kit Pós-Declaração ",
+        " Envio de DIRPF Digital ",
+        " Envio de DIRPF PDF ",
+        " Envio do Planejamento ",
+        " Envio de email Marketing ",
+        " Envio de Orçamento ",
+        " Envio de email Mensal ",
+        " Listagem de orçamentos ",
+        " Criação de orçamentos ",
+        " Edição de orçamentos ",
+        " Remoção de orçamentos ",
+        " Aprovação de orçamentos ",
+        " Envio de orçamentos ",
+        " Edição dos faturamentos ",
+        " Recebimento dos faturamentos ",
+        " Geração do recibo dos faturamentos ",
+        " Envio do recibo dos faturamentos ",
+        " Geração do relatório de Análise de Caixa ",
+        " Geração do relatório de Detalhes de Caixa ",
+        " Geração do relatório de Histórico Patrimonial ",
+        " Geração do relatório de Histórico de Caixa ",
+        " Geração do relatório de Malha Fina ",
+        " Geração do relatório de Planejamento Tributário ",
+        " Geração do relatório de Faturamento ",
+        " Geração de etiquetas de impressão ",
+        " Geração do relatório de Resultados ",
+        " Geração do relatório de Pendências ",
+        " Geração do relatório de Bens e Direito ",
+        " Listagem dos extratos das declarações ",
+        " Listagem dos extratos de rendimento ",
+        " Listagem dos métodos de pagamento ",
+        " Criação de método de pagamento ",
+        " Edição de método de pagamento ",
+        " Exclusão de método de pagamento ",
+        " Listagem das tabelas de cobrança ",
+        " Criação de tabela de cobrança ",
+        " Edição de tabela de cobrança ",
+        " Exclusão de tabela de cobrança ",
+        " Listagem dos templates de email ",
+        " Edição de template de email ",
+        " Upload de planilha de login eCAC ",
+        " Download de planilha de login eCAC ",
+        " Download de planilha de orçamento ",
+        " Upload de planilha de orçamento ",
+        " Upload de planilha de novos clientes ",
+        " Download de planilha de novos clientes ",
+        " Upload de Planilha de Procuração em lote ",
+        " Download de Planilha de Procuração em lote ",
+        " Upload de planilha login inss ",
+        " Download de planilha login inss ",
+        " Edição de dados do escritório ",
+        " Listagem de colaboradores ",
+        " Criação de colaboradores ",
+        " Edição de colaboradores ",
+        " Exclusão de colaboradores ",
+        " Visualização de configurações ",
+        " Edição de configurações ",
+        " Listagem dos grupos de cliente ",
+        " Criação de grupo de clientes ",
+        " Edição de grupo de cliente ",
+        " Exclusão de grupo de cliente ",
+        " Listagem de Funções ",
+        " Criação de Funções ",
+        " Edição de Funções ",
+        " Exclusão de Funções ",
+        " Cadastrar Procurador "
+      ],
+      "tabs": []
+    },
+    {
+      "screen": "Admin - contratos",
+      "url": "https://portal.conferironline.com.br/admin/contracts",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Termo",
+          "title": null
+        }
+      ],
+      "columns": [
+        "NOME",
+        "INÍCIO DA LICENÇA",
+        "EXPIRAÇÃO DA LICENÇA",
+        "ANO",
+        "POSSUI BACKUP",
+        "SITUAÇÃO"
+      ],
+      "controls": [
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "text"
+        }
+      ],
+      "headings": [
+        "Admin",
+        "Meus Pacotes"
+      ],
+      "labels": [],
+      "tabs": [
+        "Empresa",
+        "Colaboradores",
+        "Grupos",
+        "Funções",
+        "Contratos",
+        "Copiloto Financeiro",
+        "Integrações",
+        "Meus Pacotes"
+      ]
+    },
+    {
+      "screen": "Admin - integrações",
+      "url": "https://portal.conferironline.com.br/admin/integrations",
+      "buttons": [],
+      "columns": [],
+      "controls": [],
+      "headings": [
+        "Admin",
+        "Asaas",
+        "Omie",
+        "Whatsapp"
+      ],
+      "labels": [],
+      "tabs": [
+        "Empresa",
+        "Colaboradores",
+        "Grupos",
+        "Funções",
+        "Contratos",
+        "Copiloto Financeiro",
+        "Integrações"
+      ]
+    },
+    {
+      "screen": "Admin - plano copiloto",
+      "url": "https://portal.conferironline.com.br/admin/plan-customer-portal",
+      "buttons": [],
+      "columns": [
+        "NOME",
+        "CPF / CNPJ",
+        "E-MAIL",
+        "SITUAÇÃO",
+        "OPÇÕES"
+      ],
+      "controls": [],
+      "headings": [
+        "Admin",
+        "COPILOTO FINANCEIRO"
+      ],
+      "labels": [],
+      "tabs": [
+        "Empresa",
+        "Colaboradores",
+        "Grupos",
+        "Funções",
+        "Contratos",
+        "Copiloto Financeiro",
+        "Integrações"
+      ]
+    },
+    {
+      "screen": "Financeiro - métodos de pagamento",
+      "url": "https://portal.conferironline.com.br/payment-methods",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Novo método de pagamento",
+          "title": null
+        }
+      ],
+      "columns": [
+        "NOME",
+        "TIPO",
+        "MÁXIMO DE PARCELAS",
+        "STATUS",
+        "PADRÃO",
+        "OPÇÕES"
+      ],
+      "controls": [],
+      "headings": [
+        "Métodos de pagamento"
+      ],
+      "labels": [],
+      "tabs": []
+    },
+    {
+      "screen": "Método de pagamento - formulário",
+      "url": "https://portal.conferironline.com.br/payment-methods",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Salvar",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "placeholder": "Nome",
+          "type": "undefined"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        }
+      ],
+      "headings": [
+        "Novo método de pagamento"
+      ],
+      "labels": [
+        "Tipo de pagamento",
+        "Nome",
+        "Máximo de parcelas",
+        "Status",
+        "Definir como Padrão"
+      ],
+      "tabs": []
+    },
+    {
+      "screen": "Financeiro - tabelas de cobrança",
+      "url": "https://portal.conferironline.com.br/price-tables",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Nova tabela",
+          "title": null
+        }
+      ],
+      "columns": [
+        "NOME",
+        "TIPO",
+        "ATIVO",
+        "PADRÃO",
+        "OPÇÕES"
+      ],
+      "controls": [],
+      "headings": [
+        "Tabelas de cobrança"
+      ],
+      "labels": [],
+      "tabs": []
+    },
+    {
+      "screen": "Tabela de cobrança - formulário",
+      "url": "https://portal.conferironline.com.br/price-tables",
+      "buttons": [],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "placeholder": "Nome",
+          "type": "undefined"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "date"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "date"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        }
+      ],
+      "headings": [
+        "Nova tabela de cobrança"
+      ],
+      "labels": [
+        "Nome",
+        "Tipo de tabela",
+        "Status",
+        "Validade - Data inicial",
+        "Validade - Data Final (opcional)",
+        "Definir como Padrão"
+      ],
+      "tabs": []
+    },
+    {
+      "screen": "Financeiro - faturamento",
+      "url": "https://portal.conferironline.com.br/reports/billing-report",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Gerar Relatório",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Filtros",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Gerar relatório",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [],
+      "headings": [
+        "Relatórios",
+        "Relatório de Faturamento"
+      ],
+      "labels": [],
+      "tabs": []
+    },
+    {
+      "screen": "Faturamento - carregado",
+      "url": "https://portal.conferironline.com.br/reports/billing-report",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Gerar Relatório",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Filtros",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Gerar relatório",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        }
+      ],
+      "headings": [
+        "Relatórios",
+        "Relatório de Faturamento"
+      ],
+      "labels": [
+        "Ano Exercício",
+        "Categoria",
+        "Responsável",
+        "Tipo de faturamento",
+        "Status do Pagamento",
+        "✓\nExibir somente clientes com orçamentos aprovados",
+        "✓\nExibir clientes com recibos vencidos"
+      ],
+      "tabs": [
+        "Faturamento",
+        "Resultados",
+        "Docs Faltantes",
+        "Restituição"
+      ]
+    },
+    {
+      "screen": "Faturamento - filtros",
+      "url": "https://portal.conferironline.com.br/reports/billing-report",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Gerar Relatório",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Filtros",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Gerar relatório",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        }
+      ],
+      "headings": [
+        "Relatórios",
+        "Relatório de Faturamento"
+      ],
+      "labels": [
+        "Ano Exercício",
+        "Categoria",
+        "Responsável",
+        "Tipo de faturamento",
+        "Status do Pagamento",
+        "✓\nExibir somente clientes com orçamentos aprovados",
+        "✓\nExibir clientes com recibos vencidos"
+      ],
+      "tabs": [
+        "Faturamento",
+        "Resultados",
+        "Docs Faltantes",
+        "Restituição"
+      ]
+    },
+    {
+      "screen": "Relatório - resultados carregado",
+      "url": "https://portal.conferironline.com.br/reports/results-report",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Gerar Relatório",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Filtros",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Gerar Relatório",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        }
+      ],
+      "headings": [
+        "Relatórios",
+        "Relatório de Resultados"
+      ],
+      "labels": [
+        "Ano Exercício",
+        "✓\nA Pagar",
+        "✓\nA Restituir",
+        "✓\nDeclarações sem restituição ou pagamento"
+      ],
+      "tabs": [
+        "Faturamento",
+        "Resultados",
+        "Docs Faltantes",
+        "Restituição"
+      ]
+    },
+    {
+      "screen": "Relatório - documentos faltantes",
+      "url": "https://portal.conferironline.com.br/reports/report-backlogs",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Gerar Relatório",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Filtros",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Gerar Relátorio",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        }
+      ],
+      "headings": [
+        "Relatórios",
+        "Documentos Faltantes"
+      ],
+      "labels": [
+        "✓\nExibir somente Documentos Faltantes com data limite vencida"
+      ],
+      "tabs": []
+    },
+    {
+      "screen": "Relatório - restituição",
+      "url": "https://portal.conferironline.com.br/reports/report-payment-refund",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Download Excel",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Gerar Relatório",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Filtros",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Download Excel",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Gerar Relatório",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        }
+      ],
+      "headings": [
+        "Relatórios",
+        "Relatório Restituição"
+      ],
+      "labels": [
+        "Ano Exercício",
+        "✓\nApenas Restituições Futuras",
+        "✓\nOrdenar por Data",
+        "✓\nOrdernar por Nome"
+      ],
+      "tabs": [
+        "Faturamento",
+        "Resultados",
+        "Docs Faltantes",
+        "Restituição"
+      ]
+    },
+    {
+      "screen": "Importação - novos clientes",
+      "url": "https://portal.conferironline.com.br/import-spreadsheet/new-customers",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Selecionar",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "file"
+        }
+      ],
+      "headings": [
+        "IMPORTAR PLANILHA DE NOVOS CLIENTES",
+        " Clique aqui para fazer o download da planilha",
+        "Atenção: Os campos Nome, Cpf e E-mail do responsável são obrigatórios.",
+        "Após fazer o download, atualize os dados da planilha, depois faça a importação na area abaixo.",
+        "Arraste seus arquivos ou clique em 'Selecionar'"
+      ],
+      "labels": [],
+      "tabs": []
+    },
+    {
+      "screen": "Importação - atualização de clientes",
+      "url": "https://portal.conferironline.com.br/import-spreadsheet/update-customer",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Selecionar",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "file"
+        }
+      ],
+      "headings": [
+        "IMPORTAR PLANILHA COM DADOS DO CLIENTE.",
+        " Clique aqui para fazer o download da planilha",
+        "Atenção: Somente é necessário preencher o campo TELEFONE, CELULAR, E E-MAIL da planilha.",
+        "Após fazer o download, atualize os dados da planilha, depois faça a importação na área abaixo.",
+        "Arraste seus arquivos ou clique em 'Selecionar'"
+      ],
+      "labels": [],
+      "tabs": []
+    },
+    {
+      "screen": "Importação - procurações",
+      "url": "https://portal.conferironline.com.br/import-spreadsheet/procuration",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Selecionar",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "file"
+        }
+      ],
+      "headings": [
+        "IMPORTAR PLANILHA DE PROCURAÇÃO DE CLIENTES",
+        " Clique aqui para fazer o download da planilha",
+        "Atenção: Somente é necessário preencher o campo CPF/CNPJ - PROCURADOR da planilha.",
+        "Após fazer o download, atualize os dados da planilha, depois faça a importação na área abaixo.",
+        "Arraste seus arquivos ou clique em 'Selecionar'"
+      ],
+      "labels": [],
+      "tabs": []
+    },
+    {
+      "screen": "Importação - INSS",
+      "url": "https://portal.conferironline.com.br/import-spreadsheet/inss",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Selecionar",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "file"
+        }
+      ],
+      "headings": [
+        "IMPORTAR PLANILHA INSS",
+        " Clique aqui para fazer o download da planilha",
+        "Atenção: É somente necessário preencher o campo SENHA do login gov.br do seu cliente.",
+        "Após fazer o download, atualize os dados da planilha, depois faça a importação na área abaixo.",
+        "Arraste seus arquivos ou clique em 'Selecionar'"
+      ],
+      "labels": [],
+      "tabs": []
+    },
+    {
+      "screen": "Importação - orçamento",
+      "url": "https://portal.conferironline.com.br/import-spreadsheet/budget",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Selecionar",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "file"
+        }
+      ],
+      "headings": [
+        "IMPORTAR PLANILHA DE ORÇAMENTOS",
+        " Clique aqui para fazer o download da planilha pré-preenchida com os dados de orçamento dos seus clientes.",
+        "Após fazer o download, atualize os dados da planilha, depois faça a importação na area abaixo.",
+        "Arraste seus arquivos ou clique em 'Selecionar'"
+      ],
+      "labels": [],
+      "tabs": []
+    },
+    {
+      "screen": "Emails - templates",
+      "url": "https://portal.conferironline.com.br/email-templates",
+      "buttons": [],
+      "columns": [
+        "NOME",
+        "OPÇÕES"
+      ],
+      "controls": [],
+      "headings": [
+        "Templates de email"
+      ],
+      "labels": [],
+      "tabs": []
+    },
+    {
+      "screen": "Emails - templates carregados",
+      "url": "https://portal.conferironline.com.br/email-templates",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Editar",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Editar",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Editar",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Editar",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Editar",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Editar",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Editar",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Editar",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Editar",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Editar",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Editar",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Editar",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Editar",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Editar",
+          "title": null
+        }
+      ],
+      "columns": [
+        "NOME",
+        "OPÇÕES"
+      ],
+      "controls": [],
+      "headings": [
+        "Templates de email"
+      ],
+      "labels": [],
+      "tabs": []
+    },
+    {
+      "screen": "Template - editor",
+      "url": "https://portal.conferironline.com.br/email-templates",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "",
+          "title": "Undo"
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": "Redo"
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": "Bold"
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": "Italic"
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": "Underline"
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": "Strikethrough"
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": "Subscript"
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": "Superscript"
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": "Justify Left"
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": "Justify Center"
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": "Justify Right"
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": "Justify Full"
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": "Indent"
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": "Outdent"
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": "Unordered List"
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": "Ordered List"
+        },
+        {
+          "disabled": false,
+          "text": "default",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Times New Roman",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "3",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": "Text Color"
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": "Background Color"
+        },
+        {
+          "disabled": false,
+          "text": "Clear Class",
+          "title": null
+        },
+        {
+          "disabled": true,
+          "text": "",
+          "title": "Insert Link"
+        },
+        {
+          "disabled": true,
+          "text": "",
+          "title": "Unlink"
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": "Insert Image"
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": "Insert Video"
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": "Horizontal Line"
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": "Clear Formatting"
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": "HTML Code"
+        },
+        {
+          "disabled": false,
+          "text": "ACESSAR O FORMULÁRIO",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Restaurar modelo padrão",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Salvar",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "placeholder": "Assunto do email",
+          "type": "undefined"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "color"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "color"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "file"
+        }
+      ],
+      "headings": [
+        "Editar template de email",
+        "Tags Disponíveis",
+        "Conteúdo do email",
+        "Checklist DIRPF DIGITAL"
+      ],
+      "labels": [
+        "Assunto do email"
+      ],
+      "tabs": []
+    },
+    {
+      "screen": "Emails - enviados",
+      "url": "https://portal.conferironline.com.br/mailing",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Pesquisar",
+          "title": null
+        }
+      ],
+      "columns": [
+        "ASSUNTO",
+        "NOME",
+        "EMAIL",
+        "DATA ENVIO",
+        "SITUAÇÃO",
+        "OPÇÕES"
+      ],
+      "controls": [
+        {
+          "disabled": false,
+          "placeholder": "Pesquisar por cliente",
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "date"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "date"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "text"
+        }
+      ],
+      "headings": [],
+      "labels": [
+        "Tipo de Email",
+        "Data Inicial",
+        "Data Final"
+      ],
+      "tabs": []
+    },
+    {
+      "screen": "Backup",
+      "url": "https://portal.conferironline.com.br/backup",
+      "buttons": [],
+      "columns": [],
+      "controls": [],
+      "headings": [
+        "Backup das declarações",
+        "Oferta de contratação anual"
+      ],
+      "labels": [],
+      "tabs": []
+    },
+    {
+      "screen": "Pré-preenchidas IRPF",
+      "url": "https://portal.conferironline.com.br/pre-filled-statements",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Tutorial Pré-Preenchida",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Baixar Novos",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Baixar Todos",
+          "title": null
+        }
+      ],
+      "columns": [
+        "NOME",
+        "CPF",
+        "DOCUMENTOS"
+      ],
+      "controls": [],
+      "headings": [
+        "Tutorial Pré-Preenchida",
+        "1. Cadastro do Procurador",
+        "2. Associação de Clientes",
+        "3. Busca pelo Robô",
+        "4. Download dos Arquivos",
+        "5. Processamento do Arquivo",
+        "6. Visualização no IRPF"
+      ],
+      "labels": [],
+      "tabs": []
+    },
+    {
+      "screen": "Elaboração",
+      "url": "https://portal.conferironline.com.br/elaboration",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Pesquisar",
+          "title": null
+        }
+      ],
+      "columns": [
+        "SELEÇÃO",
+        "CLIENTE",
+        "CPF",
+        "ARQUIVOS PROCESSADOS",
+        "STATUS",
+        "EXPORTAÇÃO",
+        "OPÇÕES"
+      ],
+      "controls": [
+        {
+          "disabled": false,
+          "placeholder": "Pesquisar cliente",
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "text"
+        }
+      ],
+      "headings": [
+        "Como exportar a declaração",
+        " Significado dos status",
+        "Declarações em elaboração"
+      ],
+      "labels": [
+        "Pesquisar cliente",
+        "Status"
+      ],
+      "tabs": []
+    },
+    {
+      "screen": "Elaboração - carregada",
+      "url": "https://portal.conferironline.com.br/elaboration",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Pesquisar",
+          "title": null
+        },
+        {
+          "disabled": true,
+          "text": "Exportar selecionados (0)",
+          "title": null
+        },
+        {
+          "disabled": true,
+          "text": "Baixar selecionados (0)",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": null
+        }
+      ],
+      "columns": [
+        "SELEÇÃO",
+        "CLIENTE",
+        "CPF",
+        "ARQUIVOS PROCESSADOS",
+        "STATUS",
+        "EXPORTAÇÃO",
+        "OPÇÕES"
+      ],
+      "controls": [
+        {
+          "disabled": false,
+          "placeholder": "Pesquisar cliente",
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "text"
+        }
+      ],
+      "headings": [
+        " Como exportar a declaração",
+        " Significado dos status",
+        "Declarações em elaboração"
+      ],
+      "labels": [
+        "Pesquisar cliente",
+        "Status",
+        "Selecionar todos"
+      ],
+      "tabs": []
+    },
+    {
+      "screen": "Central de downloads",
+      "url": "https://portal.conferironline.com.br/downloads-center",
+      "buttons": [
+        {
+          "disabled": true,
+          "text": "Acessar",
+          "title": "Em breve"
+        }
+      ],
+      "columns": [],
+      "controls": [],
+      "headings": [
+        "Sincronizador ConferIR",
+        "windows",
+        "macOS",
+        "linux",
+        "Extensão ConferIR",
+        "Chrome Web Store",
+        "Apple Store - Em breve"
+      ],
+      "labels": [],
+      "tabs": []
+    },
+    {
+      "screen": "IRPFM - cálculo detalhado",
+      "url": "https://portal.conferironline.com.br/customer-profile/ifrm?customerId={id}",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Download",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Imprimir",
+          "title": null
+        }
+      ],
+      "columns": [
+        "DESCRIÇÃO",
+        "VALORES",
+        "DESCRIÇÃO",
+        "VALORES",
+        "DESCRIÇÃO",
+        "VALORES",
+        "DESCRIÇÃO",
+        "VALORES",
+        "DESCRIÇÃO",
+        "VALORES",
+        "OBSERVAÇÕES",
+        "DESCRIÇÃO",
+        "VALORES",
+        "DESCRIÇÃO",
+        "VALORES",
+        "DESCRIÇÃO",
+        "VALORES",
+        "DESCRIÇÃO",
+        "VALORES"
+      ],
+      "controls": [],
+      "headings": [
+        "Cálculo do IRPFM",
+        "Cálculo do IRPFM"
+      ],
+      "labels": [],
+      "tabs": []
+    },
+    {
+      "screen": "IA - malha fina",
+      "url": "https://portal.conferironline.com.br/customer-profile/ia/malha-fina?customerId={id}",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Reiniciar Conversa",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Reiniciar Conversa",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Adicionar arquivos deste computador",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": null
+        },
+        {
+          "text": "Gerar Defesa Administrativa"
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "placeholder": "Digite sua mensagem...",
+          "type": "textarea"
+        }
+      ],
+      "headings": [],
+      "labels": [],
+      "tabs": [
+        "Dashboard",
+        "IRPF",
+        "IA",
+        "Ecac",
+        "Ações - Ecac",
+        "Identificação",
+        "Endereço",
+        "IRPFM",
+        "NOVO\nCopiloto Financeiro",
+        "Livro Caixa",
+        "Mensagens"
+      ]
+    },
+    {
+      "screen": "IA - ganho de capital",
+      "url": "https://portal.conferironline.com.br/customer-profile/ia/ganho?customerId={id}",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Reiniciar Conversa",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Reiniciar Conversa",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Adicionar arquivos deste computador",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "placeholder": "Digite sua mensagem...",
+          "type": "textarea"
+        }
+      ],
+      "headings": [],
+      "labels": [],
+      "tabs": [
+        "Dashboard",
+        "IRPF",
+        "IA",
+        "Ecac",
+        "Ações - Ecac",
+        "Identificação",
+        "Endereço",
+        "IRPFM",
+        "NOVO\nCopiloto Financeiro",
+        "Livro Caixa",
+        "Mensagens"
+      ]
+    },
+    {
+      "screen": "IA - assessor financeiro",
+      "url": "https://portal.conferironline.com.br/customer-profile/ia/financial-advisor?customerId={id}",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Documentos 0/0",
+          "title": null
+        },
+        {
+          "disabled": true,
+          "text": "Gerar Análise",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Documentos 0/0",
+          "title": null
+        },
+        {
+          "disabled": true,
+          "text": "Gerar Pdf",
+          "title": null
+        },
+        {
+          "disabled": true,
+          "text": "",
+          "title": null
+        },
+        {
+          "disabled": true,
+          "text": "Avaliar",
+          "title": null
+        },
+        {
+          "disabled": true,
+          "text": "",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "0/0",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "placeholder": "Pesquisar arquivo...",
+          "type": "text"
+        }
+      ],
+      "headings": [
+        "Análise Financeira",
+        "🧠 Gerando análise",
+        "Documentos"
+      ],
+      "labels": [],
+      "tabs": [
+        "Dashboard",
+        "IRPF",
+        "IA",
+        "Ecac",
+        "Ações - Ecac",
+        "Identificação",
+        "Endereço",
+        "IRPFM",
+        "NOVO\nCopiloto Financeiro",
+        "Livro Caixa",
+        "Mensagens"
+      ]
+    },
+    {
+      "screen": "Holding - simulação",
+      "url": "https://portal.conferironline.com.br/customer-profile/irpf/holding?customerId={id}",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Gerenciar Bens",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Gerar PDF",
+          "title": null
+        }
+      ],
+      "columns": [
+        "",
+        "PF OU QUALQUER PJ",
+        "VALOR",
+        "HOLDING",
+        "VALOR",
+        "ECONOMIA"
+      ],
+      "controls": [
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "number"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "number"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "number"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "number"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "number"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "number"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "number"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "number"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "number"
+        }
+      ],
+      "headings": [
+        "Holding",
+        "Bens da Simulação 0 de 0 imóveis utilizados no cálculo",
+        "⚠ Observações importantes"
+      ],
+      "labels": [
+        "Ano Exercício"
+      ],
+      "tabs": [
+        "Dashboard",
+        "IRPF",
+        "IA",
+        "Ecac",
+        "Ações - Ecac",
+        "Identificação",
+        "Endereço",
+        "IRPFM",
+        "NOVO\nCopiloto Financeiro",
+        "Livro Caixa",
+        "Mensagens"
+      ]
+    },
+    {
+      "screen": "Holding - gestão dos bens da simulação",
+      "url": "https://portal.conferironline.com.br/customer-profile/irpf/holding?customerId={id}",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Fechar",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [],
+      "headings": [
+        "Gerenciar Bens"
+      ],
+      "labels": [],
+      "tabs": []
+    },
+    {
+      "screen": "Holding - bens carregados",
+      "url": "https://portal.conferironline.com.br/customer-profile/irpf/holding?customerId={id}",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Fechar",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [],
+      "headings": [
+        "Gerenciar Bens"
+      ],
+      "labels": [],
+      "tabs": []
+    },
+    {
+      "screen": "Conta - detalhes",
+      "url": "https://portal.conferironline.com.br/account-details",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Adicionar Certificado",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Remover Arquivo Certificado",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Salvar Certificado",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações Colaboradores",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações com Função",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações Escritório",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações Permissões",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações Grupo de Clientes",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações Cliente",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações eCAC",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações DIRPF Digital",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações relatórios",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações orçamento",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações DIRPF PDF",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações de mala direta",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações Importação de planilhas",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações Métodos de Pagamento",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações com Procuração",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações Pré-Declaração",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações de Pós declaração",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Outos",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações Templates de Email",
+          "title": null
+        },
+        {
+          "disabled": false,
+          "text": "Operações Tabelas de Cobrança",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": true,
+          "placeholder": "Nome do usuário",
+          "type": "undefined"
+        },
+        {
+          "disabled": true,
+          "placeholder": "Email do usuário",
+          "type": "undefined"
+        },
+        {
+          "disabled": false,
+          "placeholder": "CPF/CNPJ do Certificado",
+          "type": "undefined"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "text"
+        },
+        {
+          "disabled": false,
+          "placeholder": "Senha de Instalação do Certificado",
+          "type": "password"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "file"
+        }
+      ],
+      "headings": [
+        "PROCURADOR",
+        "FUNÇÃO (ADMINISTRADOR)",
+        "Operações Colaboradores",
+        "Operações com Função",
+        "Operações Escritório",
+        "Operações Permissões",
+        "Operações Grupo de Clientes",
+        "Operações Cliente",
+        "Operações eCAC",
+        "Operações DIRPF Digital",
+        "Operações relatórios",
+        "Operações orçamento",
+        "Operações DIRPF PDF",
+        "Operações de mala direta",
+        "Operações Importação de planilhas",
+        "Operações Métodos de Pagamento",
+        "Operações com Procuração",
+        "Operações Pré-Declaração",
+        "Operações de Pós declaração",
+        "Outos",
+        "Operações Templates de Email",
+        "Operações Tabelas de Cobrança"
+      ],
+      "labels": [
+        "Nome do usuário",
+        "Email do usuário",
+        "CPF/CNPJ do Certificado",
+        "Tipo de Autenticação",
+        "Senha de Instalação do Certificado",
+        " Criação de colaboradores ",
+        " Listagem de colaboradores ",
+        " Exclusão de colaboradores ",
+        " Edição de colaboradores ",
+        " Listagem de Funções ",
+        " Criação de Funções ",
+        " Edição de Funções ",
+        " Exclusão de Funções ",
+        " Edição de dados do escritório ",
+        " Edição de configurações ",
+        " Visualização de configurações ",
+        " Listagem dos grupos de cliente ",
+        " Criação de grupo de clientes ",
+        " Edição de grupo de cliente ",
+        " Exclusão de grupo de cliente ",
+        " Listagem de clientes ",
+        " Baixar Documentos ",
+        " Criação de clientes ",
+        " Edição de clientes ",
+        " Remoção de clientes ",
+        " Listagem dos extratos de rendimento ",
+        " Listagem dos extratos das declarações ",
+        " Upload na DIRPF Digital ",
+        " Visualização de DIRPF Digital ",
+        " Criação de DRIPF Digital ",
+        " Download na DIRPF Digital ",
+        " Envio da DIRPF Digital ",
+        " Edição de DIRPF Digital ",
+        " Geração do relatório de Bens e Direito ",
+        " Geração do relatório de Análise de Caixa ",
+        " Geração do relatório de Planejamento Tributário ",
+        " Geração do relatório de Histórico Patrimonial ",
+        " Geração do relatório de Detalhes de Caixa ",
+        " Geração do relatório de Resultados ",
+        " Geração do relatório de Malha Fina ",
+        " Geração do relatório de Pendências ",
+        " Geração do relatório de Histórico de Caixa ",
+        " Geração do relatório de Faturamento ",
+        " Geração de etiquetas de impressão ",
+        " Geração do recibo dos faturamentos ",
+        " Listagem de orçamentos ",
+        " Envio de orçamentos ",
+        " Recebimento dos faturamentos ",
+        " Envio do recibo dos faturamentos ",
+        " Edição de orçamentos ",
+        " Edição dos faturamentos ",
+        " Remoção de orçamentos ",
+        " Criação de orçamentos ",
+        " Aprovação de orçamentos ",
+        " Envio da DIRPF PDF ",
+        " Visualização da DIRPF PDF ",
+        " Download da DIRPF PDF ",
+        " Envio de Orçamento ",
+        " Envio de email Mensal ",
+        " Envio de email Marketing ",
+        " Envio de DIRPF Digital ",
+        " Envio de DIRPF PDF ",
+        " Envio do Planejamento ",
+        " Download de planilha de login eCAC ",
+        " Upload de planilha de login eCAC ",
+        " Upload de planilha de novos clientes ",
+        " Download de planilha de novos clientes ",
+        " Upload de Planilha de Procuração em lote ",
+        " Download de planilha de orçamento ",
+        " Download de Planilha de Procuração em lote ",
+        " Upload de planilha de orçamento ",
+        " Upload de planilha login inss ",
+        " Download de planilha login inss ",
+        " Listagem dos métodos de pagamento ",
+        " Criação de método de pagamento ",
+        " Exclusão de método de pagamento ",
+        " Edição de método de pagamento ",
+        " Cadastrar Procurador ",
+        " Cadastrar Procurador ",
+        " Edição da Pré-Declaração ",
+        " Criação da Pré-Declaração ",
+        " Visualização da Pré-Declaração ",
+        " Envio do Kit Pós-Declaração ",
+        " Declarações ",
+        " Listagem dos templates de email ",
+        " Edição de template de email ",
+        " Exclusão de tabela de cobrança ",
+        " Listagem das tabelas de cobrança ",
+        " Criação de tabela de cobrança ",
+        " Edição de tabela de cobrança "
+      ],
+      "tabs": []
+    },
+    {
+      "screen": "Conta - preferências pessoais",
+      "url": "https://portal.conferironline.com.br/user-preferences",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Revogar todas notificações",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        }
+      ],
+      "headings": [
+        "Notificações",
+        "Este navegador\n\nControla as notificações deste dispositivo.",
+        "Configuração global\n\nControla se sua conta pode receber notificações em qualquer dispositivo.",
+        "Ações avançadas"
+      ],
+      "labels": [],
+      "tabs": []
+    },
+    {
+      "screen": "Preferências pessoais - carregadas",
+      "url": "https://portal.conferironline.com.br/user-preferences",
+      "buttons": [
+        {
+          "disabled": false,
+          "text": "Revogar todas notificações",
+          "title": null
+        }
+      ],
+      "columns": [],
+      "controls": [
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        },
+        {
+          "disabled": false,
+          "placeholder": null,
+          "type": "checkbox"
+        }
+      ],
+      "headings": [
+        " Notificações",
+        "Este navegador\n\nControla as notificações deste dispositivo.",
+        "Configuração global\n\nControla se sua conta pode receber notificações em qualquer dispositivo.",
+        "Ações avançadas"
+      ],
+      "labels": [],
+      "tabs": []
+    },
+    {
+      "screen": "Dashboard do cliente",
+      "url": "https://portal.conferironline.com.br/customer-profile/dashboard-customer?customerId={id}",
+      "headings": [
+        "Saldo de Caixa",
+        "Imposto",
+        "Variação Patrimonial",
+        "Detalhes",
+        "Bens e Direitos"
+      ],
+      "labels": [
+        "Ano Exercício",
+        "Declaração",
+        "E-CAC",
+        "Procuração",
+        "Saúde",
+        "Dependentes",
+        "Rendimentos Tributáveis",
+        "Educação"
+      ],
+      "buttons": [
+        {
+          "text": "Finalizar Declaração"
+        }
+      ],
+      "controls": [],
+      "columns": [],
+      "tabs": [
+        "Dashboard",
+        "IRPF",
+        "IA",
+        "Ecac",
+        "Ações - Ecac",
+        "Identificação",
+        "Endereço",
+        "IRPFM",
+        "Copiloto Financeiro",
+        "Livro Caixa",
+        "Mensagens"
+      ]
+    }
+  ],
+  "templates": [
+    {
+      "name": "Checklist DIRPF (Digital)",
+      "tags": [
+        "{{YEAR}}",
+        "{{USER_CPF}}",
+        "{{USER_CODE}}",
+        "{{FORMULARY_URL}}"
+      ]
+    },
+    {
+      "name": "Checklist DIRPF (PDF)",
+      "tags": [
+        "{{Cliente}}",
+        "{{Contador}}",
+        "{{Ano}}"
+      ]
+    },
+    {
+      "name": "DARF do Imposto de Renda",
+      "tags": [
+        "{{ACCOUNT_OFFICE_NAME}}",
+        "{{DARF_LINK}}",
+        "{{CUSTOMER_NAME}}"
+      ]
+    },
+    {
+      "name": "Documento Cliente",
+      "tags": [
+        "{{Cliente}}",
+        "{{Contador}}",
+        "{{Ano}}"
+      ]
+    },
+    {
+      "name": "Documento Faltante",
+      "tags": [
+        "{{Cliente}}",
+        "{{Contador}}",
+        "{{Ano}}"
+      ]
+    },
+    {
+      "name": "Email Mensal",
+      "tags": []
+    },
+    {
+      "name": "Marketing",
+      "tags": [
+        "{{Cliente}}",
+        "{{NomeEscritorio}}"
+      ]
+    },
+    {
+      "name": "Orçamento",
+      "tags": [
+        "{{Cliente}}",
+        "{{Contador}}",
+        "{{Ano}}",
+        "{{Categoria}}",
+        "{{Descricao}}"
+      ]
+    },
+    {
+      "name": "Orçamento (Digital)",
+      "tags": [
+        "{{CUSTOMER_NAME}}",
+        "{{ACCOUNT_OFFICE_NAME}}",
+        "{{TOTAL_PRICE}}",
+        "{{YEAR}}",
+        "{{APPROVATION_URL}}",
+        "{{CATEGORY}}",
+        "{{DESCRIPTION}}"
+      ]
+    },
+    {
+      "name": "Planejamento DIRF",
+      "tags": [
+        "{{Cliente}}",
+        "{{AnoAtualDoAnoExercicio}}",
+        "{{ProximoAno}}",
+        "{{AnoAnterior}}",
+        "{{AnoExercicio}}",
+        "{{Contador}}"
+      ]
+    },
+    {
+      "name": "Texto Documento de Autorização",
+      "tags": [
+        "{{Cliente}}",
+        "{{Contador}}",
+        "{{NomeEscritorio}}",
+        "{{CPFCNPJ_Cliente}}",
+        "{{CPFCNPJ_Contador}}",
+        "{{Ano_Calendario}}",
+        "{{Ano_Exercicio}}",
+        "{{Cidade_Cliente}}"
+      ]
+    },
+    {
+      "name": "Texto Recibo",
+      "tags": [
+        "{{Cliente}}",
+        "{{EmailCliente}}",
+        "{{EnderecoCLiente}}",
+        "{{CPFCNPJ_Cliente}}",
+        "{{TelefoneCliente}}",
+        "{{TelefoneFixoCliente}}",
+        "{{Valor}}",
+        "{{Ano_Referencia}}",
+        "{{Data_Vencimento}}"
+      ]
+    },
+    {
+      "name": "Tutorial Procuração Pf",
+      "tags": [
+        "{{ACCOUNT_OFFICE_NAME}}",
+        "{{YEAR}}",
+        "{{CUSTOMER_NAME}}",
+        "{{PROCURATOR_CPFCNPJ}}"
+      ]
+    },
+    {
+      "name": "Tutorial WhatsApp",
+      "tags": [
+        "{{ACCOUNT_OFFICE_NAME}}",
+        "{{YEAR}}",
+        "{{CUSTOMER_NAME}}",
+        "{{WHATSAPP_SERVICE_NUMBER}}"
+      ]
+    }
+  ],
+  "visual": {
+    "elements": [
+      {
+        "background": "rgba(246, 246, 246, 0.6)",
+        "borderRadius": "0px",
+        "class": "default",
+        "color": "rgb(49, 49, 49)",
+        "font": "work-Sans, sans-serif",
+        "fontSize": "14px",
+        "shadow": "none",
+        "tag": "BODY"
+      },
+      {
+        "background": "rgba(0, 0, 0, 0)",
+        "borderRadius": "0px",
+        "class": "",
+        "color": "rgb(57, 73, 171)",
+        "font": "work-Sans, sans-serif",
+        "fontSize": "14px",
+        "shadow": "none",
+        "tag": "APP-ICON"
+      },
+      {
+        "background": "rgba(0, 0, 0, 0)",
+        "borderRadius": "0px",
+        "class": "ng-tns-c1218584962-0 ng-trigger ng-trigger-animateRoute",
+        "color": "rgb(49, 49, 49)",
+        "font": "work-Sans, sans-serif",
+        "fontSize": "14px",
+        "shadow": "none",
+        "tag": "MAIN"
+      },
+      {
+        "background": "rgb(57, 73, 171)",
+        "borderRadius": "999px",
+        "class": "align-center btn btn-primary myButton shape-pill",
+        "color": "rgb(255, 255, 255)",
+        "font": "work-Sans, sans-serif",
+        "fontSize": "14px",
+        "shadow": "none",
+        "tag": "BUTTON"
+      },
+      {
+        "background": "rgba(0, 0, 0, 0)",
+        "borderRadius": "999px",
+        "class": "align-center btn btn-outline-primary myButton shape-pill",
+        "color": "rgb(57, 73, 171)",
+        "font": "work-Sans, sans-serif",
+        "fontSize": "14px",
+        "shadow": "none",
+        "tag": "BUTTON"
+      },
+      {
+        "background": "rgba(0, 0, 0, 0)",
+        "borderRadius": "50%",
+        "class": "drawer-close",
+        "color": "rgb(0, 0, 0)",
+        "font": "work-Sans, sans-serif",
+        "fontSize": "14px",
+        "shadow": "none",
+        "tag": "BUTTON"
+      },
+      {
+        "background": "rgb(57, 73, 171)",
+        "borderRadius": "999px",
+        "class": "align-center btn btn-primary myButton shape-pill full-width",
+        "color": "rgb(255, 255, 255)",
+        "font": "work-Sans, sans-serif",
+        "fontSize": "14px",
+        "shadow": "none",
+        "tag": "BUTTON"
+      },
+      {
+        "background": "rgba(0, 0, 0, 0)",
+        "borderRadius": "999px",
+        "class": "align-center btn btn-outline-primary myButton shape-pill",
+        "color": "rgb(57, 73, 171)",
+        "font": "work-Sans, sans-serif",
+        "fontSize": "14px",
+        "shadow": "none",
+        "tag": "BUTTON"
+      }
+    ],
+    "viewport": {
+      "height": 640,
+      "width": 1522
+    }
+  },
+  "sources": [
+    {
+      "name": "Checklist Digital DIRPF - Cliente",
+      "url": "https://conferir.freshdesk.com/support/solutions/articles/151000030977-checklist-digital-dirpf-cliente"
+    }
+  ],
+  "limits": [
+    "Copiloto Financeiro bloqueado por contratação",
+    "Checklist novo não criado",
+    "Portais eCAC e cliente não acessados mediante novas credenciais",
+    "Campos de tabelas dependentes de tipo não preenchidos",
+    "Exportações, robôs, mensagens e integrações não executados",
+    "Dados pessoais e valores dos clientes omitidos dos arquivos de especificação"
+  ],
+  "coverage": {
+    "distinctObservedRoutes": 49,
+    "templateCount": 14,
+    "screenshotCount": 4,
+    "note": "As observações incluem estados repetidos e definições do DOM; não representam páginas independentes ou ações executadas."
+  }
+}

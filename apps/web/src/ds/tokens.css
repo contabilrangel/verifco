@@ -1,0 +1,154 @@
+/*
+ * Tokens de design do Verifco.
+ * Fundações do Tangram (RD Station): DM Sans, escala tipográfica de 6 tamanhos,
+ * grid de 8px, arredondamentos, elevações e z-index. A escala primária é o tema Verifco.
+ */
+:root {
+  /* ---- primária (tema Verifco) ---- */
+  --color-primary-10: #eef3ff;
+  --color-primary-20: #d9e4ff;
+  --color-primary-30: #b4c9ff;
+  --color-primary-40: #86a7fa;
+  --color-primary-50: #5c87f0;
+  --color-primary-60: #3468e6;
+  --color-primary-70: #2452c4;
+  --color-primary-80: #1b409c;
+  --color-primary-90: #152f73;
+  --color-primary-100: #0f2457;
+
+  /* ---- marca: verde do símbolo ---- */
+  --color-brand-green: #14b88a;
+  --color-brand-green-10: #e8f8f2;
+
+  /* ---- neutras (Tangram) ---- */
+  --color-white: #fff;
+  --color-gray-10: #f1f3f5;
+  --color-gray-20: #e1e4e8;
+  --color-gray-30: #cfd3d8;
+  --color-gray-40: #bec4cb;
+  --color-gray-50: #acb4bd;
+  --color-gray-60: #97a1ac;
+  --color-gray-70: #7e8a98;
+  --color-gray-80: #636e7c;
+  --color-gray-90: #3a4149;
+  --color-gray-100: #212429;
+
+  /* ---- funcionais (Tangram) ---- */
+  --color-red-10: #fff0f3;
+  --color-red-20: #ffd6da;
+  --color-red-30: #fbabb2;
+  --color-red-60: #e34263;
+  --color-red-70: #be3450;
+  --color-red-80: #9a273e;
+  --color-green-10: #ebfff4;
+  --color-green-20: #d1f7d8;
+  --color-green-70: #4ab24d;
+  --color-green-80: #37903d;
+  --color-green-90: #25702e;
+  --color-yellow-10: #fffbf0;
+  --color-yellow-20: #fdf1d4;
+  --color-yellow-60: #f7c85e;
+  --color-yellow-80: #da8c30;
+  --color-yellow-100: #b24d09;
+  --color-purple-10: #f7f0ff;
+  --color-purple-20: #e3d1f8;
+  --color-purple-60: #914dc4;
+  --color-purple-70: #853cbd;
+
+  /* ---- semânticos ---- */
+  --color-background: var(--color-gray-10);
+  --color-surface: var(--color-white);
+  --color-surface-low: #f8f9fa;
+  --color-border: var(--color-gray-20);
+  --color-border-strong: var(--color-gray-40);
+  --color-text-high: var(--color-gray-100);
+  --color-text-medium: var(--color-gray-90);
+  --color-text-low: var(--color-gray-80);
+  --color-text-disabled: var(--color-gray-50);
+  --color-text-on-color: var(--color-white);
+  --color-interactive: var(--color-primary-60);
+  --color-interactive-hover: var(--color-primary-70);
+  --color-interactive-low: var(--color-primary-10);
+  --color-focus: var(--color-primary-50);
+  --color-danger: var(--color-red-60);
+  --color-danger-hover: var(--color-red-70);
+  --color-success: var(--color-green-80);
+  --color-warning: var(--color-yellow-100);
+  --color-highlight: var(--color-purple-60);
+  --gradient-ai: linear-gradient(120deg, #3468e6 0%, #914dc4 55%, #14b88a 100%);
+
+  /* ---- tipografia (Tangram) ---- */
+  --text-font-family: 'DM Sans', 'Nunito Sans', 'Open Sans', Arial, sans-serif;
+  --text-weight-regular: 500;
+  --text-weight-bold: 700;
+  --text-weight-extrabold: 900;
+  --text-size-xxl: 36px;
+  --text-size-xl: 28px;
+  --text-size-lg: 20px;
+  --text-size-md: 16px;
+  --text-size-sm: 14px;
+  --text-size-xs: 12px;
+  --text-xxl-bold: var(--text-weight-bold) var(--text-size-xxl) / 46px var(--text-font-family);
+  --text-xl-bold: var(--text-weight-bold) var(--text-size-xl) / 36px var(--text-font-family);
+  --text-lg-bold: var(--text-weight-bold) var(--text-size-lg) / 30px var(--text-font-family);
+  --text-lg-regular: var(--text-weight-regular) var(--text-size-lg) / 30px var(--text-font-family);
+  --text-md-bold: var(--text-weight-bold) var(--text-size-md) / 24px var(--text-font-family);
+  --text-md-regular: var(--text-weight-regular) var(--text-size-md) / 24px var(--text-font-family);
+  --text-sm-bold: var(--text-weight-bold) var(--text-size-sm) / 20px var(--text-font-family);
+  --text-sm-regular: var(--text-weight-regular) var(--text-size-sm) / 20px var(--text-font-family);
+  --text-xs-bold: var(--text-weight-bold) var(--text-size-xs) / 16px var(--text-font-family);
+  --text-xs-regular: var(--text-weight-regular) var(--text-size-xs) / 16px var(--text-font-family);
+
+  /* ---- espaçamento (grid 8px) ---- */
+  --size-spacing-01: 4px;
+  --size-spacing-02: 8px;
+  --size-spacing-03: 12px;
+  --size-spacing-04: 16px;
+  --size-spacing-05: 24px;
+  --size-spacing-06: 32px;
+  --size-spacing-07: 40px;
+  --size-spacing-08: 48px;
+  --size-spacing-09: 56px;
+  --size-spacing-10: 64px;
+
+  /* ---- formatos ---- */
+  --border-radius-xs: 4px;
+  --border-radius-sm: 8px;
+  --border-radius-md: 12px;
+  --border-radius-lg: 16px;
+  --border-radius-xl: 24px;
+  --border-radius-pill: 999px;
+  --border-radius-circle: 50%;
+
+  /* ---- elevações ---- */
+  --shadow-xs: 0px 2px 6px #0022331a;
+  --shadow-sm: 0px 4px 12px #00223324;
+  --shadow-md: 0px 8px 18px #00223329;
+  --shadow-lg: 0px 12px 24px #00223333;
+  --shadow-xl: 0px 18px 32px #0022334d;
+
+  /* ---- z-index ---- */
+  --zindex-0: 1;
+  --zindex-1: 1000;
+  --zindex-2: 1010;
+  --zindex-3: 1020;
+  --zindex-4: 1030;
+  --zindex-5: 1040;
+  --zindex-6: 1050;
+
+  /* ---- movimento ---- */
+  --motion-duration-fast: 200ms;
+  --motion-duration-normal: 300ms;
+  --motion-ease-out: cubic-bezier(0.215, 0.61, 0.355, 1);
+
+  /* ---- gráficos (cores de suporte) ---- */
+  --chart-1: #3468e6;
+  --chart-2: #14b88a;
+  --chart-3: #f4a812;
+  --chart-4: #914dc4;
+  --chart-5: #e34263;
+  --chart-6: #0580f1;
+  --chart-7: #7e8a98;
+
+  color-scheme: light;
+}

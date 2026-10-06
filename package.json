@@ -1,0 +1,16 @@
+{
+  "name": "verifco",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Verifco — gestão de IRPF para escritórios contábeis",
+  "packageManager": "pnpm@10.28.0",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "dev": "pnpm -r --parallel --filter @verifco/api --filter @verifco/web dev",
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "db:generate": "pnpm --filter @verifco/api db:generate",
+    "db:seed": "pnpm --filter @verifco/api db:seed"
+  }
+}
