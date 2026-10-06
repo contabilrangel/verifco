@@ -8,3 +8,6 @@ dist/
 coverage/
 .DS_Store
 apps/extension/dist/
+
+# worktrees temporários de agentes
+.claude/worktrees/
