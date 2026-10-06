@@ -388,6 +388,8 @@ textarea {
 /* ---------- Progress ---------- */
 .vf-progress { height: 8px; border-radius: var(--border-radius-pill); background: var(--color-gray-20); overflow: hidden; }
 .vf-progress > span { display: block; height: 100%; background: var(--color-interactive); border-radius: inherit; transition: width var(--motion-duration-normal); }
+.vf-progress--warning > span { background: var(--color-warning); }
+.vf-progress--danger > span { background: var(--color-danger); }
 
 /* ---------- Page header ---------- */
 .vf-page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--size-spacing-04); flex-wrap: wrap; margin-bottom: var(--size-spacing-05); }

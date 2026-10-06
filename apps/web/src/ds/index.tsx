@@ -610,9 +610,9 @@ export function Stat({ label, value, hint, tone }: { label: ReactNode; value: Re
   );
 }
 
-export function Progress({ value }: { value: number }) {
+export function Progress({ value, tone, label }: { value: number; tone?: 'warning' | 'danger'; label?: string }) {
   return (
-    <div className="vf-progress" role="progressbar" aria-valuenow={value} aria-valuemin={0} aria-valuemax={100}>
+    <div className={cx('vf-progress', tone && `vf-progress--${tone}`)} role="progressbar" aria-label={label} aria-valuenow={value} aria-valuemin={0} aria-valuemax={100}>
       <span style={{ width: `${Math.max(0, Math.min(100, value))}%` }} />
     </div>
   );

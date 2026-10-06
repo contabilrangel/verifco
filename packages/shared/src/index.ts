@@ -1,5 +1,6 @@
 export * from './permissions';
 export * from './dates';
+export * from './contracts';
 export * from './enums';
 export * from './validators';
 export * from './templates';
