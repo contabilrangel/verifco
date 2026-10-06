@@ -41,10 +41,11 @@ describe('análise de caixa', () => {
     expect(r.balanceCents).toBe(-15_000_000);
   });
 
-  it('avisa quando o exercício não tem parâmetros ou não foram conferidos', () => {
-    expect(cashAnalysis({ exerciseYear: 2031, items: [] }).warnings[0]).toMatch(/Não há parâmetros do exercício 2031; foram usados os de 2026/);
-    expect(cashAnalysis({ exerciseYear: 2026, items: [] }).warnings[0]).toMatch(/ainda não foram conferidos/);
-    expect(cashAnalysis({ exerciseYear: 2025, items: [] }).warnings).toEqual([]);
+  it('avisa quando o exercício não tem tabela própria (só pesa na simplificada)', () => {
+    expect(cashAnalysis({ exerciseYear: 2031, taxation: 'simplified', items: [] }).warnings[0]).toMatch(/O exercício 2031 não tem tabela do IR própria; foram usados os valores do exercício 2027/);
+    expect(cashAnalysis({ exerciseYear: 2031, taxation: 'complete', items: [] }).warnings).toEqual([]);
+    // tabelas oficiais conferidas: sem aviso de "não conferida"
+    for (const ex of [2024, 2025, 2026, 2027]) expect(cashAnalysis({ exerciseYear: ex, taxation: 'simplified', items: [] }).warnings).toEqual([]);
   });
 
   it('soma totais da declaração', () => {

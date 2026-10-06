@@ -22,7 +22,11 @@ describe('calendário de dias úteis', () => {
     expect(lastBusinessDayOfMonth(2026, 5)).toBe('2026-05-29'); // 30 e 31 caem no fim de semana
     expect(lastBusinessDayOfMonth(2026, 6)).toBe('2026-06-30');
     expect(lastBusinessDayOfMonth(2026, 10)).toBe('2026-10-30'); // 31 é sábado
-    expect(lastBusinessDayOfMonth(2026, 12)).toBe('2026-12-31');
+    // 31/12 não tem expediente bancário: a 8ª quota de 2026 vence em 30/12 (P&R IRPF 2026, pergunta 064)
+    expect(lastBusinessDayOfMonth(2026, 12)).toBe('2026-12-30');
+    expect(lastBusinessDayOfMonth(2025, 12)).toBe('2025-12-30');
+    expect(isBusinessDay('2027-12-31')).toBe(false); // sexta-feira, sem expediente bancário
+    expect(lastBusinessDayOfMonth(2027, 12)).toBe('2027-12-30');
     expect(lastBusinessDayOfMonth(2029, 3)).toBe('2029-03-29'); // 30 é Sexta-feira Santa, 31 é sábado
   });
 });
@@ -56,7 +60,7 @@ describe('quotas do DARF', () => {
   it('vira o ano nos vencimentos', () => {
     const p = planDarfQuotas(800_000, 8, '2026-09-30');
     expect(p.quotas.at(-1)!.dueDate).toBe('2027-04-30');
-    expect(p.quotas[3].dueDate).toBe('2026-12-31');
+    expect(p.quotas[3].dueDate).toBe('2026-12-30');
   });
 
   it('não gera quotas sem imposto', () => {

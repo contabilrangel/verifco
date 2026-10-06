@@ -235,13 +235,40 @@ const pick = (v: Record<string, string>, ...keys: string[]) => {
   return '';
 };
 
-/** "1.234,56", "1234,56", "1234.56" ou "R$ 1.234,56" → centavos. */
+/**
+ * Valor em reais digitado ou vindo de planilha/CSV → centavos. Parser único do sistema
+ * (livro caixa, importação de orçamentos e demais planilhas):
+ * - "R$ 1.500" e "1.500" → 150000 (ponto com grupos de 3 dígitos é milhar);
+ * - "1.500,50", "1500,50" e "1,5" → vírgula decimal;
+ * - "1500.5" e "1.50" → ponto decimal (sem grupos de milhar);
+ * - "1,500.50" → formato americano com milhar e decimal;
+ * - ambíguos ou malformados devolvem null: "1,500" (milhar americano ou 3 casas?), "1.500.5",
+ *   "1.500,00,0", texto.
+ */
 export function parseBrMoney(v: string): number | null {
-  const s = v.replace(/[R$\s]/g, '');
+  const s = String(v ?? '').replace(/R\$|\s/g, '');
   if (!s) return null;
-  if (!/^-?[\d.,]+$/.test(s)) return null;
-  const normalized = s.includes(',') ? s.replace(/\./g, '').replace(',', '.') : /^\d{1,3}(\.\d{3})+$/.test(s) ? s.replace(/\./g, '') : s;
-  const n = Number(normalized);
+  const m = /^(-?)([\d.,]+)$/.exec(s);
+  if (!m) return null;
+  const [, sign, body] = m;
+  let normalized: string | null = null;
+  const lastComma = body.lastIndexOf(',');
+  const lastDot = body.lastIndexOf('.');
+  if (lastComma >= 0 && lastDot >= 0) {
+    // os dois separadores: o último é o decimal e o outro precisa formar grupos de milhar
+    if (lastComma > lastDot && /^\d{1,3}(\.\d{3})+,\d+$/.test(body)) normalized = body.replace(/\./g, '').replace(',', '.');
+    else if (lastDot > lastComma && /^\d{1,3}(,\d{3})+\.\d+$/.test(body)) normalized = body.replace(/,/g, '');
+  } else if (lastComma >= 0) {
+    // "1,500" pode ser milhar americano ou 1,5 com 3 casas: ambíguo
+    if (/^\d{1,3},\d{3}$/.test(body)) normalized = null;
+    else if (/^\d+,\d+$/.test(body)) normalized = body.replace(',', '.');
+    else if (/^\d{1,3}(,\d{3}){2,}$/.test(body)) normalized = body.replace(/,/g, '');
+  } else if (lastDot >= 0) {
+    if (/^\d{1,3}(\.\d{3})+$/.test(body)) normalized = body.replace(/\./g, '');
+    else if (/^\d*\.\d+$/.test(body)) normalized = body;
+  } else normalized = body;
+  if (normalized === null) return null;
+  const n = Number(`${sign}${normalized}`);
   return Number.isFinite(n) ? Math.round(n * 100) : null;
 }
 

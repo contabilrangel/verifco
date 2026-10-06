@@ -12,7 +12,9 @@
  *   não alcança, em regra, empresas cuja atividade preponderante é a compra, venda ou locação de
  *   imóveis, nem o valor que excede o capital integralizado (STF, Tema 796).
  * - Aluguel na PF: tabela progressiva anual (carnê-leão + ajuste), calculado como o acréscimo de
- *   imposto sobre os demais rendimentos tributáveis do cliente, sem deduções do aluguel.
+ *   imposto sobre os demais rendimentos tributáveis do cliente, sem deduções do aluguel, já com a
+ *   redução anual do art. 11-A da Lei 9.250/1995 (Lei 15.270/2025) a partir do exercício 2027.
+ *   Cada ano da projeção usa a tabela do seu exercício (ou a mais recente disponível).
  * - Aluguel na holding (lucro presumido): presunção de 32% para IRPJ e CSLL, IRPJ 15% + adicional
  *   de 10% sobre o lucro presumido acima de R$ 60 mil por trimestre (R$ 240 mil/ano, distribuição
  *   uniforme), CSLL 9%, PIS/COFINS cumulativos 3,65%.
@@ -23,11 +25,12 @@
  * - Inventário na PF: ITCMD + honorários e custas sobre o valor de mercado. Na holding: ITCMD
  *   sobre a doação das quotas (valor de mercado, conforme a LC 227/2026, ou valor declarado
  *   onde a lei estadual ainda permitir), sem inventário dos imóveis.
- * - Projeção de N anos sem correção da tabela do IR; aluguel com reajuste anual opcional.
+ * - Projeção de N anos sem correção da tabela do IR além da última publicada; aluguel com reajuste
+ *   anual opcional.
  *
  * Valores em centavos; percentuais como número (3 = 3%).
  */
-import { annualIrpfTable, annualProgressiveTax } from './irpf-annual';
+import { ANNUAL_IRPF_TABLES, annualIrpfTable, annualTaxWithReduction } from './irpf-annual';
 
 export interface HoldingTaxParams {
   calendarYear: number;
@@ -266,8 +269,11 @@ export function simulateHolding(input: HoldingSimulationInput): HoldingSimulatio
   const annualRent = monthlyRent * 12;
   const other = Math.max(0, input.otherTaxableIncomeCents);
 
-  const pfRentTaxFor = (rent: number) => annualProgressiveTax(other + rent, exercise) - annualProgressiveTax(other, exercise);
-  const pfRentTax = pfRentTaxFor(annualRent);
+  // IR da PF com a redução do art. 11-A: acréscimo de imposto que o aluguel causa sobre os demais
+  // rendimentos (a redução que os demais rendimentos teriam sozinhos pode sumir com o aluguel)
+  const taxOf = (taxable: number, ex: number) => annualTaxWithReduction(taxable, taxable, ex).taxCents;
+  const pfRentTaxFor = (rent: number, ex: number) => taxOf(other + rent, ex) - taxOf(other, ex);
+  const pfRentTax = pfRentTaxFor(annualRent, exercise);
   const holdingTax = holdingRentTax(annualRent, tp);
 
   // ---- custos únicos da holding
@@ -285,7 +291,8 @@ export function simulateHolding(input: HoldingSimulationInput): HoldingSimulatio
   let holding10 = itbi + registry + setup;
   for (let y = 1; y <= params.years; y++) {
     const rent = Math.round(annualRent * Math.pow(1 + params.rentGrowthPercent / 100, y - 1));
-    const pfTax = pfRentTaxFor(rent);
+    // ano y da projeção: ano-calendário calendarYear + y − 1, declarado no exercício seguinte
+    const pfTax = pfRentTaxFor(rent, exercise + y - 1);
     const hTax = holdingRentTax(rent, tp).totalCents;
     const cost = Math.max(0, params.holdingAnnualCostCents);
     yearly.push({ year: y, annualRentCents: rent, pfTaxCents: pfTax, holdingTaxCents: hTax, holdingCostCents: cost });
@@ -336,6 +343,10 @@ export function simulateHolding(input: HoldingSimulationInput): HoldingSimulatio
     'O ganho de capital na PF não considera fatores de redução (Lei 11.196/2005, art. 40; Lei 7.713/1988, art. 18) nem isenções (imóvel único até R$ 440 mil, reinvestimento em 180 dias): o imposto da PF pode ser menor.',
     'A partir de 2027, CBS e IBS substituem PIS/COFINS gradualmente (LC 214/2025), com regras próprias para locação de imóveis inclusive para pessoas físicas; a projeção mantém PIS/COFINS de 3,65% como aproximação.',
   ];
+  const latestExercise = Math.max(...Object.keys(ANNUAL_IRPF_TABLES).map(Number));
+  if (exercise + params.years - 1 > latestExercise) {
+    observations.push(`Os anos da projeção a partir do exercício ${Math.max(exercise, latestExercise + 1)} usam a tabela do IR do exercício ${latestExercise} (a mais recente publicada), sem correção.`);
+  }
   if (annualRent > 0 && holdingTax.surchargeCents > 0) {
     observations.push('O lucro presumido dos aluguéis supera R$ 240 mil por ano: incide o adicional de 10% do IRPJ.');
   }

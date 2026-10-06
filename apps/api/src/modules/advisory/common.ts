@@ -5,8 +5,8 @@ import {
   INCOME_NATURES,
   ITEM_KINDS,
   TAXATION_TYPES,
-  annualIrpfDue,
   cashAnalysis,
+  compareTaxation,
   computeIrpfm,
   formatMoney,
   irpfmFromItems,
@@ -44,30 +44,33 @@ export interface IrpfmAdjustments {
   definitiveTaxPaidCents?: number | null;
   dividendWithholdingCents?: number | null;
   dividendPayers?: IrpfmDividendPayer[];
+  /** Resultado tributável da atividade rural (com a opção de 20% e a compensação de prejuízos). */
+  ruralTaxableResultCents?: number | null;
 }
 
-/** IR devido na declaração de ajuste (dedução I): informado, apurado na declaração ou estimado. */
-export function regularTaxFor(declaration: DeclarationRow | null, items: DeclarationItem[], exerciseYear: number) {
+/**
+ * IR devido na declaração de ajuste (dedução I do IRPFM, art. 16-A, § 3º, I): apurado na
+ * declaração ou, sem saldo, estimado pelo mesmo cálculo do comparativo completa × simplificada
+ * (deduções legais de verdade: INSS, dependentes, saúde, instrução limitada, pensão e PGBL até
+ * 12%; aluguel e outros pagamentos não deduzem), com a redução da Lei 15.270/2025. Rendimentos
+ * com exigibilidade suspensa não entram no IR devido.
+ */
+export function regularTaxFor(declaration: DeclarationRow | null, items: DeclarationItem[], exerciseYear: number, ruralTaxableResultCents?: number | null) {
   const fromDecl = declaration ? regularTaxFromDeclaration({ taxDueCents: declaration.taxDueCents, refundCents: declaration.refundCents, items }) : null;
   if (fromDecl !== null) return { cents: fromDecl, source: 'declaration' as const };
-  const taxable = items
-    .filter((i) => i.kind === 'income_pj' || i.kind === 'income_pf' || i.kind === 'income_suspended')
-    .reduce((a, i) => a + (i.valueCents ?? 0), 0);
-  const rural = items.reduce((a, i) => a + (i.kind === 'rural_income' ? (i.valueCents ?? 0) : i.kind === 'rural_expense' ? -(i.valueCents ?? 0) : 0), 0);
-  const model = declaration?.taxation === 'complete' ? 'complete' : declaration?.taxation === 'simplified' ? 'simplified' : 'best';
-  const est = annualIrpfDue({
-    exercise: exerciseYear,
-    taxableIncomeCents: taxable + Math.max(0, rural),
-    legalDeductionsCents: declaration?.deductionsCents ?? 0,
-    model,
-  });
-  return { cents: est.taxDueCents, source: 'estimated' as const };
+  const taxation = declaration?.taxation === 'complete' || declaration?.taxation === 'simplified' ? declaration.taxation : null;
+  const cmp = compareTaxation({ exerciseYear, items, currentTaxation: taxation, ruralTaxableResultCents });
+  const chosen = taxation ? cmp[taxation] : cmp[cmp.best];
+  return { cents: chosen.taxCents, source: 'estimated' as const };
 }
 
 /** IRPFM do cliente no exercício a partir da declaração, com os ajustes informados na tela. */
 export function irpfmForDeclaration(declaration: DeclarationRow | null, items: DeclarationItem[], exerciseYear: number, adj: IrpfmAdjustments = {}) {
-  const parsed = irpfmFromItems(items);
-  const regular = adj.regularTaxDueCents !== undefined && adj.regularTaxDueCents !== null ? { cents: adj.regularTaxDueCents, source: 'manual' as const } : regularTaxFor(declaration, items, exerciseYear);
+  const parsed = irpfmFromItems(items, { ruralTaxableResultCents: adj.ruralTaxableResultCents });
+  const regular =
+    adj.regularTaxDueCents !== undefined && adj.regularTaxDueCents !== null
+      ? { cents: adj.regularTaxDueCents, source: 'manual' as const }
+      : regularTaxFor(declaration, items, exerciseYear, adj.ruralTaxableResultCents);
   const result = computeIrpfm({
     calendarYear: exerciseYear - 1,
     incomes: parsed.incomes,
@@ -77,6 +80,7 @@ export function irpfmForDeclaration(declaration: DeclarationRow | null, items: D
     definitiveTaxPaidCents: adj.definitiveTaxPaidCents ?? parsed.definitiveTaxPaidCents,
     dividendWithholdingCents: adj.dividendWithholdingCents ?? parsed.dividendWithholdingCents,
     dividendPayers: adj.dividendPayers,
+    notes: parsed.warnings,
   });
   return { result, regularTaxSource: regular.source };
 }
@@ -101,7 +105,7 @@ export async function clientContextText(ctx: AppContext, officeId: string, custo
   );
   lines.push(
     `Totais: rendimentos tributáveis ${formatMoney(d.taxableIncomeCents)}; isentos ${formatMoney(d.exemptIncomeCents)}; exclusivos ${formatMoney(d.exclusiveIncomeCents)}; ` +
-      `deduções ${formatMoney(d.deductionsCents)}; IR retido ${formatMoney(d.withheldTaxCents)}; bens ${formatMoney(d.assetsPrevTotalCents)} → ${formatMoney(d.assetsTotalCents)}; ` +
+      `pagamentos efetuados ${formatMoney(d.deductionsCents)}; IR retido ${formatMoney(d.withheldTaxCents)}; bens ${formatMoney(d.assetsPrevTotalCents)} → ${formatMoney(d.assetsTotalCents)}; ` +
       `dívidas ${formatMoney(d.debtsPrevTotalCents)} → ${formatMoney(d.debtsTotalCents)}; imposto a pagar ${formatMoney(d.taxDueCents)}; restituição ${formatMoney(d.refundCents)}.`,
   );
   if (items.length) {

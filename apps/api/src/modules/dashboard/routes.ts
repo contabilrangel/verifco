@@ -83,7 +83,8 @@ export async function dashboardRoutes(app: FastifyInstance) {
     const fineMesh = await alertCustomers(
       or(inArray(declarations.ecacStatus, ['fine_mesh', 'pending_issues']), eq(declarations.substatus, 'ecac_fine_mesh'))!,
     );
-    const irpfm = await alertCustomers(sql`${declarations.totalIncomeCents} >= ${IRPFM_THRESHOLD_CENTS}`, sql`${declarations.totalIncomeCents}`);
+    // art. 16-A, caput: soma dos rendimentos SUPERIOR a R$ 600 mil (o total gravado usa o resultado rural, não a receita bruta)
+    const irpfm = await alertCustomers(sql`${declarations.totalIncomeCents} > ${IRPFM_THRESHOLD_CENTS}`, sql`${declarations.totalIncomeCents}`);
     const overdueRows = await db
       .select({ id: customers.id, name: customers.name, valueCents: sumOf(darfs.valueCents), n: count() })
       .from(darfs)

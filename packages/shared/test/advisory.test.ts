@@ -202,11 +202,11 @@ describe('copiloto', () => {
     expect(p.result.ratePercent).toBeCloseTo(6, 10);
     // retenção de 10% sobre 60k em 3 meses, anualizada: 6k × 3 × 4
     expect(p.dividendWithholdingCents).toBe(R(72_000));
-    // IR de 240k: (240.000 − 17.640) × 27,5% − 10.904,76 = 50.244,24
-    expect(p.regularTaxDueCents).toBe(R(50_244.24));
-    // 57.600 − 50.244,24 = 7.355,76; menos a retenção de 72.000
-    expect(p.result.dueCents).toBe(R(7_355.76));
-    expect(p.result.complementaryCents).toBe(R(7_355.76 - 72_000));
+    // IR de 240k (tabela oficial do exercício 2027): (240.000 − 17.640) × 27,5% − 10.904,66 = 50.244,34
+    expect(p.regularTaxDueCents).toBe(R(50_244.34));
+    // 57.600 − 50.244,34 = 7.355,66; menos a retenção de 72.000
+    expect(p.result.dueCents).toBe(R(7_355.66));
+    expect(p.result.complementaryCents).toBe(R(7_355.66 - 72_000));
   });
 
   it('limite do plano', () => {

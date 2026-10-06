@@ -15,7 +15,7 @@ import {
   type BudgetStatus,
 } from '@verifco/shared';
 import { budgets, customers, importBatches, paymentMethods } from '../../db/schema';
-import { badRequest } from '../../lib/errors';
+import { HttpError, badRequest } from '../../lib/errors';
 import { audit, can, guard, parse, requireUser, yearSchema } from '../../lib/http';
 import { customerScope } from '../../services/customers';
 import { getOrCreateDeclaration } from '../../services/declarations';
@@ -172,7 +172,7 @@ export async function importRoutes(app: FastifyInstance) {
       }
       const amountCents = parseMoneyToCents(amountText);
       if (amountCents === null || amountCents <= 0) {
-        fail('Valor inválido.');
+        fail(`Valor "${amountText}" inválido. Use o formato 1.500,00 (ou 1500,00).`);
         continue;
       }
       const category: BudgetCategory | null = cell('categoria') ? matchOption(cell('categoria'), BUDGET_CATEGORIES) : 'irpf';
@@ -204,7 +204,7 @@ export async function importRoutes(app: FastifyInstance) {
       const startText = cell('inicio_da_cobranca');
       const start = startText ? parseDate(startText) : null;
       if (startText && !start) {
-        fail('Início da cobrança inválido (use DD/MM/AAAA).');
+        fail(`Início da cobrança "${startText}" inválido: use uma data que exista, no formato DD/MM/AAAA.`);
         continue;
       }
       const statusText = cell('status');
@@ -290,7 +290,12 @@ export async function importRoutes(app: FastifyInstance) {
         const verb = current ? 'atualizado' : 'criado';
         results.push({ row: rowNumber, ok: true, message: row.status === 'approved' && current?.status !== 'approved' ? `Orçamento ${verb} e aprovado (faturamento gerado).` : `Orçamento ${verb}.` });
       } catch (err) {
-        fail(err instanceof Error ? err.message : 'Erro ao gravar a linha.');
+        // erros de regra (HttpError) já vêm em português; erro de banco não vai para o resultado
+        if (err instanceof HttpError) fail(err.message);
+        else {
+          req.log.error({ err, row: rowNumber }, 'Falha ao gravar linha da importação de orçamentos');
+          fail('Erro ao gravar a linha. Confira os valores e tente novamente.');
+        }
       }
     }
 

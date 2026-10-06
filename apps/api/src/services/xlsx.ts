@@ -1,4 +1,5 @@
 import ExcelJS from 'exceljs';
+import { parseBrDate, parseBrMoney } from '@verifco/shared';
 
 export interface SheetColumn {
   header: string;
@@ -47,11 +48,26 @@ const normalize = (s: string) =>
     .replace(/^_|_$/g, '');
 
 /**
+ * Texto de um CSV/TXT: UTF-8 (com ou sem BOM) ou, se não for UTF-8 válido, Windows-1252 (o
+ * "CSV (separado por vírgulas)" do Excel em português). Sem isso, "Descrição" chega quebrado.
+ */
+export function decodeCsvText(data: Buffer): string {
+  let text: string;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(data);
+  } catch {
+    text = new TextDecoder('windows-1252').decode(data);
+  }
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+}
+
+/**
  * Lê .xlsx ou .csv (separado por ; ou ,) e devolve linhas com os cabeçalhos normalizados
  * (sem acento, minúsculos, com _). Ex.: "CPF/CNPJ - Procurador" → "cpf_cnpj_procurador".
+ * CSV em UTF-8 ou Windows-1252 (detectado).
  */
 export async function readSheet(data: Buffer, filename: string): Promise<{ rowNumber: number; values: Record<string, string> }[]> {
-  if (/\.csv$/i.test(filename) || /\.txt$/i.test(filename)) return readCsv(data.toString('utf8').replace(/^﻿/, ''));
+  if (/\.csv$/i.test(filename) || /\.txt$/i.test(filename)) return readCsv(decodeCsvText(data));
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.load(data as unknown as ArrayBuffer);
   const ws = wb.worksheets[0];
@@ -107,21 +123,17 @@ export function readCsv(text: string): { rowNumber: number; values: Record<strin
   });
 }
 
-/** Converte "1.234,56" ou "1234.56" em centavos. */
+/**
+ * Converte valor em reais em centavos com o parser único do sistema (`parseBrMoney`):
+ * "R$ 1.500" → 150000, "1.500,50" → 150050, "1500.5" → 150050, "1,5" → 150; ambíguo → null.
+ */
 export function parseMoneyToCents(v: string | undefined | null): number | null {
   if (!v) return null;
-  const s = v.replace(/[R$\s]/g, '');
-  if (!s) return null;
-  const normalized = s.includes(',') ? s.replace(/\./g, '').replace(',', '.') : s;
-  const n = Number(normalized);
-  return Number.isFinite(n) ? Math.round(n * 100) : null;
+  return parseBrMoney(v);
 }
 
-/** Converte "31/12/2025" ou "2025-12-31" em AAAA-MM-DD. */
+/** Converte "31/12/2025" ou "2025-12-31" em AAAA-MM-DD, recusando datas que não existem (31/02). */
 export function parseDate(v: string | undefined | null): string | null {
   if (!v) return null;
-  const br = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(v.trim());
-  if (br) return `${br[3]}-${br[2]}-${br[1]}`;
-  const iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(v.trim());
-  return iso ? `${iso[1]}-${iso[2]}-${iso[3]}` : null;
+  return parseBrDate(v);
 }

@@ -1,7 +1,7 @@
 import type { DeclarationItem } from '../dirpf';
 import { cashAnalysis, type CashAnalysisInput } from './cash-analysis';
-import { dependentCpf, dependentName, irpfTable, netPayment, paymentNature } from './irpf';
-import { taxParams } from './params';
+import { dependentCpf, dependentName, educationBeneficiary, netPayment, paymentNature } from './irpf';
+import { annualIrpfTable } from './irpf-annual';
 
 /**
  * Planilha de aviso de malha fina: pontos de atenção derivados das linhas da declaração.
@@ -46,11 +46,11 @@ export function fineMeshCheck(input: FineMeshInput): AttentionPoint[] {
   if (!items.length) return points;
 
   const cash = cashAnalysis(input);
+  const table = annualIrpfTable(input.exerciseYear);
   const taxable = sum([...by('income_pj'), ...by('income_pf')], (i) => i.valueCents ?? 0);
-  const allIncome =
-    taxable +
-    sum([...by('income_exempt'), ...by('income_suspended'), ...by('income_accumulated'), ...by('capital_gain'), ...by('variable_income'), ...by('rural_income')], (i) => i.valueCents ?? 0) +
-    sum(by('income_exclusive'), (i) => (i.valueCents ?? 0) - (i.withheldCents ?? 0));
+  // renda do ano na mesma base líquida do caixa (tributáveis − IRRF − INSS, resultado rural e não a
+  // receita bruta, exclusivos, ganhos e renda variável líquidos), sem empréstimos nem vendas de bens
+  const allIncome = cash.sources.filter((l) => l.key !== 'debts_increase' && l.key !== 'assets_decrease').reduce((a, l) => a + l.cents, 0);
 
   // 1. saldo de caixa negativo
   if (cash.balanceCents < 0) {
@@ -70,7 +70,7 @@ export function fineMeshCheck(input: FineMeshInput): AttentionPoint[] {
       key: 'patrimony_incompatible',
       severity: 'high',
       title: 'Variação patrimonial incompatível com a renda',
-      detail: `O patrimônio líquido cresceu ${money(cash.netWorthVariationCents)}, acima de toda a renda declarada (${money(allIncome)}).`,
+      detail: `O patrimônio líquido cresceu ${money(cash.netWorthVariationCents)}, acima de toda a renda líquida declarada (${money(allIncome)}).`,
       recommendation: 'Documente a origem dos recursos (heranças, doações, empréstimos, venda de bens) e informe-os na declaração.',
       valueCents: cash.netWorthVariationCents,
     });
@@ -125,14 +125,19 @@ export function fineMeshCheck(input: FineMeshInput): AttentionPoint[] {
   const pfTotal = sum(pf, (i) => i.valueCents ?? 0);
   const pfPaid = sum(pf, (i) => i.withheldCents ?? 0) + sum(by('tax_paid'), (i) => i.valueCents ?? 0);
   if (pfTotal > 0 && pfPaid === 0) {
-    // acima da faixa anual de isenção, certamente houve mês com imposto devido
-    const exemptLimit = irpfTable(input.exerciseYear).brackets[0].upToCents ?? 0;
+    // Acima de 12 × o maior rendimento mensal sem imposto do ano (limite de isenção + desconto
+    // simplificado mensal ou, a partir de 2026, R$ 5.000,00 da redução mensal), algum mês
+    // certamente teve carnê-leão devido. Abaixo disso, depende de como a renda se distribuiu.
+    const certainlyDueAbove = 12 * table.monthlyTaxFreeUpToCents;
     points.push({
       key: 'pf_income_without_carne_leao',
-      severity: pfTotal > exemptLimit ? 'high' : 'medium',
+      severity: pfTotal > certainlyDueAbove ? 'high' : 'medium',
       title: 'Rendimentos de PF sem carnê-leão',
-      detail: `${money(pfTotal)} recebidos de pessoas físicas ou do exterior sem recolhimento mensal informado.`,
-      recommendation: 'Confira se houve meses acima do limite de isenção e emita os DARFs do carnê-leão em atraso.',
+      detail:
+        pfTotal > certainlyDueAbove
+          ? `${money(pfTotal)} recebidos de pessoas físicas ou do exterior sem recolhimento mensal informado: acima de ${money(certainlyDueAbove)} no ano, algum mês teve imposto devido.`
+          : `${money(pfTotal)} recebidos de pessoas físicas ou do exterior sem recolhimento mensal informado. Pode não ter havido imposto se nenhum mês passou de cerca de ${money(table.monthlyTaxFreeUpToCents)}.`,
+      recommendation: 'Confira mês a mês se houve rendimento acima do limite sem imposto e emita os DARFs do carnê-leão em atraso.',
       valueCents: pfTotal,
     });
   }
@@ -221,19 +226,18 @@ export function fineMeshCheck(input: FineMeshInput): AttentionPoint[] {
   }
 
   // 12. instrução acima do limite
-  const params = taxParams(input.exerciseYear);
   const edu = new Map<string, number>();
   for (const p of by('payment').filter((x) => paymentNature(x) === 'education')) {
-    const who = String(p.extra?.beneficiaryCpf ?? p.ownerCpf ?? 'titular');
+    const who = educationBeneficiary(p);
     edu.set(who, (edu.get(who) ?? 0) + netPayment(p));
   }
-  const overEdu = [...edu.values()].filter((v) => v > params.educationCapCents).length;
+  const overEdu = [...edu.values()].filter((v) => v > table.educationCapCents).length;
   if (overEdu) {
     points.push({
       key: 'education_over_cap',
       severity: 'low',
       title: 'Instrução acima do limite',
-      detail: `${overEdu} pessoa(s) com despesas de instrução acima de ${money(params.educationCapCents)}.`,
+      detail: `${overEdu} pessoa(s) com despesas de instrução acima de ${money(table.educationCapCents)}.`,
       recommendation: 'O excedente não é dedutível; não há risco de malha, apenas sem efeito no imposto.',
     });
   }

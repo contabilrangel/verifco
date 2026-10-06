@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   INDIVIDUAL_REPORTS,
   MAILING_TYPES,
-  annualTax,
+  annualProgressiveTax,
   compareTaxation,
   fineMeshCheck,
   isSafeUrl,
@@ -45,10 +45,12 @@ describe('sanitizeHtml', () => {
 });
 
 describe('IRPF', () => {
-  it('aplica a tabela progressiva anual', () => {
-    expect(annualTax(2_696_320, 2025).taxCents).toBe(0);
-    expect(annualTax(3_000_000, 2025).taxCents).toBe(22_776);
-    expect(annualTax(6_000_000, 2025).taxCents).toBe(575_902);
+  it('aplica a tabela progressiva anual (fonte única: irpf-annual)', () => {
+    expect(annualProgressiveTax(2_696_320, 2025)).toBe(0);
+    expect(annualProgressiveTax(3_000_000, 2025)).toBe(22_776);
+    expect(annualProgressiveTax(6_000_000, 2025)).toBe(575_902);
+    // exercício 2024 tem tabela própria (antes caía na de 2025)
+    expect(annualProgressiveTax(3_000_000, 2024)).toBe(41_161);
   });
 
   it('compara completa e simplificada', () => {
