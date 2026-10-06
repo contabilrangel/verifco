@@ -10,7 +10,8 @@
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json",
     "db:generate": "drizzle-kit generate",
-    "db:seed": "tsx --env-file-if-exists=.env src/db/seed.ts"
+    "db:seed": "tsx --env-file-if-exists=.env src/db/seed.ts",
+    "db:check": "drizzle-kit generate --name verificacao && node -e \"const o=require('child_process').execSync('git status --porcelain drizzle').toString();if(o.trim()){console.error('O schema.ts mudou sem migração. Rode pnpm db:generate e faça commit de apps/api/drizzle.\\n'+o);process.exit(1)}\""
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.131.0",

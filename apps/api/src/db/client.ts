@@ -39,8 +39,10 @@ export async function openDatabase(url: string, opts: { sync?: 'migrate' | 'push
     client = new PGlite(target);
   }
   const db = drizzlePglite(client, { schema });
-  // PGlite (desenvolvimento e testes) sincroniza direto do schema.ts por padrão
-  if ((opts.sync ?? 'push') === 'push') await pushFromSchema(db);
+  // banco em memória (testes) sincroniza direto do schema.ts; banco em disco usa as migrações,
+  // porque o push do drizzle-kit não sabe atualizar um banco existente sem diálogo interativo
+  const inMemory = !target || target === 'memory';
+  if ((opts.sync ?? (inMemory ? 'push' : 'migrate')) === 'push') await pushFromSchema(db);
   else await migratePglite(db, { migrationsFolder: MIGRATIONS });
   return { db, close: () => client.close() };
 }

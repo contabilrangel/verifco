@@ -11,3 +11,4 @@ export * from './money-words';
 export * from './imports';
 export * from './darf';
 export * from './customer-documents';
+export * from './checklist';

@@ -17,6 +17,8 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Migrações em dia com o schema
+        run: pnpm --filter @verifco/api db:check
       - name: Tipagem
         run: pnpm typecheck
       - name: Testes

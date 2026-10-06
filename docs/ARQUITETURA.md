@@ -27,9 +27,11 @@ pnpm typecheck
 pnpm --filter @verifco/api db:generate   # gera migração SQL a partir do schema.ts
 ```
 
-Sem `DATABASE_URL`, a API usa o PGlite (PostgreSQL embutido) em `.data/pglite` e sincroniza
-o banco direto do `schema.ts`. Com `DATABASE_URL=postgres://...` usa as migrações de
-`apps/api/drizzle/` (gere com `db:generate` sempre que mudar o schema).
+Sem `DATABASE_URL`, a API usa o PGlite (PostgreSQL embutido) em `.data/pglite`; com
+`DATABASE_URL=postgres://...`, um PostgreSQL. Em ambos os casos o banco é atualizado pelas
+migrações de `apps/api/drizzle/`: **sempre que mudar o `schema.ts`, rode `pnpm db:generate`
+e faça commit da migração** (a CI confere com `db:check`). Os testes usam PGlite em memória
+sincronizado direto do `schema.ts`.
 
 ## API (`apps/api`)
 
@@ -80,9 +82,8 @@ externo ou demora (envios, exportações, IA, sincronizações) passa pela fila.
 
 ### Banco
 
-`src/db/schema.ts` concentra as tabelas. Mudanças de schema são aceitas, mas prefira usar as
-tabelas existentes (a maioria das entidades do levantamento já está modelada). Não edite
-arquivos em `drizzle/` à mão.
+`src/db/schema.ts` concentra as tabelas. Depois de alterá-lo, gere a migração
+(`pnpm db:generate`) e não edite arquivos em `drizzle/` à mão.
 
 ### Testes
 
