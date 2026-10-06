@@ -28,13 +28,15 @@ export async function getCustomerForUser(ctx: AppContext, user: AuthUser, custom
   return c;
 }
 
-/** Remove segredos antes de devolver o cliente para o navegador. */
+/**
+ * Remove segredos antes de devolver o cliente para o navegador. A coluna da senha do INSS
+ * (apagada na versão que removeu a importação) também nunca sai.
+ */
 export function publicCustomer(c: CustomerRow) {
   const { ecacLoginEnc, ecacPasswordEnc, inssPasswordEnc, portalCodeHash, ...rest } = c;
   return {
     ...rest,
     hasEcacCredentials: Boolean(ecacLoginEnc && ecacPasswordEnc),
-    hasInssPassword: Boolean(inssPasswordEnc),
     hasPortalCode: Boolean(portalCodeHash),
   };
 }

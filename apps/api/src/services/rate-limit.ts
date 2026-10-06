@@ -110,7 +110,12 @@ export const ROUTE_LIMITS: Record<string, RouteLimit> = {
   'POST /api/public/budgets/:token/approve': { group: 'public-token', count: [404], max: 30, windowSec: FIFTEEN_MIN },
   'POST /api/public/budgets/:token/reject': { group: 'public-token', count: [404], max: 30, windowSec: FIFTEEN_MIN },
   'POST /api/webhooks/asaas/:token': { group: 'webhook', count: [401, 403, 404], max: 30, windowSec: FIFTEEN_MIN },
+  'GET /api/webhooks/whatsapp/:token': { group: 'webhook', count: [401, 403, 404], max: 30, windowSec: FIFTEEN_MIN },
+  'POST /api/webhooks/whatsapp/:token': { group: 'webhook', count: [401, 403, 404], max: 30, windowSec: FIFTEEN_MIN },
 };
+
+/** Webhook do WhatsApp: eventos aceitos por integração (além das falhas por IP de `ROUTE_LIMITS`). */
+export const WHATSAPP_WEBHOOK_RULE: RateRule = { max: 300, windowSec: 60 };
 
 /** Login da equipe: falhas por e-mail (além do limite por IP). */
 export const LOGIN_EMAIL_RULE: RateRule = { max: 10, windowSec: FIFTEEN_MIN };

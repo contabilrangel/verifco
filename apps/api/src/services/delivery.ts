@@ -261,7 +261,7 @@ async function sealedContent(ctx: AppContext, deliveryId: string) {
   const sealed = job?.payload?.sealed;
   if (typeof sealed !== 'string') return null;
   try {
-    return { jobId: job!.id, content: JSON.parse(ctx.secrets.decrypt(sealed)) as { subject: string; body: string } };
+    return { jobId: job!.id, content: JSON.parse(ctx.secrets.decrypt(sealed)) as { subject: string; body: string; values?: Record<string, string | number | null> } };
   } catch {
     return null;
   }
@@ -295,6 +295,9 @@ export async function sendDeliveryJob(ctx: AppContext, deliveryId: string) {
         to: d.toAddress,
         text: body,
         document: first ? { filename: first.a.filename, content: first.f.data, contentType: first.f.row.mimeType } : undefined,
+        customerId: d.customerId,
+        templateKey: d.templateKey,
+        values: secret?.content.values,
       });
     }
     await db.update(deliveries).set({ status: 'sent', sentAt: new Date(), providerMessageId: result.messageId, error: null }).where(eq(deliveries.id, d.id));

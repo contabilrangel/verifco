@@ -62,6 +62,8 @@ export interface RobotOverview {
   activeTokens: number;
   serpro: 'ready' | 'not_configured' | 'missing';
   lastOfficeSync: JobView | null;
+  /** Próxima rodada diária do SERPRO na fila. */
+  nextAutoSync: string | null;
   activity: { at: string; type: 'file' | 'record' | 'prefilled'; customerId: string; customerName: string; detail: string; category: string }[];
 }
 

@@ -608,8 +608,13 @@ export const messages = pgTable(
     deliveryId: uuid('delivery_id'),
     readAt: ts('read_at'),
     createdAt: createdAt(),
+    /** Id da mensagem no provedor (WhatsApp recebido pelo webhook): o reenvio não duplica. */
+    externalId: text('external_id'),
   },
-  (t) => [index('messages_customer_idx').on(t.customerId, t.createdAt)],
+  (t) => [
+    index('messages_customer_idx').on(t.customerId, t.createdAt),
+    uniqueIndex('messages_office_external_uq').on(t.officeId, t.externalId).where(sql`${t.externalId} is not null`),
+  ],
 );
 
 /**

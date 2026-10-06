@@ -178,7 +178,6 @@ export const PERMISSION_CATEGORIES: PermissionCategory[] = [
       p('worksheet.update_customers', 'Planilha de atualização de clientes'),
       p('worksheet.budget', 'Planilha de orçamentos'),
       p('worksheet.procuration', 'Planilha de procurações'),
-      p('worksheet.inss', 'Planilha de login INSS'),
       p('worksheet.ecac', 'Planilha de login eCAC'),
     ],
   },

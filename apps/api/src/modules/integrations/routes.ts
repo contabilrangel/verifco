@@ -24,6 +24,7 @@ import { clearSerproTokens } from '../../integrations/serpro';
 import { decryptSecrets, getIntegrationRow, maskSecret, type IntegrationRow } from '../../integrations/store';
 import { testIntegration } from '../../integrations/testers';
 import { requeuePendingBillings } from './jobs';
+import { cancelEcacDailySync, scheduleEcacDailySync } from '../ecac/jobs';
 
 const PROVIDER_KEYS = Object.keys(INTEGRATION_PROVIDERS) as [IntegrationProvider, ...IntegrationProvider[]];
 const providerParam = z.object({ provider: z.enum(PROVIDER_KEYS) });
@@ -54,6 +55,8 @@ function fieldSchema(f: IntegrationField): z.ZodType {
       return z.email('e-mail inválido').max(320);
     case 'procurator':
       return z.uuid('selecione um certificado');
+    case 'textarea':
+      return z.string().trim().max(5000, 'use no máximo 5.000 caracteres');
     default:
       return z.string().trim().max(500);
   }
@@ -73,7 +76,9 @@ function parseConfig(def: IntegrationDef, input: Record<string, unknown>) {
       continue;
     }
     const r = fieldSchema(f).safeParse(typeof raw === 'string' ? raw.trim() : raw);
-    if (r.success) set[f.key] = f.key === 'contractorCnpj' ? String(r.data).replace(/\D+/g, '') : r.data;
+    const invalid = r.success && typeof r.data === 'string' ? f.validate?.(r.data) : null;
+    if (invalid) errors.push({ path: `config.${f.key}`, message: `${f.label}: ${invalid}` });
+    else if (r.success) set[f.key] = f.key === 'contractorCnpj' ? String(r.data).replace(/\D+/g, '') : r.data;
     else errors.push({ path: `config.${f.key}`, message: `${f.label}: ${r.error.issues[0]?.message ?? 'valor inválido'}` });
   }
   // SMTP do escritório: o servidor conecta nele, então nada de rede interna nem portas que não sejam de e-mail
@@ -202,6 +207,7 @@ export async function integrationRoutes(app: FastifyInstance) {
       : await db.insert(integrations).values({ officeId: user.officeId, provider, ...values }).returning();
 
     if (provider === 'serpro' && credentialsChanged) clearSerproTokens(`${user.officeId}:`);
+    if (provider === 'serpro') await (enabled ? scheduleEcacDailySync(ctx, user.officeId) : cancelEcacDailySync(ctx, user.officeId));
     if (provider === 'omie' && enabled) await scheduleOmiePoll(ctx, user.officeId, effective as Partial<OmieConfig>, 60_000);
     // integração de cobrança pronta: emite o que ficou pendente (aprovado antes de configurar, falha de credencial...)
     const requeuedBillings = enabled && status !== 'not_configured' ? await requeuePendingBillings(ctx, user.officeId, provider, user.userId) : 0;
@@ -267,7 +273,10 @@ export async function integrationRoutes(app: FastifyInstance) {
       .where(and(eq(integrations.officeId, user.officeId), eq(integrations.provider, provider)))
       .returning({ id: integrations.id });
     if (!deleted.length) throw notFound('Integração');
-    if (provider === 'serpro') clearSerproTokens(`${user.officeId}:`);
+    if (provider === 'serpro') {
+      clearSerproTokens(`${user.officeId}:`);
+      await cancelEcacDailySync(ctx, user.officeId);
+    }
     await audit(req, 'integration.delete', 'integration', deleted[0].id, { provider });
     return reply.status(204).send();
   });

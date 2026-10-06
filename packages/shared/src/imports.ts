@@ -22,7 +22,11 @@ export interface ImportKindDef {
   hasSecrets: boolean;
 }
 
-export type ImportKind = 'novos-clientes' | 'atualizar-clientes' | 'procuracoes' | 'inss' | 'ecac';
+/**
+ * A importação 'inss' (senha gov.br para consultas no INSS) foi removida: o Verifco não consulta o
+ * INSS e não guarda senha sem uso (LGPD). Volta junto com uma funcionalidade que a use.
+ */
+export type ImportKind = 'novos-clientes' | 'atualizar-clientes' | 'procuracoes' | 'ecac';
 
 /** Limite de linhas de dados por arquivo. */
 export const IMPORT_MAX_ROWS = 5000;
@@ -75,22 +79,6 @@ export const IMPORT_KINDS: Record<ImportKind, ImportKindDef> = {
     ],
     prefilled: true,
     hasSecrets: false,
-  },
-  inss: {
-    slug: 'inss',
-    label: 'Login INSS em lote',
-    permission: 'worksheet.inss',
-    summary: 'Informe a senha gov.br dos clientes para consultas no INSS.',
-    required: ['CPF', 'Senha gov.br'],
-    optional: [],
-    tips: [
-      'O modelo já vem com seus clientes. Preencha só a coluna da senha.',
-      'As senhas são guardadas cifradas e nunca aparecem de volta no sistema.',
-      'O arquivo enviado não é armazenado. Apague-o do seu computador depois da importação.',
-      'Linhas sem senha são ignoradas.',
-    ],
-    prefilled: true,
-    hasSecrets: true,
   },
   ecac: {
     slug: 'ecac',

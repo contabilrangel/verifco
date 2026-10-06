@@ -5,8 +5,9 @@
  * daqui e a tela de Administração › Integrações monta os formulários.
  */
 import type { IntegrationProvider } from './enums';
+import { WHATSAPP_TEMPLATE_TYPES, parseWhatsAppTemplates } from './whatsapp';
 
-export type IntegrationFieldType = 'text' | 'url' | 'email' | 'number' | 'select' | 'boolean' | 'secret' | 'procurator';
+export type IntegrationFieldType = 'text' | 'textarea' | 'url' | 'email' | 'number' | 'select' | 'boolean' | 'secret' | 'procurator';
 
 /** Mostra o campo (ou a instrução) só quando outro campo tem um dos valores. */
 export interface IntegrationCondition {
@@ -26,6 +27,8 @@ export interface IntegrationField {
   when?: IntegrationCondition;
   /** Ocupa a linha inteira no formulário. */
   wide?: boolean;
+  /** Conferência extra do valor (texto); devolve a mensagem de erro ou `null`. */
+  validate?: (value: string) => string | null;
 }
 
 export interface IntegrationStep {
@@ -46,6 +49,8 @@ export interface IntegrationDef {
   docsUrl: string;
   /** Recebe notificações do provedor (URL com token para copiar). */
   webhook?: boolean;
+  /** Onde cadastrar a URL do webhook no provedor. */
+  webhookHelp?: string;
 }
 
 export const INTEGRATION_STATUS = {
@@ -123,6 +128,7 @@ export const INTEGRATION_CATALOG: IntegrationDef[] = [
     ],
     docsUrl: 'https://docs.asaas.com/docs/sobre-os-webhooks',
     webhook: true,
+    webhookHelp: 'Cadastre esta URL no webhook de cobranças do Asaas.',
   },
   {
     key: 'omie',
@@ -217,10 +223,12 @@ export const INTEGRATION_CATALOG: IntegrationDef[] = [
     key: 'whatsapp',
     label: 'WhatsApp',
     category: 'messaging',
-    description: 'Envia mensagens e documentos aos clientes pelo WhatsApp do escritório.',
+    description: 'Envia mensagens e documentos aos clientes pelo WhatsApp do escritório e recebe as respostas deles.',
     capabilities: [
       'Envia textos dos templates (checklist, orçamento, avisos)',
       'Envia PDFs como documento (DARF, recibos, relatórios)',
+      'Recebe pelo webhook as respostas dos clientes na aba Mensagens, com aviso no sino',
+      'Na Cloud API da Meta, fora da janela de 24 h envia o modelo aprovado do tipo de envio',
       'Funciona com a Evolution API ou com a WhatsApp Cloud API oficial da Meta',
     ],
     fields: [
@@ -238,13 +246,50 @@ export const INTEGRATION_CATALOG: IntegrationDef[] = [
       { key: 'baseUrl', label: 'URL da Evolution API', type: 'url', required: true, placeholder: 'https://evolution.seudominio.com.br', when: whatsappEvolution },
       { key: 'instance', label: 'Nome da instância', type: 'text', required: true, when: whatsappEvolution },
       { key: 'apiKey', label: 'API key', type: 'secret', required: true, when: whatsappEvolution },
+      {
+        key: 'webhookAuthToken',
+        label: 'Token de autenticação do webhook',
+        type: 'secret',
+        when: whatsappEvolution,
+        help: 'Opcional: com ele, o Verifco só aceita o webhook que trouxer o cabeçalho Authorization: Bearer <token> (campo headers do webhook na Evolution API).',
+      },
       { key: 'phoneNumberId', label: 'Phone number ID', type: 'text', required: true, when: whatsappMeta },
       { key: 'accessToken', label: 'Token de acesso', type: 'secret', required: true, when: whatsappMeta },
       { key: 'apiVersion', label: 'Versão da Graph API', type: 'text', default: 'v25.0', when: whatsappMeta },
+      {
+        key: 'appSecret',
+        label: 'Chave secreta do app (App Secret)',
+        type: 'secret',
+        when: whatsappMeta,
+        help: 'Confere a assinatura das mensagens recebidas pelo webhook. Fica em Configurações do app › Básico.',
+      },
+      {
+        key: 'webhookVerifyToken',
+        label: 'Token de verificação do webhook',
+        type: 'secret',
+        when: whatsappMeta,
+        help: 'Um texto que você escolhe e repete no campo “Verify token” do webhook na Meta.',
+      },
+      {
+        key: 'templates',
+        label: 'Modelos aprovados (fora da janela de 24 h)',
+        type: 'textarea',
+        wide: true,
+        when: whatsappMeta,
+        placeholder: 'darf = aviso_darf | pt_BR | CLIENTE, VALOR, VENCIMENTO | documento\nmensagem = nova_mensagem | pt_BR | CLIENTE, MENSAGEM',
+        help:
+          'Uma linha por tipo de envio: tipo = nome do modelo | idioma | variáveis na ordem de {{1}}, {{2}}… (ou parametro=VARIÁVEL) | documento, se o modelo leva o PDF no cabeçalho. ' +
+          `Tipos: ${WHATSAPP_TEMPLATE_TYPES.map((t) => t.key).join(', ')}. MENSAGEM é o texto inteiro do envio.`,
+        validate: (value) => parseWhatsAppTemplates(value).errors.join(' ') || null,
+      },
     ],
     steps: [
       { text: 'Na sua Evolution API, crie uma instância e conecte o número do escritório lendo o QR Code.', when: whatsappEvolution },
       { text: 'Copie a URL do servidor, o nome da instância e a API key (global ou da instância).', when: whatsappEvolution },
+      {
+        text: 'Para receber as respostas dos clientes, cadastre a URL do webhook abaixo na instância (Webhook › URL), com o evento MESSAGES_UPSERT e sem base64.',
+        when: whatsappEvolution,
+      },
       { text: 'No Meta for Developers, crie um app do tipo Empresa e adicione o produto WhatsApp.', when: whatsappMeta },
       { text: 'Em WhatsApp › Configuração da API, copie o Phone number ID do número do escritório.', when: whatsappMeta },
       {
@@ -252,21 +297,32 @@ export const INTEGRATION_CATALOG: IntegrationDef[] = [
         when: whatsappMeta,
       },
       {
+        text: 'Para receber as respostas, em WhatsApp › Configuração informe a URL do webhook abaixo como Callback URL e o mesmo token de verificação daqui, assine o campo “messages” e preencha a chave secreta do app.',
+        when: whatsappMeta,
+      },
+      {
         text: 'Pela política da Meta, mensagens livres só podem ser enviadas até 24 h depois da última mensagem do cliente; fora dessa janela é preciso um modelo aprovado.',
+        when: whatsappMeta,
+      },
+      {
+        text: 'Cadastre os modelos aprovados no campo Modelos aprovados: fora da janela, o Verifco envia o modelo do tipo de envio; sem modelo, envia texto livre, que a Meta não entrega fora da janela.',
         when: whatsappMeta,
       },
     ],
     docsUrl: 'https://developers.facebook.com/docs/whatsapp/cloud-api/reference/messages',
+    webhook: true,
+    webhookHelp: 'Cadastre esta URL como webhook da instância na Evolution API ou como Callback URL do app na Meta.',
   },
   {
     key: 'serpro',
     label: 'SERPRO Integra Contador',
     category: 'government',
-    description: 'Consulta a Receita Federal pela API oficial do SERPRO: procurações, caixa postal, situação fiscal, pagamentos e DARF.',
+    description: 'Consulta a Receita Federal pela API oficial do SERPRO: procurações, caixa postal, situação fiscal e pagamentos das quotas do DARF.',
     capabilities: [
       'Autentica com as chaves do contrato e o certificado digital do escritório',
-      'Consulta procurações eletrônicas e mensagens da caixa postal do e-CAC',
-      'Emite relatório de situação fiscal e DARF (Sicalc) para os clientes com procuração',
+      'Sincroniza todo dia os clientes com procuração: procuração eletrônica e mensagens da caixa postal do e-CAC',
+      'Emite o relatório de situação fiscal (a cada 30 dias) e marca como pagas as quotas do DARF encontradas no PAGTOWEB',
+      'Não informa a situação da declaração (malha, lote de restituição) nem emite a CND de pessoa física: o SERPRO não oferece esses serviços',
     ],
     fields: [
       {

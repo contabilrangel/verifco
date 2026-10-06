@@ -31,10 +31,6 @@ const SIGNATURE_COLUMNS: Record<ImportKind, { aliases: readonly string[]; label:
     { aliases: COLUMNS.cpf, label: 'CPF' },
     { aliases: COLUMNS.procurator, label: 'CPF/CNPJ do procurador' },
   ],
-  inss: [
-    { aliases: COLUMNS.cpf, label: 'CPF' },
-    { aliases: COLUMNS.inssPassword, label: 'Senha gov.br' },
-  ],
   ecac: [
     { aliases: COLUMNS.cpf, label: 'CPF' },
     { aliases: COLUMNS.ecacPassword, label: 'Senha' },

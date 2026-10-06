@@ -29,7 +29,7 @@ import {
   type IntegrationField,
   type IntegrationStatus,
 } from '@verifco/shared';
-import { Alert, Button, Card, Checkbox, ConfirmDialog, IconButton, Input, Loading, Select, Switch, Tag, cx, useToast, type Tone } from '../../ds';
+import { Alert, Button, Card, Checkbox, ConfirmDialog, IconButton, Input, Loading, Select, Switch, Tag, Textarea, cx, useToast, type Tone } from '../../ds';
 import { api } from '../../lib/api';
 import { fieldErrors, useAction, useApi } from '../../lib/hooks';
 import { formatDateTime } from '../../lib/format';
@@ -279,9 +279,16 @@ function IntegrationCard({ def, view }: { def: IntegrationDef; view: Integration
                         </IconButton>
                       </div>
                       <span className="vf-field__help">
-                        Cadastre esta URL no webhook de cobranças do {def.label}. Ela é exclusiva do seu escritório; trate-a como uma senha.
+                        {def.webhookHelp ?? `Cadastre esta URL no webhook do ${def.label}.`} Ela é exclusiva do seu escritório; trate-a como uma senha.
                       </span>
                     </>
+                  ) : view.saved ? (
+                    // integração salva antes de receber webhooks: gera a URL sob demanda
+                    <div>
+                      <Button kind="secondary" size="sm" icon={<RefreshCw />} loading={rotate.isPending} onClick={() => rotate.mutate(undefined)}>
+                        Gerar URL do webhook
+                      </Button>
+                    </div>
                   ) : (
                     <span className="vf-field__help">Salve a configuração para gerar a URL exclusiva do escritório.</span>
                   )}
@@ -407,6 +414,21 @@ function FieldInput({
   }
   if (f.type === 'select') {
     return <Select label={f.label} required={f.required} help={f.help} error={error} options={f.options ?? []} value={String(value ?? '')} onChange={(e) => onChange(e.target.value)} style={style} />;
+  }
+  if (f.type === 'textarea') {
+    return (
+      <Textarea
+        label={f.label}
+        required={f.required}
+        placeholder={f.placeholder}
+        help={f.help}
+        error={error}
+        rows={4}
+        value={String(value ?? '')}
+        onChange={(e) => onChange(e.target.value)}
+        span="full"
+      />
+    );
   }
   if (f.type === 'procurator') {
     const usable = (certificates ?? []).filter((c) => c.hasCertificate);

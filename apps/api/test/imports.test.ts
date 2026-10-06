@@ -1,7 +1,17 @@
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { PGlite } from '@electric-sql/pglite';
+import { drizzle } from 'drizzle-orm/pglite';
+import { migrate } from 'drizzle-orm/pglite/migrator';
 import ExcelJS from 'exceljs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import * as schema from '../src/db/schema';
 import { buildWorkbook } from '../src/services/xlsx';
 import { VALID_CPFS, createEmployee, createTestEnv, registerOffice, type Api, type TestEnv } from './helpers';
+
+const MIGRATIONS = fileURLToPath(new URL('../drizzle', import.meta.url));
 
 let env: TestEnv;
 beforeAll(async () => {
@@ -210,19 +220,16 @@ describe('importações de atualização', () => {
     expect(again.body).toMatchObject({ total: 0, ignored: 1 });
   });
 
-  it('INSS e eCAC: senhas cifradas, nunca devolvidas e arquivo não guardado', async () => {
+  it('eCAC: senhas cifradas, nunca devolvidas e arquivo não guardado; INSS não é mais importado (COB-7)', async () => {
     const office = await registerOffice(env);
     const a = await office.api.post('/api/customers', { name: 'Alice', cpfCnpj: VALID_CPFS[0] });
     const b = await office.api.post('/api/customers', { name: 'Bento', cpfCnpj: VALID_CPFS[1] });
 
-    const inss = await upload(
-      office.token,
-      '/api/imports/inss',
-      'inss.csv',
-      `Nome;CPF;Senha gov.br;Senha já cadastrada\nAlice;${VALID_CPFS[0]};segredo-inss-1;Não\nBento;${VALID_CPFS[1]};;Não`,
-    );
-    expect(inss.body).toMatchObject({ total: 1, succeeded: 1, ignored: 1, fileId: null });
-    expect(JSON.stringify(inss.body)).not.toContain('segredo-inss-1');
+    // a importação da senha gov.br do INSS foi removida: sem modelo, sem envio e sem histórico
+    const inss = await upload(office.token, '/api/imports/inss', 'inss.csv', `Nome;CPF;Senha gov.br\nAlice;${VALID_CPFS[0]};segredo-inss-1`);
+    expect(inss.status).toBe(404);
+    expect((await office.api.get('/api/imports/inss/template')).status).toBe(404);
+    expect((await office.api.get('/api/imports?kind=inss')).status).toBe(404);
 
     const ecac = await upload(
       office.token,
@@ -234,18 +241,80 @@ describe('importações de atualização', () => {
     expect(byRow(ecac.body.results)[3].message).toBe('Informe a senha.');
 
     const row = await env.ctx.db.query.customers.findFirst({ where: (t, { eq }) => eq(t.id, a.body.id) });
-    expect(env.ctx.secrets.decrypt(row!.inssPasswordEnc!)).toBe('segredo-inss-1');
+    expect(row!.inssPasswordEnc).toBeNull();
     expect(env.ctx.secrets.decrypt(row!.ecacLoginEnc!)).toBe(VALID_CPFS[0]);
     expect(env.ctx.secrets.decrypt(row!.ecacPasswordEnc!)).toBe('senha-ecac-1');
     const pub = await office.api.get(`/api/customers/${a.body.id}`);
-    expect(pub.body).toMatchObject({ hasInssPassword: true, hasEcacCredentials: true });
+    expect(pub.body).toMatchObject({ hasEcacCredentials: true });
+    expect(pub.body).not.toHaveProperty('hasInssPassword');
     expect(JSON.stringify(pub.body)).not.toContain('senha-ecac-1');
     expect((await office.api.get(`/api/customers/${b.body.id}`)).body.hasEcacCredentials).toBe(false);
 
-    const tpl = await office.api.get('/api/imports/inss/template');
+    const tpl = await office.api.get('/api/imports/ecac/template');
     const rows = sheetRows((await readXlsx(tpl.raw.rawPayload)).worksheets[0]);
-    expect(rows[1]).toEqual(['Alice', '529.982.247-25', '', 'Sim']);
-    expect(tpl.raw.rawPayload.toString('latin1')).not.toContain('segredo-inss-1');
+    expect(rows[1]).toEqual(['Alice', '529.982.247-25', '', '', 'Sim']);
+    expect(tpl.raw.rawPayload.toString('latin1')).not.toContain('senha-ecac-1');
+  });
+
+  it('a rota de credenciais recusa a senha do INSS e mantém as do eCAC (COB-7)', async () => {
+    const office = await registerOffice(env);
+    const c = await office.api.post('/api/customers', { name: 'Clara', cpfCnpj: VALID_CPFS[2] });
+    const refused = await office.api.put(`/api/customers/${c.body.id}/credentials`, { ecacPassword: 'senha-ecac-2', inssPassword: 'segredo-inss-2' });
+    expect(refused.status).toBe(400);
+    expect(refused.body.error).toBe('O Verifco não guarda mais a senha gov.br do INSS: não há consulta ao INSS que a use.');
+    let row = await env.ctx.db.query.customers.findFirst({ where: (t, { eq }) => eq(t.id, c.body.id) });
+    expect(row!.inssPasswordEnc).toBeNull();
+    expect(row!.ecacPasswordEnc).toBeNull();
+
+    const ok = await office.api.put(`/api/customers/${c.body.id}/credentials`, { ecacLogin: VALID_CPFS[2], ecacPassword: 'senha-ecac-2' });
+    expect(ok.status).toBe(200);
+    expect(ok.body).toMatchObject({ hasEcacCredentials: true });
+    row = await env.ctx.db.query.customers.findFirst({ where: (t, { eq }) => eq(t.id, c.body.id) });
+    expect(env.ctx.secrets.decrypt(row!.ecacPasswordEnc!)).toBe('senha-ecac-2');
+    expect(row!.inssPasswordEnc).toBeNull();
+  });
+
+  it('a migração apaga as senhas do INSS, avisa os escritórios afetados e tira a permissão das funções (COB-7)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'verifco-inss-'));
+    const client = new PGlite();
+    try {
+      // banco como estava antes da migração: journal cortado antes dela
+      cpSync(MIGRATIONS, dir, { recursive: true });
+      const journalPath = join(dir, 'meta/_journal.json');
+      const journal = JSON.parse(readFileSync(journalPath, 'utf8')) as { entries: { tag: string }[] };
+      const at = journal.entries.findIndex((e) => e.tag.endsWith('_remove_senha_inss'));
+      expect(at).toBeGreaterThan(0);
+      writeFileSync(journalPath, JSON.stringify({ ...journal, entries: journal.entries.slice(0, at) }));
+      const db = drizzle(client, { schema });
+      await migrate(db, { migrationsFolder: dir });
+
+      const [withPasswords] = await db.insert(schema.offices).values({ name: 'Com senhas' }).returning();
+      const [without] = await db.insert(schema.offices).values({ name: 'Sem senhas' }).returning();
+      await db.insert(schema.customers).values([
+        { officeId: withPasswords.id, name: 'Ana', cpfCnpj: VALID_CPFS[0], inssPasswordEnc: 'cifrada-1', ecacPasswordEnc: 'ecac-1' },
+        { officeId: withPasswords.id, name: 'Beto', cpfCnpj: VALID_CPFS[1], inssPasswordEnc: 'cifrada-2' },
+        { officeId: without.id, name: 'Caio', cpfCnpj: VALID_CPFS[2], ecacPasswordEnc: 'ecac-3' },
+      ]);
+      await db.insert(schema.roles).values({ officeId: withPasswords.id, name: 'Equipe', permissions: ['customer.list', 'worksheet.inss', 'worksheet.ecac'] });
+
+      writeFileSync(journalPath, JSON.stringify(journal));
+      await migrate(db, { migrationsFolder: dir });
+
+      const rows = await db.select().from(schema.customers);
+      expect(rows.every((r) => r.inssPasswordEnc === null)).toBe(true);
+      expect(rows.find((r) => r.name === 'Ana')!.ecacPasswordEnc).toBe('ecac-1');
+      const notes = await db.select().from(schema.notifications);
+      expect(notes).toHaveLength(1);
+      expect(notes[0]).toMatchObject({ officeId: withPasswords.id, userId: null, title: 'Senhas do INSS apagadas', link: '/importacoes/inss' });
+      expect(notes[0].body).toContain('apagou 2 senha(s)');
+      const logs = await db.select().from(schema.auditLogs);
+      expect(logs).toEqual([expect.objectContaining({ officeId: withPasswords.id, action: 'inss_password.purge', data: { customers: 2 } })]);
+      const [role] = await db.select().from(schema.roles);
+      expect(role.permissions).toEqual(['customer.list', 'worksheet.ecac']);
+    } finally {
+      await client.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('respeita a restrição de clientes por responsável', async () => {
@@ -271,7 +340,7 @@ describe('histórico, permissões e isolamento', () => {
     const csv = (cpf: string) => `Nome;CPF;E-mail do responsável\nCliente ${cpf};${cpf};${office.email}`;
     const first = await upload(office.token, '/api/imports/novos-clientes', 'a.csv', csv(VALID_CPFS[0]));
     await upload(office.token, '/api/imports/novos-clientes', 'b.csv', csv(VALID_CPFS[0]));
-    await upload(office.token, '/api/imports/inss', 'inss.csv', `CPF;Senha gov.br\n${VALID_CPFS[0]};x`);
+    await upload(office.token, '/api/imports/ecac', 'ecac.csv', `CPF;Senha\n${VALID_CPFS[0]};x`);
 
     const all = await office.api.get('/api/imports');
     expect(all.body.total).toBe(3);
@@ -292,7 +361,7 @@ describe('histórico, permissões e isolamento', () => {
   it('exige a permissão de cada tipo', async () => {
     const office = await registerOffice(env);
     const batch = await upload(office.token, '/api/imports/novos-clientes', 'a.csv', `Nome;CPF;E-mail do responsável\nAna;${VALID_CPFS[0]};${office.email}`);
-    await upload(office.token, '/api/imports/inss', 'inss.csv', `CPF;Senha gov.br\n${VALID_CPFS[0]};x`);
+    await upload(office.token, '/api/imports/ecac', 'ecac.csv', `CPF;Senha\n${VALID_CPFS[0]};x`);
 
     const anon = await env.app.inject({ method: 'GET', url: '/api/imports/novos-clientes/template' });
     expect(anon.statusCode).toBe(401);
@@ -305,11 +374,11 @@ describe('histórico, permissões e isolamento', () => {
 
     const partial = await createEmployee(env, office.api, ['worksheet.new_customers']);
     expect((await partial.api.get('/api/imports/novos-clientes/template')).status).toBe(200);
-    expect((await partial.api.get('/api/imports/inss/template')).status).toBe(403);
+    expect((await partial.api.get('/api/imports/ecac/template')).status).toBe(403);
     const list = await partial.api.get('/api/imports');
     expect(list.body.total).toBe(1);
     expect(list.body.data[0].kind).toBe('novos-clientes');
-    expect((await partial.api.get('/api/imports?kind=inss')).status).toBe(403);
+    expect((await partial.api.get('/api/imports?kind=ecac')).status).toBe(403);
   });
 
   it('isola escritórios', async () => {

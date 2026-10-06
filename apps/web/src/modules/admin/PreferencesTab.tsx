@@ -52,7 +52,7 @@ export function PreferencesTab() {
           </Section>
 
           <Section title="Comunicação" description="Envios automáticos e contato exibido aos clientes.">
-            {toggle('autoSendDarfEmail', 'Enviar a guia DARF por e-mail ao cliente automaticamente', 'Quando o robô obtém uma nova guia de quota do IRPF.')}
+            {toggle('autoSendDarfEmail', 'Enviar a guia DARF por e-mail ao cliente automaticamente', 'Quando o PDF da guia da quota é anexado na etapa DARF do IRPF.')}
             {toggle('notifyMainEmailOnEcacChanges', 'Avisar o e-mail principal do escritório sobre mudanças no eCAC', 'Ex.: declaração em malha, nova mensagem na caixa postal.')}
             <Input
               label="WhatsApp de atendimento"
@@ -67,8 +67,14 @@ export function PreferencesTab() {
           </Section>
 
           <Section title="Robô (eCAC)" description="Consultas feitas pelo robô em nome do escritório.">
-            {toggle('simplifiedQueryWithoutProcurator', 'Pedir consulta simplificada para clientes sem procurador', 'O cliente recebe um pedido de autorização no portal do cliente.')}
-            {toggle('autoGenerateCnd', 'Emitir a certidão negativa (CND) automaticamente', 'O robô tenta emitir a CND dos clientes com procuração válida.')}
+            <p className="vf-text-sm">
+              Com o SERPRO Integra Contador ativo (Administração › Integrações), o robô consulta todo dia os clientes ativos com procurador: procuração eletrônica,
+              mensagens da caixa postal, relatório de situação fiscal (a cada 30 dias) e pagamento das quotas do DARF perto do vencimento.
+            </p>
+            <p className="vf-text-xs vf-muted">
+              Não estão disponíveis: emissão automática da CND de pessoa física (o SERPRO não oferece esse serviço; emita no site da Receita e lance na aba eCAC do
+              cliente) e consulta para clientes sem procurador.
+            </p>
           </Section>
 
           <Section title="Checklist" description="Como o checklist digital se comporta durante a declaração.">

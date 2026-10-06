@@ -75,7 +75,10 @@ export const HELP_SECTIONS: HelpSection[] = [
     id: 'ecac',
     title: 'eCAC e procurações',
     faqs: [
-      { q: 'Por que preciso de procuração?', a: 'Com a procuração eletrônica válida, o Verifco acompanha a situação da declaração, as quotas do DARF, a caixa postal e a CND do cliente no eCAC.' },
+      {
+        q: 'Por que preciso de procuração?',
+        a: 'Com a procuração eletrônica válida e o SERPRO Integra Contador ativo, o robô acompanha todo dia a procuração, a caixa postal, a situação fiscal e o pagamento das quotas do DARF do cliente. A situação da declaração (malha, lote de restituição) e a CND não vêm pelo SERPRO: lance-as na aba eCAC do cliente.',
+      },
       { q: 'Como o cliente cadastra a procuração?', a: 'Envie o template Tutorial de procuração (PF) ao cliente. Ele cadastra a procuração no eCAC com a conta gov.br nível prata ou ouro.' },
     ],
   },

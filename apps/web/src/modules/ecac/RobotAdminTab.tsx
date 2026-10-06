@@ -60,6 +60,14 @@ export function RobotAdminTab() {
             O robô reúne os dados do eCAC por três caminhos: a integração oficial <strong>SERPRO Integra Contador</strong> (procuração e caixa postal, sem depender do seu computador), a{' '}
             <strong>extensão do navegador</strong> (envia o que você abre no eCAC) e o <strong>sincronizador</strong> (guarda nos documentos do cliente os arquivos .DEC, .REC e .DBK do programa IRPF, sem ler o conteúdo; o recibo .REC marca a declaração como transmitida). Nada é simulado: sem uma dessas fontes, os painéis ficam vazios.
           </span>
+          <ul className="vf-ecac-steps vf-text-xs">
+            <li>
+              Pelo SERPRO, todo dia de madrugada e quando você pede: procuração eletrônica, mensagens da caixa postal, relatório de situação fiscal (a cada 30 dias) e
+              pagamento das quotas do DARF perto do vencimento (receita 0211). Cada cliente é sincronizado numa tarefa própria.
+            </li>
+            <li>O SERPRO não informa a situação da declaração (processamento, malha, lote de restituição) nem emite a CND de pessoa física: lance esses dados na aba eCAC do cliente.</li>
+            {o?.nextAutoSync && <li>Próxima sincronização automática: {formatDateTime(o.nextAutoSync)}.</li>}
+          </ul>
           {o?.lastOfficeSync && <JobAlert job={o.lastOfficeSync} title="Sincronização geral" done={`${String(o.lastOfficeSync.result?.ok ?? 0)} de ${String(o.lastOfficeSync.result?.total ?? 0)} cliente(s) sincronizado(s).`} />}
         </div>
       </Card>

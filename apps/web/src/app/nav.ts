@@ -60,7 +60,6 @@ export const NAV: NavGroup[] = [
       { to: '/importacoes/novos-clientes', label: 'Novos clientes em lote', perms: ['worksheet.new_customers'] },
       { to: '/importacoes/atualizar-clientes', label: 'Atualizar clientes em lote', perms: ['worksheet.update_customers'] },
       { to: '/importacoes/procuracoes', label: 'Procuração em lote', perms: ['worksheet.procuration'] },
-      { to: '/importacoes/inss', label: 'Login INSS em lote', perms: ['worksheet.inss'] },
       { to: '/importacoes/ecac', label: 'Login eCAC em lote', perms: ['worksheet.ecac'] },
     ],
   },

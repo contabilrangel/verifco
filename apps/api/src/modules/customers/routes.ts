@@ -344,14 +344,15 @@ export async function customerRoutes(app: FastifyInstance) {
     return publicCustomer(row);
   });
 
-  /** Credenciais eCAC/gov.br e INSS: gravadas cifradas, nunca devolvidas ao navegador. */
+  /** Credenciais eCAC/gov.br: gravadas cifradas, nunca devolvidas ao navegador. */
   app.put('/customers/:id/credentials', { preHandler: guard('ecac.credentials') }, async (req) => {
     const user = requireUser(req);
     const { id } = parse(uuidParam, req.params);
-    const body = parse(
-      z.object({ ecacLogin: z.string().max(200).nullable().optional(), ecacPassword: z.string().max(200).nullable().optional(), inssPassword: z.string().max(200).nullable().optional() }),
-      req.body,
-    );
+    // COB-7: sem consulta ao INSS, a senha gov.br para ele não é mais guardada (LGPD, necessidade)
+    if (req.body && typeof req.body === 'object' && 'inssPassword' in req.body) {
+      throw badRequest('O Verifco não guarda mais a senha gov.br do INSS: não há consulta ao INSS que a use.');
+    }
+    const body = parse(z.object({ ecacLogin: z.string().max(200).nullable().optional(), ecacPassword: z.string().max(200).nullable().optional() }), req.body);
     const c = await getCustomerForUser(app.ctx, user, id);
     const enc = (v: string | null | undefined, current: string | null) => (v === undefined ? current : v === null || v === '' ? null : secrets.encrypt(v));
     const [row] = await db
@@ -359,7 +360,6 @@ export async function customerRoutes(app: FastifyInstance) {
       .set({
         ecacLoginEnc: enc(body.ecacLogin, c.ecacLoginEnc),
         ecacPasswordEnc: enc(body.ecacPassword, c.ecacPasswordEnc),
-        inssPasswordEnc: enc(body.inssPassword, c.inssPasswordEnc),
         updatedAt: new Date(),
       })
       .where(eq(customers.id, c.id))

@@ -291,7 +291,9 @@ export async function buildEcacPanel(ctx: AppContext, customer: CustomerRow) {
     simplified: simplified
       ? { ...base(simplified), kind: simplified.kind, situation: str(simplified.data.situation), message: str(simplified.data.message), pendencies: strList(simplified.data.pendencies) }
       : null,
+    // a caixa postal chega em lotes de até 50 pelo SERPRO: as mais recentes primeiro
     mailbox: of('mailbox_message')
+      .sort((a, b) => (normalizeDate(b.data.receivedAt) ?? '').localeCompare(normalizeDate(a.data.receivedAt) ?? ''))
       .slice(0, 20)
       .map((r) => ({ ...base(r), subject: str(r.data.subject), receivedAt: normalizeDate(r.data.receivedAt), read: r.data.read === true })),
     others: [...of('procuration'), ...of('other')].slice(0, 20).map((r) => ({ ...base(r), kind: r.kind, data: r.data })),
