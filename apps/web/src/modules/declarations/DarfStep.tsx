@@ -73,7 +73,12 @@ export function DarfStep() {
   const [uploading, setUploading] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const uploadTarget = useRef<DarfRow | null>(null);
-  const canEdit = can('darf.edit');
+  // A 1ª quota de um exercício sem declaração cria a declaração antes (`ensure()`, PUT do resumo), o
+  // que a API só aceita com `declaration.edit`. Quem cuida só do DARF trabalha nas quotas de uma
+  // declaração já iniciada: sem ela, as ações ficam escondidas (dariam 403) e a etapa explica o motivo.
+  const notStarted = !declaration?.id;
+  const blockedByDeclaration = notStarted && can('darf.edit') && !can('declaration.edit');
+  const canEdit = can('darf.edit') && !blockedByDeclaration;
   const canSend = can('darf.send');
 
   const refresh = () => {
@@ -120,6 +125,12 @@ export function DarfStep() {
 
   return (
     <div className="vf-stack" style={{ '--gap': '16px' } as CSSProperties}>
+      {blockedByDeclaration && (
+        <Alert tone="warning" title="Declaração não iniciada">
+          A declaração de {year} deste cliente ainda não foi iniciada; peça a quem pode editar a declaração para iniciá-la. Depois disso, as quotas do DARF podem ser
+          cadastradas aqui.
+        </Alert>
+      )}
       <Card
         flush
         title="Quotas do DARF"
@@ -147,7 +158,13 @@ export function DarfStep() {
           <EmptyState
             icon={<CalendarCheck2 />}
             title="Nenhuma quota cadastrada"
-            description={data.taxDueCents > 0 ? 'Gere as quotas a partir do imposto a pagar ou cadastre uma a uma.' : 'Informe o imposto a pagar no resumo da declaração ou cadastre as quotas manualmente.'}
+            description={
+              blockedByDeclaration
+                ? 'As quotas ficam disponíveis depois que a declaração do exercício for iniciada.'
+                : data.taxDueCents > 0
+                  ? 'Gere as quotas a partir do imposto a pagar ou cadastre uma a uma.'
+                  : 'Informe o imposto a pagar no resumo da declaração ou cadastre as quotas manualmente.'
+            }
             action={canEdit && <Button onClick={() => setGenerate(true)}>Gerar quotas</Button>}
           />
         ) : (
