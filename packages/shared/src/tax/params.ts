@@ -29,3 +29,10 @@ export function taxParams(exercise: number): TaxParams & { fallback: boolean } {
   const pick = years.filter((y) => y <= exercise).pop() ?? years[0];
   return { ...TAX_PARAMS[pick], fallback: true };
 }
+
+/**
+ * IRPFM (tributação mínima, Lei 15.270/2025): rendimentos anuais a partir deste valor
+ * entram no cálculo. Usado como sinal no dashboard e no Radar; o cálculo completo fica
+ * no módulo de IRPFM.
+ */
+export const IRPFM_THRESHOLD_CENTS = 60_000_000;
