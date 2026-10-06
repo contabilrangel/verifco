@@ -22,6 +22,13 @@ pnpm dev
 
 Sem PostgreSQL configurado, a API usa um banco embutido (PGlite) em `apps/api/.data/`.
 
+Para explorar com dados de exemplo (clientes, declarações de 3 anos, orçamentos, DARFs,
+checklist, mensagens, Radar):
+
+```bash
+pnpm db:seed     # cria o escritório de demonstração: demo@verifco.dev / verifco-demo-123
+```
+
 ```bash
 pnpm test        # testes
 pnpm typecheck   # tipagem
