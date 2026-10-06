@@ -64,7 +64,7 @@ Não há registro central para editar: criar a pasta basta.
 | Serviço | Uso |
 | --- | --- |
 | `customers.ts` | `customerScope`, `getCustomerForUser`, `publicCustomer` |
-| `declarations.ts` | `getOrCreateDeclaration`, `setDeclarationSubstatus`, `advanceDeclaration`, `recomputeTotals`, `listItems` |
+| `declarations.ts` | `getOrCreateDeclaration`, `setDeclarationSubstatus`, `advanceDeclaration`, `recomputeTotals`, `listItems`; regras únicas de status: `changeSubstatus` (troca manual, com a permissão de finalizar e a situação eCAC), `syncDeclarationStage` (transmissão e situação eCAC), `syncSubstatus` ("Documentos faltantes"); `refreshDeclaration` (totais e saldo de caixa depois de mudar linhas ou outros gastos). Aceitam o banco ou uma transação aberta (`DbOrTx`; `refreshDeclaration` recebe `{ db }`) |
 | `delivery.ts` | `queueDelivery` (e-mail/WhatsApp por template ou texto, com idempotência e anexos) |
 | `pdf.ts` | `PdfBuilder` + `loadBranding` (logo e cores do escritório) |
 | `xlsx.ts` | `buildWorkbook`, `readSheet`, `parseMoneyToCents`, `parseDate` |
@@ -124,6 +124,13 @@ preenchimento) vai numa migração própria, criada com
 `npx drizzle-kit generate --custom --name <nome>` dentro de `apps/api` (veja
 `0003_checklist_validade_links.sql`). `test/migrations.test.ts` confere que as migrações aplicam
 num banco vazio e chegam ao mesmo banco que o `schema.ts`.
+
+Escritas que dependem umas das outras vão numa `db.transaction`; quando duas requisições podem
+disputar a mesma declaração, a transação começa travando a linha dela
+(`select ... from declarations where id = ... for update`) e relê os dados já sob a trava. Dentro
+da transação, use só o `tx` (e funções que aceitam `DbOrTx`): no PGlite, uma consulta pelo `db`
+espera a transação terminar e a requisição fica parada. Arquivos (`ctx.files`) são apagados só
+depois do commit.
 
 ### Testes
 

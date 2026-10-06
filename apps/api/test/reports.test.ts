@@ -112,6 +112,24 @@ describe('relatórios individuais', () => {
     expect((await b.api.get(`/api/reports/declaration?customerId=${cid}&year=2026`)).status).toBe(404);
   });
 
+  it('salvar outros gastos atualiza o saldo de caixa gravado (alerta do dashboard)', async () => {
+    const { api, officeId } = await registerOffice(env);
+    const cid = await newCustomer(api, 4, 'Olga Prado');
+    const d = await declaration(officeId, cid, 2026, {}, yearItems(0));
+    const stored = async () => (await env.ctx.db.query.declarations.findFirst({ where: (t, { eq }) => eq(t.id, d.id) }))!.cashBalanceCents;
+    expect(await stored()).toBeNull();
+
+    const one = await api.put(`/api/declarations/${d.id}/other-expenses`, { creditCardCents: 100_000 });
+    expect(one.status).toBe(200);
+    expect(one.body.cashBalanceCents).not.toBeNull();
+    expect(await stored()).toBe(one.body.cashBalanceCents);
+    // mais outros gastos (aplicações) baixam o saldo na mesma medida
+    const two = await api.put(`/api/declarations/${d.id}/other-expenses`, { creditCardCents: 300_000 });
+    expect(two.body.cashBalanceCents).toBe(one.body.cashBalanceCents - 200_000);
+    expect(await stored()).toBe(two.body.cashBalanceCents);
+    expect((await api.get(`/api/declarations/${d.id}/cash-analysis`)).body.balanceCents).toBe(two.body.cashBalanceCents);
+  });
+
   it('inclui o cônjuge quando ele também é cliente', async () => {
     const { api, officeId } = await registerOffice(env);
     const holder = await newCustomer(api, 2, 'Otávio Prado');

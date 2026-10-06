@@ -17,7 +17,7 @@ import { billings, budgets, customers, declarations, installments, paymentMethod
 import { randomToken, sha256 } from '../../lib/crypto';
 import { badRequest, conflict, notFound } from '../../lib/errors';
 import { getCustomerForUser } from '../../services/customers';
-import { advanceDeclaration, getOrCreateDeclaration } from '../../services/declarations';
+import { advanceDeclaration, getOrCreateDeclaration, setDeclarationSubstatus } from '../../services/declarations';
 import { queueDelivery } from '../../services/delivery';
 import { categoryLabel } from './text';
 
@@ -261,6 +261,37 @@ async function declarationOf(ctx: AppContext, b: BudgetRow) {
   return d ?? getOrCreateDeclaration(ctx.db, b.officeId, b.customerId, b.exerciseYear);
 }
 
+/** Só os orçamentos da própria declaração (IRPF e retificação) movem a etapa dela no Kanban. */
+const IRPF_BUDGET_CATEGORIES = ['irpf', 'irpf_rectification'];
+const movesDeclaration = (b: BudgetRow) => IRPF_BUDGET_CATEGORIES.includes(b.category);
+
+/**
+ * Proposta IRPF enviada que foi recusada, cancelada, voltou a rascunho ou foi excluída (`b` é a
+ * linha anterior à mudança): a declaração que estava em "Orçamento enviado" volta para
+ * "Não iniciado" se não houver outro orçamento IRPF enviado ou aprovado no exercício.
+ */
+export async function releaseDeclarationStage(ctx: AppContext, b: BudgetRow) {
+  if (!movesDeclaration(b) || b.status !== 'sent') return;
+  const { db } = ctx;
+  const decl = await db.query.declarations.findFirst({ where: and(eq(declarations.customerId, b.customerId), eq(declarations.exerciseYear, b.exerciseYear)) });
+  if (decl?.substatus !== 'budget_sent') return;
+  const [other] = await db
+    .select({ id: budgets.id })
+    .from(budgets)
+    .where(
+      and(
+        eq(budgets.officeId, b.officeId),
+        eq(budgets.customerId, b.customerId),
+        eq(budgets.exerciseYear, b.exerciseYear),
+        ne(budgets.id, b.id),
+        inArray(budgets.category, IRPF_BUDGET_CATEGORIES),
+        inArray(budgets.status, ['sent', 'approved']),
+      ),
+    )
+    .limit(1);
+  if (!other) await setDeclarationSubstatus(db, decl.id, 'not_started');
+}
+
 // ---------------------------------------------------------------------------
 // Envio
 // ---------------------------------------------------------------------------
@@ -283,7 +314,7 @@ export async function issueApprovalLink(ctx: AppContext, budget: BudgetRow) {
     .set({ approvalTokenHash: sha256(token), sentAt: now, status: 'sent', rejectedAt: null, updatedAt: now })
     .where(eq(budgets.id, budget.id))
     .returning();
-  await advanceDeclaration(ctx.db, await declarationOf(ctx, row), 'budget_sent');
+  if (movesDeclaration(row)) await advanceDeclaration(ctx.db, await declarationOf(ctx, row), 'budget_sent');
   return { budget: row, token, link: approvalLink(ctx, token) };
 }
 
@@ -357,7 +388,7 @@ export async function approveBudget(ctx: AppContext, budget: BudgetRow, approved
       // contrato com o módulo de integrações: ele emite a cobrança e grava externalId/externalUrl nas parcelas
       await ctx.jobs.enqueue('billing.sync_external', { billingId: result.billing.id }, { officeId: result.budget.officeId, idempotencyKey: result.billing.id });
     }
-    await advanceDeclaration(db, await declarationOf(ctx, result.budget), 'budget_approved');
+    if (movesDeclaration(result.budget)) await advanceDeclaration(db, await declarationOf(ctx, result.budget), 'budget_approved');
   }
   return result;
 }
@@ -368,6 +399,7 @@ export async function rejectBudget(ctx: AppContext, budget: BudgetRow) {
   if (budget.status === 'rejected') return budget;
   const now = new Date();
   const [row] = await ctx.db.update(budgets).set({ status: 'rejected', rejectedAt: now, updatedAt: now }).where(eq(budgets.id, budget.id)).returning();
+  await releaseDeclarationStage(ctx, budget);
   return row;
 }
 
@@ -385,6 +417,7 @@ export async function applyStatus(ctx: AppContext, budget: BudgetRow, status: st
     case 'canceled': {
       if (budget.status === 'approved') throw conflict('Orçamento aprovado não pode voltar de status.');
       const [row] = await ctx.db.update(budgets).set({ status, updatedAt: new Date() }).where(eq(budgets.id, budget.id)).returning();
+      await releaseDeclarationStage(ctx, budget);
       return row;
     }
     default:

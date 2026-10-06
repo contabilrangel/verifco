@@ -2,11 +2,12 @@ import { and, asc, desc, eq, ilike, inArray, isNull, or, type SQL } from 'drizzl
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { ELABORATION_STATUS, ITEM_KINDS, onlyDigits, type DeclarationItem, type ElaborationStatus } from '@verifco/shared';
+import type { DbOrTx } from '../../db/client';
 import { customers, declarationItems, declarations, documents, files, jobs } from '../../db/schema';
 import { badRequest, notFound } from '../../lib/errors';
 import { audit, guard, parse, requireUser, uuidParam, yearSchema } from '../../lib/http';
 import { customerScope, getCustomerForUser } from '../../services/customers';
-import { listItems, recomputeTotals } from '../../services/declarations';
+import { listItems, refreshDeclaration } from '../../services/declarations';
 import { jobView } from '../ecac/util';
 import { safeZipName, sendStoredFile } from '../../services/uploads';
 import { MAX_ZIP_DOWNLOAD_BYTES, zipStoredFiles } from '../../storage/zip';
@@ -186,6 +187,9 @@ export async function elaborationRoutes(app: FastifyInstance) {
    * Validar: aplica nas linhas da declaração as linhas extraídas aceitas.
    * Novas → incluídas; conflito aceito → substitui os valores da linha existente;
    * conflito sem decisão → fica pendente; recusadas e repetidas → ignoradas.
+   * Cada declaração é aplicada numa transação, sob trava da declaração e relendo linhas e extrações
+   * dentro dela: validações simultâneas (botão do cliente, validação em lote de um colega, duplo
+   * clique) esperam a vez e não duplicam linhas; uma falha no meio desfaz a declaração inteira.
    */
   app.post('/elaboration/validate', { preHandler: guard('elaboration.process', 'pre_declaration.create') }, async (req) => {
     const user = requireUser(req);
@@ -196,20 +200,25 @@ export async function elaborationRoutes(app: FastifyInstance) {
       .from(declarations)
       .innerJoin(customers, eq(customers.id, declarations.customerId))
       .where(and(eq(declarations.officeId, user.officeId), eq(declarations.exerciseYear, body.year), inArray(declarations.customerId, ids), isNull(customers.deletedAt)));
-    const docsByDecl = await loadDocStats(db, decls.map((x) => x.d.id));
     const results = [];
     for (const { d, name } of decls) {
-      const r = await applyLines(user.officeId, d.id, docsByDecl.get(d.id) ?? []);
-      if (r.inserted || r.updated) await recomputeTotals(db, d.id);
-      const status = await refreshElaborationStatus(db, d.id);
-      results.push({ customerId: d.customerId, name, ...r, status });
+      const r = await db.transaction(async (tx) => {
+        // trava a declaração até o fim da transação; documentos e linhas são lidos já sob a trava
+        await tx.select({ id: declarations.id }).from(declarations).where(eq(declarations.id, d.id)).for('update');
+        const docs = (await loadDocStats(tx, [d.id])).get(d.id) ?? [];
+        const applied = await applyLines(tx, user.officeId, d.id, docs);
+        // totais e saldo de caixa (alerta do dashboard) acompanham as linhas
+        if (applied.inserted || applied.updated) await refreshDeclaration({ db: tx }, d.id);
+        return { ...applied, status: await refreshElaborationStatus(tx, d.id) };
+      });
+      results.push({ customerId: d.customerId, name, ...r });
     }
     await audit(req, 'elaboration_validate', 'declaration', null, { year: body.year, count: results.length });
     return { results };
   });
 
-  async function applyLines(officeId: string, declarationId: string, docs: DocStat[]) {
-    const items = await listItems(db, declarationId);
+  async function applyLines(tx: DbOrTx, officeId: string, declarationId: string, docs: DocStat[]) {
+    const items = await listItems(tx, declarationId);
     const now = new Date().toISOString();
     let inserted = 0;
     let updated = 0;
@@ -235,11 +244,11 @@ export async function elaborationRoutes(app: FastifyInstance) {
               ...(item.description ? { description: item.description } : {}),
               ...(item.counterpartyName ? { counterpartyName: item.counterpartyName } : {}),
             };
-            await db.update(declarationItems).set(set).where(eq(declarationItems.id, target.id));
+            await tx.update(declarationItems).set(set).where(eq(declarationItems.id, target.id));
             Object.assign(target, set);
             updated++;
           } else {
-            items.push(await insertItem(officeId, declarationId, item, doc));
+            items.push(await insertItem(tx, officeId, declarationId, item, doc));
             inserted++;
           }
         } else {
@@ -260,19 +269,19 @@ export async function elaborationRoutes(app: FastifyInstance) {
             changed = true;
             continue;
           }
-          items.push(await insertItem(officeId, declarationId, item, doc));
+          items.push(await insertItem(tx, officeId, declarationId, item, doc));
           inserted++;
         }
         line.appliedAt = now;
         changed = true;
       }
-      if (changed) await saveExtraction(db, doc, doc.processingStatus, ex);
+      if (changed) await saveExtraction(tx, doc, doc.processingStatus, ex);
     }
     return { inserted, updated, pendingConflicts };
   }
 
-  async function insertItem(officeId: string, declarationId: string, item: DeclarationItem, doc: DocStat): Promise<DeclarationItem> {
-    const [row] = await db
+  async function insertItem(tx: DbOrTx, officeId: string, declarationId: string, item: DeclarationItem, doc: DocStat): Promise<DeclarationItem> {
+    const [row] = await tx
       .insert(declarationItems)
       .values({
         officeId,

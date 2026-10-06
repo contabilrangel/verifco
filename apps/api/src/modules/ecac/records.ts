@@ -12,8 +12,11 @@ import {
   type EcacRecordSource,
 } from '@verifco/shared';
 import type { AppContext } from '../../context';
-import { customers, darfs, declarations, ecacRecords, procurators } from '../../db/schema';
-import { getOrCreateDeclaration } from '../../services/declarations';
+import { customers, darfs, declarations, ecacRecords, offices, procurators } from '../../db/schema';
+import { sha256 } from '../../lib/crypto';
+import { getOrCreateDeclaration, refreshDeclaration, syncDeclarationStage } from '../../services/declarations';
+import { queueDelivery } from '../../services/delivery';
+import { notify } from '../../services/notify';
 import { getOfficeSettings } from '../../services/settings';
 import type { CustomerRow } from '../../services/customers';
 import type { UploadedFile } from '../../services/uploads';
@@ -39,14 +42,22 @@ const int = (v: unknown): number | null => {
   return typeof n === 'number' && Number.isInteger(n) ? n : null;
 };
 
+/** Rótulo de uma situação para os avisos (o código quando não há rótulo). */
+const labelOf = (labels: Record<string, string>, key: string | null | undefined) => (key ? (labels[key] ?? key) : 'não informada');
+
+const escapeHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
 /**
  * Grava um registro do eCAC e aplica os efeitos no cadastro:
  * - `procuration`: situação, validade e nível gov.br do cliente;
  * - `cnd`: situação da CND do cliente;
  * - `mailbox_message`: recalcula as mensagens não lidas da caixa postal;
- * - `declaration`: situação no eCAC, tributação, retificadora e recibo da declaração do ano;
+ * - `declaration`: situação no eCAC, tributação, retificadora e recibo da declaração do ano, e a
+ *   etapa do Kanban pela mesma regra do resumo da declaração (`syncDeclarationStage`);
  * - `darf`: cria a guia em "Acompanhamento de DARF" (origem `ecac`).
  * Campos fora do formato esperado são guardados em `data`, mas não alteram o cadastro.
+ * Mudanças na situação da declaração, da CND ou da procuração e novas mensagens não lidas são
+ * avisadas (`notifyEcacChanges`).
  */
 export async function saveEcacRecord(
   ctx: AppContext,
@@ -94,7 +105,11 @@ export async function saveEcacRecord(
   }
 
   const effects: string[] = [];
+  /** Mudanças percebidas (situação anterior → nova), para o aviso ao escritório. */
+  const changes: string[] = [];
   const now = new Date();
+  // situação atual do cadastro, para comparar (o cliente recebido pode ter sido lido antes)
+  const current = ['procuration', 'cnd', 'mailbox_message'].includes(kind) ? ((await db.query.customers.findFirst({ where: eq(customers.id, customer.id) })) ?? customer) : customer;
   if (kind === 'procuration') {
     const status = keyOf(PROCURATION_STATUS, data.status);
     const expiresAt = normalizeDate(data.expiresAt);
@@ -106,12 +121,16 @@ export async function saveEcacRecord(
     if (Object.keys(set).length) {
       await db.update(customers).set({ ...set, updatedAt: now }).where(eq(customers.id, customer.id));
       effects.push('procuration');
+      if (set.procurationStatus && set.procurationStatus !== current.procurationStatus) {
+        changes.push(`Procuração eletrônica: ${labelOf(PROCURATION_STATUS, current.procurationStatus)} → ${labelOf(PROCURATION_STATUS, set.procurationStatus)}`);
+      }
     }
   } else if (kind === 'cnd') {
     const status = keyOf(CND_STATUS, data.status);
     if (status) {
       await db.update(customers).set({ cndStatus: status, cndCheckedAt: now, updatedAt: now }).where(eq(customers.id, customer.id));
       effects.push('cnd');
+      if (status !== current.cndStatus) changes.push(`CND: ${labelOf(CND_STATUS, current.cndStatus)} → ${labelOf(CND_STATUS, status)}`);
     }
   } else if (kind === 'mailbox_message') {
     const [{ unread }] = await db
@@ -120,6 +139,8 @@ export async function saveEcacRecord(
       .where(and(eq(ecacRecords.customerId, customer.id), eq(ecacRecords.kind, 'mailbox_message'), sql`coalesce(${ecacRecords.data}->>'read', 'false') <> 'true'`));
     await db.update(customers).set({ ecacMailboxMessages: unread, updatedAt: now }).where(eq(customers.id, customer.id));
     effects.push('mailbox');
+    // só mensagem nova não lida é aviso; ler as mensagens no eCAC não é
+    if (unread > current.ecacMailboxMessages) changes.push(`Caixa postal: ${unread} mensagem(ns) não lida(s) (antes ${current.ecacMailboxMessages})`);
   } else if (kind === 'declaration' && year) {
     const status = keyOf(ECAC_DECLARATION_STATUS, data.status);
     const taxation = keyOf(TAXATION_TYPES, data.taxation);
@@ -130,8 +151,15 @@ export async function saveEcacRecord(
     if (typeof data.receiptNumber === 'string' && data.receiptNumber.trim()) set.receiptNumber = data.receiptNumber.trim().slice(0, 60);
     if (Object.keys(set).length) {
       const decl = await getOrCreateDeclaration(db, officeId, customer.id, year);
-      await db.update(declarations).set({ ...set, updatedAt: now }).where(eq(declarations.id, decl.id));
+      const [updated] = await db.update(declarations).set({ ...set, updatedAt: now }).where(eq(declarations.id, decl.id)).returning();
+      // recibo leva a declaração para "Transmitida"; nova situação de uma transmitida muda o subestado
+      await syncDeclarationStage(db, decl, updated);
+      // a tributação entra na análise de caixa: o saldo gravado (alerta do dashboard) acompanha
+      if (updated.taxation !== decl.taxation) await refreshDeclaration(ctx, decl.id);
       effects.push('declaration');
+      if (updated.ecacStatus !== decl.ecacStatus) {
+        changes.push(`Declaração ${year}: ${labelOf(ECAC_DECLARATION_STATUS, decl.ecacStatus)} → ${labelOf(ECAC_DECLARATION_STATUS, updated.ecacStatus)}`);
+      }
     }
   } else if (kind === 'darf') {
     const valueCents = int(data.valueCents);
@@ -159,7 +187,38 @@ export async function saveEcacRecord(
       }
     }
   }
+  if (changes.length) await notifyEcacChanges(ctx, { record, customer: current, changes, userId: input.userId ?? null });
   return { record, effects, duplicate };
+}
+
+/**
+ * Avisa as mudanças no eCAC de um cliente: no sino, para o responsável pelo cliente (sem
+ * responsável, o escritório todo); com a preferência "Avisar o e-mail principal do escritório sobre
+ * mudanças no eCAC" ligada, também por e-mail ao endereço principal do escritório. O e-mail é único
+ * por registro e mudança: reprocessar o mesmo registro não repete o envio.
+ */
+export async function notifyEcacChanges(ctx: AppContext, input: { record: EcacRecordRow; customer: CustomerRow; changes: string[]; userId?: string | null }) {
+  const { db } = ctx;
+  const { record, customer, changes } = input;
+  const link = `/clientes/${customer.id}/ecac`;
+  const title = `Mudança no eCAC: ${customer.name}`;
+  await notify(db, { officeId: customer.officeId, userId: customer.responsibleUserId ?? null, customerId: customer.id, title, body: changes.join(' · '), link });
+  const settings = await getOfficeSettings(db, customer.officeId);
+  if (!settings.notifyMainEmailOnEcacChanges) return;
+  const office = await db.query.offices.findFirst({ where: eq(offices.id, customer.officeId) });
+  if (!office?.email) return;
+  const url = `${ctx.config.WEB_URL.replace(/\/$/, '')}${link}`;
+  await queueDelivery(ctx, {
+    officeId: customer.officeId,
+    // aviso interno: vai ao e-mail do escritório e não entra no histórico de envios ao cliente
+    customerId: null,
+    channel: 'email',
+    to: office.email,
+    subject: title,
+    body: `<p>O Verifco registrou mudanças no eCAC de <strong>${escapeHtml(customer.name)}</strong>:</p><ul>${changes.map((c) => `<li>${escapeHtml(c)}</li>`).join('')}</ul><p><a href="${url}">Abrir a aba eCAC do cliente</a></p>`,
+    idempotencyKey: `ecac-change:${record.id}:${sha256(changes.join('|')).slice(0, 16)}`,
+    userId: input.userId ?? null,
+  });
 }
 
 const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : null);

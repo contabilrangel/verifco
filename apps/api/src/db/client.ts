@@ -2,7 +2,8 @@ import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PGlite } from '@electric-sql/pglite';
-import { drizzle as drizzlePglite } from 'drizzle-orm/pglite';
+import type { PgDatabase } from 'drizzle-orm/pg-core';
+import { drizzle as drizzlePglite, type PgliteQueryResultHKT } from 'drizzle-orm/pglite';
 import { migrate as migratePglite } from 'drizzle-orm/pglite/migrator';
 import { drizzle as drizzlePg } from 'drizzle-orm/node-postgres';
 import { migrate as migratePg } from 'drizzle-orm/node-postgres/migrator';
@@ -10,6 +11,9 @@ import pg from 'pg';
 import * as schema from './schema';
 
 export type Db = ReturnType<typeof drizzlePglite<typeof schema>>;
+
+/** Banco ou transação aberta (`db.transaction`): as funções que também rodam numa transação aceitam os dois. */
+export type DbOrTx = PgDatabase<PgliteQueryResultHKT, typeof schema>;
 
 const MIGRATIONS = resolve(dirname(fileURLToPath(import.meta.url)), '../../drizzle');
 

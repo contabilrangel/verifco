@@ -92,7 +92,7 @@ function ReportsStepContent({ ctx }: { ctx: ReportsContext }) {
     <div className="vf-stack" style={{ '--gap': '16px' } as React.CSSProperties}>
       {!hasItems && (
         <Alert tone="warning" title={`A declaração ${d.exerciseYear} ainda não tem linhas cadastradas`}>
-          Os relatórios usam os rendimentos, pagamentos, bens e dívidas da declaração. Cadastre ou importe a declaração do exercício (de preferência pelo XML/arquivo do programa da Receita) antes de gerar.
+          Os relatórios usam os rendimentos, pagamentos, bens e dívidas da declaração. Antes de gerar, lance as linhas na etapa Declaração ou extraia-as do PDF da declaração na Elaboração (com IA). O arquivo do programa IRPF enviado pelo sincronizador fica só guardado: o conteúdo dele não é lido.
         </Alert>
       )}
       {!ctx.hasLogo && hasItems && (

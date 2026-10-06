@@ -140,6 +140,39 @@ describe('arquivos do sincronizador', () => {
     const invalid = await send(env, token, 'POST', '/api/sync/files', { multipart: multipart({ cpf: '123', ano: '2026' }, { name: 'a.pdf', content: 'x' }) });
     expect(invalid.status).toBe(400);
   });
+
+  it('o recibo (.REC) fica guardado como recibo e marca a declaração como transmitida', async () => {
+    const { api, token } = await officeWithToken('sync');
+    const decl = async (id: string) => (await api.get(`/api/customers/${id}/declarations/2026`)).body;
+    const rec = (cpf: string, content: string) => send(env, token, 'POST', '/api/sync/files', { multipart: multipart({}, { name: `${cpf}-IRPF-A-2026-2025-ORIGI.REC`, content }) });
+
+    // em revisão: vai para "Transmitida", com a data do recebimento; o número do recibo não é inventado
+    const a = await api.post('/api/customers', { name: 'Rita', cpfCnpj: VALID_CPFS[4] });
+    const d = (await api.put(`/api/customers/${a.body.id}/declarations/2026`, {})).body;
+    await api.patch(`/api/declarations/${d.id}/substatus`, { substatus: 'review' });
+    const up = await rec(VALID_CPFS[4], 'recibo-rita');
+    expect(up.status).toBe(201);
+    expect(await decl(a.body.id)).toMatchObject({ stage: 'transmitted', substatus: 'ecac_unknown', receiptNumber: null });
+    expect((await decl(a.body.id)).transmittedAt).toBeTruthy();
+    const doc = await env.ctx.db.query.documents.findFirst({ where: eq(documents.id, up.body.documentId) });
+    expect(doc).toMatchObject({ category: 'irpf_receipt', declarationId: d.id, uploadedBy: 'sync' });
+
+    // mesma regra do resumo: com a situação eCAC conhecida, vai para o subestado dela
+    const b = await api.post('/api/customers', { name: 'Saulo', cpfCnpj: VALID_CPFS[5] });
+    await api.put(`/api/customers/${b.body.id}/declarations/2026`, { ecacStatus: 'processed' });
+    expect((await decl(b.body.id)).stage).toBe('not_started');
+    expect((await rec(VALID_CPFS[5], 'recibo-saulo')).status).toBe(201);
+    expect(await decl(b.body.id)).toMatchObject({ stage: 'transmitted', substatus: 'ecac_processed' });
+
+    // a data informada à mão fica, e uma declaração finalizada não volta de etapa
+    const c = await api.post('/api/customers', { name: 'Tânia', cpfCnpj: VALID_CPFS[6] });
+    const dc = (await api.put(`/api/customers/${c.body.id}/declarations/2026`, { transmittedAt: '2026-05-20' })).body;
+    await api.post(`/api/declarations/${dc.id}/finish`);
+    expect((await rec(VALID_CPFS[6], 'recibo-tania')).status).toBe(201);
+    const finished = await decl(c.body.id);
+    expect(finished).toMatchObject({ stage: 'finished', substatus: 'finished' });
+    expect(finished.transmittedAt.slice(0, 10)).toBe('2026-05-20');
+  });
 });
 
 describe('registros do eCAC enviados pela extensão', () => {
@@ -186,6 +219,107 @@ describe('registros do eCAC enviados pela extensão', () => {
     // token do sincronizador não envia registros interpretados
     const syncTok = await api.post('/api/robot/tokens', { name: 'Sync', scope: 'sync' });
     expect((await send(env, syncTok.body.token, 'POST', '/api/sync/ecac-records', { json: { kind: 'cnd', cpf, data: {} } })).status).toBe(403);
+  });
+});
+
+describe('registros do eCAC × declaração e avisos', () => {
+  it('recibo e situação do eCAC movem a etapa da declaração como o resumo (Kanban)', async () => {
+    const { api } = await registerOffice(env);
+    const a = await api.post('/api/customers', { name: 'Ana', cpfCnpj: VALID_CPFS[0] });
+    const b = await api.post('/api/customers', { name: 'Beto', cpfCnpj: VALID_CPFS[1] });
+    const decl = async (id: string) => (await api.get(`/api/customers/${id}/declarations/2026`)).body;
+    const record = (id: string, data: Record<string, unknown>) => api.post(`/api/customers/${id}/ecac/records`, { kind: 'declaration', year: 2026, data });
+
+    // em preenchimento + registro com recibo e malha fina → "Transmitida" em "Malha fina"
+    const da = (await api.put(`/api/customers/${a.body.id}/declarations/2026`, {})).body;
+    await api.patch(`/api/declarations/${da.id}/substatus`, { substatus: 'started' });
+    expect((await record(a.body.id, { status: 'fine_mesh', receiptNumber: '1234567890' })).status).toBe(201);
+    expect(await decl(a.body.id)).toMatchObject({ stage: 'transmitted', substatus: 'ecac_fine_mesh', ecacStatus: 'fine_mesh', receiptNumber: '1234567890' });
+
+    // já transmitida, em processamento: a nova situação do eCAC muda o subestado
+    await api.put(`/api/customers/${b.body.id}/declarations/2026`, { transmittedAt: '2026-05-20', ecacStatus: 'processing' });
+    expect((await decl(b.body.id)).substatus).toBe('ecac_processing');
+    await record(b.body.id, { status: 'fine_mesh' });
+    expect(await decl(b.body.id)).toMatchObject({ stage: 'transmitted', substatus: 'ecac_fine_mesh', ecacStatus: 'fine_mesh' });
+
+    const k = await api.get('/api/kanban?year=2026');
+    expect(k.body.columns.find((c: any) => c.stage === 'transmitted').cards.map((c: any) => [c.name, c.substatus])).toEqual([
+      ['Ana', 'ecac_fine_mesh'],
+      ['Beto', 'ecac_fine_mesh'],
+    ]);
+  });
+
+  it('tributação informada pelo eCAC atualiza o saldo de caixa gravado (alerta do dashboard)', async () => {
+    const { api } = await registerOffice(env);
+    const c = await api.post('/api/customers', { name: 'Davi', cpfCnpj: VALID_CPFS[3] });
+    const d = (await api.put(`/api/customers/${c.body.id}/declarations/2026`, { taxation: 'complete' })).body;
+    const item = await api.post(`/api/declarations/${d.id}/items`, { kind: 'income_pj', valueCents: 5_000_000 });
+    const before = item.body.declaration.cashBalanceCents;
+    await api.post(`/api/customers/${c.body.id}/ecac/records`, { kind: 'declaration', year: 2026, data: { taxation: 'simplified' } });
+    const stored = (await api.get(`/api/customers/${c.body.id}/declarations/2026`)).body.cashBalanceCents;
+    expect(stored).not.toBe(before);
+    expect(stored).toBe((await api.get(`/api/declarations/${d.id}/cash-analysis`)).body.balanceCents);
+  });
+
+  it('avisa as mudanças no sino do responsável e, com a preferência ligada, no e-mail principal do escritório', async () => {
+    const office = await registerOffice(env);
+    const { api } = office;
+    const resp = await createEmployee(env, api, ['customer.list', 'ecac.view']);
+    const c = await api.post('/api/customers', { name: 'Clara', cpfCnpj: VALID_CPFS[2] });
+    await api.post('/api/customers/bulk', { ids: [c.body.id], action: 'responsible', value: resp.userId });
+    const record = (kind: string, data: Record<string, unknown>, externalId?: string) =>
+      api.post(`/api/customers/${c.body.id}/ecac/records`, { kind, year: kind === 'declaration' ? 2026 : null, data, externalId });
+    const notes = async () => (await resp.api.get('/api/notifications')).body.filter((n: any) => n.title === 'Mudança no eCAC: Clara');
+    const officeMails = () => env.providers.sentEmails.filter((m) => m.to === office.email);
+
+    // preferência desligada (padrão): aviso no sino do responsável, sem e-mail
+    expect((await record('declaration', { status: 'processing', receiptNumber: '1234567890' }, 'rec-1')).status).toBe(201);
+    await env.ctx.jobs.drain();
+    let list = await notes();
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({ userId: resp.userId, customerId: c.body.id, link: `/clientes/${c.body.id}/ecac` });
+    expect(list[0].body).toContain('Declaração 2026: Desconhecido → Em processamento');
+    expect(officeMails()).toHaveLength(0);
+
+    // preferência ligada: a malha fina também vai ao e-mail principal do escritório
+    await api.put('/api/office/settings', { notifyMainEmailOnEcacChanges: true });
+    await record('declaration', { status: 'fine_mesh' }, 'rec-1');
+    await env.ctx.jobs.drain();
+    expect(await notes()).toHaveLength(2);
+    expect(officeMails()).toHaveLength(1);
+    expect(officeMails()[0]).toMatchObject({ subject: 'Mudança no eCAC: Clara' });
+    expect(officeMails()[0].html).toContain('Em processamento → Malha fina');
+    expect(officeMails()[0].html).toContain(`/clientes/${c.body.id}/ecac`);
+
+    // o mesmo registro de novo, sem mudança: nem sino nem e-mail
+    await record('declaration', { status: 'fine_mesh' }, 'rec-1');
+    await env.ctx.jobs.drain();
+    expect(await notes()).toHaveLength(2);
+    expect(officeMails()).toHaveLength(1);
+
+    // CND, procuração e nova mensagem não lida também avisam; ler a mensagem não
+    await record('cnd', { status: 'pending_issues' });
+    await record('procuration', { status: 'valid' });
+    await record('mailbox_message', { subject: 'Intimação', read: false }, 'msg-1');
+    await record('mailbox_message', { subject: 'Intimação', read: true }, 'msg-1');
+    await env.ctx.jobs.drain();
+    list = await notes();
+    expect(list).toHaveLength(5);
+    expect(list.map((n: any) => n.body)).toEqual(
+      expect.arrayContaining([
+        'CND: Não consultada → Analisar pendências no eCAC',
+        'Procuração eletrônica: Sem procurador → Válida',
+        'Caixa postal: 1 mensagem(ns) não lida(s) (antes 0)',
+      ]),
+    );
+    expect(officeMails()).toHaveLength(4);
+
+    // desligada de novo: só o sino
+    await api.put('/api/office/settings', { notifyMainEmailOnEcacChanges: false });
+    await record('cnd', { status: 'success' });
+    await env.ctx.jobs.drain();
+    expect(await notes()).toHaveLength(6);
+    expect(officeMails()).toHaveLength(4);
   });
 });
 

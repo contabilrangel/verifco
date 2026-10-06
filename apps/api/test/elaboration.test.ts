@@ -18,6 +18,43 @@ const informe = (valueCents: number, withheldCents: number) =>
     notes: null,
   });
 
+type Query = (sql: string, ...rest: unknown[]) => Promise<unknown>;
+type PgliteLike = { query: Query; transaction: (cb: (tx: { query: Query }) => Promise<unknown>) => Promise<unknown> };
+
+/**
+ * Sobrepõe duas validações no PGlite (que atende uma consulta por vez): a primeira inclusão de
+ * linha da declaração espera, por até 500 ms, outra leitura das linhas da declaração. Sem
+ * transação, a segunda validação lê nesse intervalo o mesmo estado da primeira e as duas incluem as
+ * mesmas linhas. Com a validação numa transação, a segunda só consulta depois que a primeira
+ * termina (no PGlite, a transação aberta segura as demais consultas; no PostgreSQL, a trava
+ * `for update` da declaração). Devolve a função que desfaz a interceptação.
+ */
+function overlapValidations(env: TestEnv) {
+  const client = (env.ctx.db as unknown as { $client: PgliteLike }).$client;
+  const { query, transaction } = client;
+  let reads = 0;
+  let paused = false;
+  let release = () => {};
+  const secondRead = new Promise<void>((resolve) => (release = resolve));
+  const watch =
+    (run: Query): Query =>
+    async (sql, ...rest) => {
+      const q = sql.trimStart().toLowerCase();
+      if (q.startsWith('select') && q.includes('from "declaration_items"') && ++reads >= 2) release();
+      if (!paused && q.startsWith('insert into "declaration_items"')) {
+        paused = true;
+        await Promise.race([secondRead, new Promise((resolve) => setTimeout(resolve, 500))]);
+      }
+      return run(sql, ...rest);
+    };
+  client.query = watch(query.bind(client));
+  client.transaction = (cb) => transaction.call(client, (tx) => cb(new Proxy(tx, { get: (t, p) => (p === 'query' ? watch(t.query) : Reflect.get(t, p)) })));
+  return () => {
+    delete (client as Partial<PgliteLike>).query;
+    delete (client as Partial<PgliteLike>).transaction;
+  };
+}
+
 async function setup(cpfIndex: number) {
   const office = await registerOffice(env);
   const tok = (await office.api.post('/api/robot/tokens', { name: 'Sync', scope: 'sync' })).body.token as string;
@@ -158,6 +195,50 @@ describe('elaboração', () => {
     detail = await o.api.get(`/api/elaboration/customers/${o.customerId}?year=2026`);
     expect(detail.body.documents[0].lines[0].appliedAt).toBeTruthy();
     expect((await o.api.put(`/api/elaboration/documents/${doc.id}/lines/0`, { decision: 'reject' })).status).toBe(400);
+  });
+
+  it('validar atualiza o saldo de caixa gravado (alerta do dashboard)', async () => {
+    const o = await setup(4);
+    await o.upload('informe.pdf', fakePdf('informe'));
+    env.providers.aiReplies.push(informe(5_000_000, 400_000));
+    await o.api.post('/api/elaboration/process', { year: 2026, customerIds: [o.customerId] });
+    await env.ctx.jobs.drain();
+    const stored = async () => (await env.ctx.db.query.declarations.findFirst({ where: eq(declarations.customerId, o.customerId) }))!;
+    expect((await stored()).cashBalanceCents).toBeNull();
+
+    await o.api.post('/api/elaboration/validate', { year: 2026, customerIds: [o.customerId] });
+    const after = await stored();
+    expect(after.cashBalanceCents).not.toBeNull();
+    // é o saldo da análise de caixa das linhas validadas
+    const cash = await o.api.get(`/api/declarations/${after.id}/cash-analysis`);
+    expect(after.cashBalanceCents).toBe(cash.body.balanceCents);
+  });
+
+  it('duas validações simultâneas da mesma declaração não duplicam as linhas', async () => {
+    const o = await setup(5);
+    for (const n of [1, 2, 3]) {
+      await o.upload(`informe-${n}.pdf`, fakePdf(`informe ${n}`));
+      env.providers.aiReplies.push(
+        JSON.stringify({ items: [{ kind: 'income_pj', code: String(n), counterpartyDoc: '11.222.333/0001-81', counterpartyName: `Fonte ${n}`, valueCents: n * 1_000_000, withheldCents: 0 }], notes: null }),
+      );
+    }
+    await o.api.post('/api/elaboration/process', { year: 2026, customerIds: [o.customerId] });
+    await env.ctx.jobs.drain();
+
+    const restore = overlapValidations(env);
+    const validate = () => o.api.post('/api/elaboration/validate', { year: 2026, customerIds: [o.customerId] });
+    let both: Awaited<ReturnType<typeof validate>>[];
+    try {
+      both = await Promise.all([validate(), validate()]);
+    } finally {
+      restore();
+    }
+    expect(both.map((r) => r.status)).toEqual([200, 200]);
+    expect(both.map((r) => r.body.results[0].inserted).sort()).toEqual([0, 3]);
+    const decl = (await env.ctx.db.query.declarations.findFirst({ where: eq(declarations.customerId, o.customerId) }))!;
+    expect(await env.ctx.db.select().from(declarationItems).where(eq(declarationItems.declarationId, decl.id))).toHaveLength(3);
+    expect(decl.taxableIncomeCents).toBe(6_000_000);
+    expect((await o.api.get(`/api/elaboration/customers/${o.customerId}?year=2026`)).body.status).toBe('ok');
   });
 
   it('erro claro quando a IA não está configurada ou responde fora do formato', async () => {

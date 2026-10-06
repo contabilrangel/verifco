@@ -25,6 +25,7 @@ import {
   pricingTotalsOf,
   refreshBillingTotal,
   rejectBudget,
+  releaseDeclarationStage,
   resolveBudgetValues,
   sendBudget,
   serializeBudget,
@@ -188,6 +189,7 @@ export async function budgetRoutes(app: FastifyInstance) {
     const row = await getBudgetForUser(ctx, user, id);
     if (row.status === 'approved') throw conflict('Orçamento aprovado não pode ser excluído.');
     await db.delete(budgets).where(eq(budgets.id, row.id));
+    await releaseDeclarationStage(ctx, row);
     await audit(req, 'delete', 'budget', row.id, { customerId: row.customerId, year: row.exerciseYear });
     return { ok: true };
   });

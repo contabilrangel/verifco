@@ -106,33 +106,41 @@ export async function cashbookRoutes(app: FastifyInstance) {
         else results.push({ file: f.filename, row: r.rowNumber, ok: false, message: res.errors.join(' ') });
       }
     }
-    const [batch] = await db
-      .insert(importBatches)
-      .values({ officeId: user.officeId, kind: `cashbook:${customer.id}:${year}`, total, succeeded: valid.length, failed: total - valid.length, createdByUserId: user.userId })
-      .returning();
-    if (valid.length) {
-      await db.insert(cashbookEntries).values(
-        valid.map((v) => ({
-          officeId: user.officeId,
-          customerId: customer.id,
-          year,
-          kind: v.entry.kind,
-          entryDate: v.entry.entryDate,
-          code: v.entry.code,
-          description: v.entry.description,
-          valueCents: v.entry.valueCents,
-          counterpartyCpf: v.entry.counterpartyCpf,
-          extra: v.entry.extra as Record<string, unknown>,
-          importBatchId: batch.id,
-        })),
-      );
-    }
     for (const v of valid) results.push({ file: v.file, row: v.row, ok: true, message: `Lançamento incluído (${v.entry.code}).` });
     results.sort((a, b) => a.file.localeCompare(b.file) || a.row - b.row);
-    await db
-      .update(importBatches)
-      .set({ results: results.map((r) => ({ row: r.row, ok: r.ok, message: `${r.file}: ${r.message}` })) })
-      .where(eq(importBatches.id, batch.id));
+    // lote, resultados e lançamentos numa transação: o envio nunca fica registrado sem os lançamentos
+    const batch = await db.transaction(async (tx) => {
+      const [created] = await tx
+        .insert(importBatches)
+        .values({
+          officeId: user.officeId,
+          kind: `cashbook:${customer.id}:${year}`,
+          total,
+          succeeded: valid.length,
+          failed: total - valid.length,
+          results: results.map((r) => ({ row: r.row, ok: r.ok, message: `${r.file}: ${r.message}` })),
+          createdByUserId: user.userId,
+        })
+        .returning();
+      if (valid.length) {
+        await tx.insert(cashbookEntries).values(
+          valid.map((v) => ({
+            officeId: user.officeId,
+            customerId: customer.id,
+            year,
+            kind: v.entry.kind,
+            entryDate: v.entry.entryDate,
+            code: v.entry.code,
+            description: v.entry.description,
+            valueCents: v.entry.valueCents,
+            counterpartyCpf: v.entry.counterpartyCpf,
+            extra: v.entry.extra as Record<string, unknown>,
+            importBatchId: created.id,
+          })),
+        );
+      }
+      return created;
+    });
     await audit(req, 'import', 'cashbook', customer.id, { year, total, succeeded: valid.length });
     reply.status(201);
     return { batchId: batch.id, total, succeeded: valid.length, failed: total - valid.length, results };

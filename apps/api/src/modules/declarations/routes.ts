@@ -12,25 +12,23 @@ import {
   isValidCpf,
   isValidCpfCnpj,
   onlyDigits,
-  stageOfSubstatus,
   type DeclarationSubstatus,
   type EcacDeclarationStatus,
   type ItemKind,
 } from '@verifco/shared';
 import { declarationItems, declarations } from '../../db/schema';
-import { badRequest, conflict, forbidden, notFound } from '../../lib/errors';
-import { audit, can, dateStr, guard, optionalText, parse, requireUser, uuidParam, yearSchema } from '../../lib/http';
+import { badRequest, conflict, notFound } from '../../lib/errors';
+import { audit, dateStr, guard, optionalText, parse, requireUser, uuidParam, yearSchema } from '../../lib/http';
 import { getCustomerForUser } from '../../services/customers';
-import { advanceDeclaration, getOrCreateDeclaration, setDeclarationSubstatus } from '../../services/declarations';
 import {
-  ECAC_TO_SUBSTATUS,
-  SUBSTATUS_TO_ECAC,
+  changeSubstatus,
   computeCashAnalysis,
-  emptyDeclaration,
-  getDeclarationForUser,
-  presentDeclaration,
+  getOrCreateDeclaration,
   refreshDeclaration,
-} from './access';
+  setDeclarationSubstatus,
+  syncDeclarationStage,
+} from '../../services/declarations';
+import { emptyDeclaration, getDeclarationForUser, presentDeclaration } from './access';
 import { backlogRoutes } from './backlogs';
 import { darfRoutes } from './darfs';
 import { kanbanRoutes } from './kanban';
@@ -135,7 +133,8 @@ export async function declarationRoutes(app: FastifyInstance) {
   });
 
   /**
-   * Cria (se preciso) e atualiza o resumo. Regras de status:
+   * Cria (se preciso) e atualiza o resumo. Regras de status (`syncDeclarationStage`, as mesmas
+   * dos registros do eCAC e do recibo do sincronizador):
    * - informar a transmissão (data ou recibo) leva uma declaração anterior à etapa
    *   "Transmitida" para o subestado da situação eCAC;
    * - mudar a situação eCAC de uma declaração transmitida atualiza o subestado.
@@ -160,30 +159,22 @@ export async function declarationRoutes(app: FastifyInstance) {
       })
       .where(eq(declarations.id, current.id))
       .returning();
-    let row = updated;
-    const ecacSubstatus = ECAC_TO_SUBSTATUS[(row.ecacStatus as EcacDeclarationStatus) ?? 'unknown'] ?? 'ecac_unknown';
-    const stage = stageOfSubstatus(row.substatus as DeclarationSubstatus);
-    if ((row.transmittedAt || row.receiptNumber) && (stage === 'not_started' || stage === 'negotiation' || stage === 'filling')) {
-      row = await advanceDeclaration(db, row, ecacSubstatus);
-    } else if (body.ecacStatus && body.ecacStatus !== current.ecacStatus && stage === 'transmitted') {
-      row = await setDeclarationSubstatus(db, row.id, ecacSubstatus);
-    }
+    let row = await syncDeclarationStage(db, current, updated);
     if (otherExpenses || body.taxation !== undefined) row = await refreshDeclaration(app.ctx, row.id);
     await audit(req, 'update', 'declaration', row.id, { fields: Object.keys(body) });
     return presentDeclaration(row);
   });
 
-  /** Muda o status interno (Kanban). Finalizar exige a permissão de finalização. */
+  /** Muda o status interno (Kanban). Finalizar exige a permissão de finalização (regra de `changeSubstatus`). */
   app.patch('/declarations/:id/substatus', { preHandler: guard('declaration.edit') }, async (req) => {
     const user = requireUser(req);
     const { id } = parse(uuidParam, req.params);
     const { substatus } = parse(z.object({ substatus: substatusEnum }), req.body);
-    if (substatus === 'finished' && !can(user, 'declaration.finish')) throw forbidden('Você não tem permissão para finalizar declarações.');
     const { declaration } = await getDeclarationForUser(app.ctx, user, id);
-    const ecac = SUBSTATUS_TO_ECAC[substatus];
-    const row = await setDeclarationSubstatus(db, declaration.id, substatus, ecac ? { ecacStatus: ecac } : {});
+    const [changed] = await changeSubstatus(db, user, [declaration], substatus);
+    if (!changed) throw notFound('Declaração');
     await audit(req, 'substatus', 'declaration', declaration.id, { from: declaration.substatus, to: substatus });
-    return presentDeclaration(row);
+    return presentDeclaration(changed.row);
   });
 
   app.post('/declarations/:id/finish', { preHandler: guard('declaration.finish') }, async (req) => {

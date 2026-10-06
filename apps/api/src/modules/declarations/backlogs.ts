@@ -3,12 +3,12 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { brazilToday, formatDate } from '@verifco/shared';
 import type { AppContext, AuthUser } from '../../context';
-import { backlogs, declarations } from '../../db/schema';
+import { backlogs } from '../../db/schema';
 import { HttpError, badRequest, notFound } from '../../lib/errors';
 import { audit, dateStr, guard, parse, requireUser, uuidParam } from '../../lib/http';
 import { getCustomerForUser } from '../../services/customers';
 import { queueDelivery } from '../../services/delivery';
-import { setDeclarationSubstatus } from '../../services/declarations';
+import { syncSubstatus } from '../../services/declarations';
 import { getDeclarationForUser } from './access';
 
 type BacklogRow = typeof backlogs.$inferSelect;
@@ -40,21 +40,11 @@ const present = (b: BacklogRow, today = brazilToday()) => ({ ...b, overdue: !b.r
  * - Criar uma pendência com a declaração em preenchimento muda o subestado para
  *   "Documentos faltantes".
  * - Ao baixar (ou excluir) a última pendência em aberto, a declaração que estava em
- *   "Documentos faltantes" volta para "Em elaboração".
+ *   "Documentos faltantes" volta para "Em elaboração", se o checklist também não tiver seção
+ *   com documentos pendentes (regra de `syncSubstatus`).
  */
 export async function backlogRoutes(app: FastifyInstance) {
   const { db } = app.ctx;
-
-  const syncSubstatus = async (declarationId: string) => {
-    const d = await db.query.declarations.findFirst({ where: eq(declarations.id, declarationId) });
-    if (!d) return;
-    const [{ open }] = await db
-      .select({ open: sql<number>`count(*)`.mapWith(Number) })
-      .from(backlogs)
-      .where(and(eq(backlogs.declarationId, declarationId), isNull(backlogs.resolvedAt)));
-    if (open > 0 && d.stage === 'filling' && d.substatus !== 'missing_documents') await setDeclarationSubstatus(db, d.id, 'missing_documents');
-    if (open === 0 && d.substatus === 'missing_documents') await setDeclarationSubstatus(db, d.id, 'elaboration');
-  };
 
   app.get('/declarations/:id/backlogs', { preHandler: guard('declaration.view') }, async (req) => {
     const user = requireUser(req);
@@ -78,7 +68,7 @@ export async function backlogRoutes(app: FastifyInstance) {
       .insert(backlogs)
       .values({ officeId: user.officeId, customerId: declaration.customerId, declarationId: declaration.id, description: body.description, dueDate: body.dueDate ?? null, createdByUserId: user.userId })
       .returning();
-    await syncSubstatus(declaration.id);
+    await syncSubstatus(db, declaration.id);
     await audit(req, 'create', 'backlog', row.id);
     reply.status(201);
     return present(row);
@@ -99,7 +89,7 @@ export async function backlogRoutes(app: FastifyInstance) {
       })
       .where(eq(backlogs.id, backlog.id))
       .returning();
-    if (body.resolved !== undefined) await syncSubstatus(backlog.declarationId);
+    if (body.resolved !== undefined) await syncSubstatus(db, backlog.declarationId);
     await audit(req, body.resolved === undefined ? 'update' : body.resolved ? 'resolve' : 'reopen', 'backlog', backlog.id);
     return present(row);
   });
@@ -109,7 +99,7 @@ export async function backlogRoutes(app: FastifyInstance) {
     const { id } = parse(uuidParam, req.params);
     const backlog = await getBacklogForUser(app.ctx, user, id);
     await db.delete(backlogs).where(eq(backlogs.id, backlog.id));
-    await syncSubstatus(backlog.declarationId);
+    await syncSubstatus(db, backlog.declarationId);
     await audit(req, 'delete', 'backlog', backlog.id);
     return { ok: true };
   });

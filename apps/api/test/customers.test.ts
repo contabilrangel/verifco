@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { and, eq } from 'drizzle-orm';
+import { auditLogs } from '../src/db/schema';
 import { VALID_CPFS, createEmployee, createTestEnv, registerOffice, type TestEnv } from './helpers';
 
 let env: TestEnv;
@@ -55,6 +57,41 @@ describe('clientes', () => {
     expect((await api.get('/api/customers')).body.total).toBe(2);
     // CPF pode ser cadastrado de novo após a exclusão
     expect((await api.post('/api/customers', { name: 'Volta', cpfCnpj: VALID_CPFS[2] })).status).toBe(201);
+  });
+
+  it('status da declaração em massa segue as regras da declaração (finalizar e situação eCAC)', async () => {
+    const office = await registerOffice(env);
+    const ids: string[] = [];
+    for (const cpf of VALID_CPFS.slice(0, 2)) ids.push((await office.api.post('/api/customers', { name: `Cliente ${cpf}`, cpfCnpj: cpf })).body.id);
+    const editor = await createEmployee(env, office.api, ['customer.list', 'declaration.view', 'declaration.edit']);
+    const decl = async (id: string) => (await office.api.get(`/api/customers/${id}/declarations/2026`)).body;
+
+    // sem a permissão de finalizar, o lote inteiro é recusado e nenhuma declaração é finalizada
+    const denied = await editor.api.post('/api/customers/bulk', { ids, action: 'substatus', value: 'finished', year: 2026 });
+    expect(denied.status).toBe(403);
+    for (const id of ids) expect((await decl(id)).stage).toBe('not_started');
+
+    // malha fina em massa leva junto a situação eCAC, como na troca de status da declaração
+    const mesh = await editor.api.post('/api/customers/bulk', { ids, action: 'substatus', value: 'ecac_fine_mesh', year: 2026 });
+    expect(mesh.status).toBe(200);
+    expect(mesh.body).toMatchObject({ affected: 2, stage: 'transmitted' });
+    for (const id of ids) expect(await decl(id)).toMatchObject({ stage: 'transmitted', substatus: 'ecac_fine_mesh', ecacStatus: 'fine_mesh' });
+    // auditoria de/para por declaração
+    const logs = await env.ctx.db.select().from(auditLogs).where(and(eq(auditLogs.officeId, office.officeId), eq(auditLogs.action, 'substatus')));
+    expect(logs.map((l) => l.data)).toEqual([
+      { from: 'not_started', to: 'ecac_fine_mesh', bulk: true },
+      { from: 'not_started', to: 'ecac_fine_mesh', bulk: true },
+    ]);
+    expect(new Set(logs.map((l) => l.entityId)).size).toBe(2);
+
+    // com a permissão, finaliza o lote
+    const fin = await office.api.post('/api/customers/bulk', { ids, action: 'substatus', value: 'finished', year: 2026 });
+    expect(fin.status).toBe(200);
+    for (const id of ids) {
+      const d = await decl(id);
+      expect(d).toMatchObject({ stage: 'finished', substatus: 'finished', ecacStatus: 'fine_mesh' });
+      expect(d.finishedAt).toBeTruthy();
+    }
   });
 
   it('guarda credenciais cifradas e nunca as devolve', async () => {

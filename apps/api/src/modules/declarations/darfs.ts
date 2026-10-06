@@ -101,7 +101,12 @@ export async function darfRoutes(app: FastifyInstance) {
     return (await present([row], declaration.customerId))[0];
   });
 
-  /** Gera as quotas a partir do imposto a pagar (ou de um total informado). */
+  /**
+   * Gera as quotas a partir do imposto a pagar (ou de um total informado). A troca das quotas
+   * (apagar as antigas e incluir as novas) roda numa transação sob trava da declaração: uma falha no
+   * meio mantém as quotas anteriores, e duas gerações simultâneas não se misturam. Os PDFs das
+   * quotas substituídas só são apagados depois da transação confirmada.
+   */
   app.post('/declarations/:id/darfs/generate', { preHandler: guard('darf.edit') }, async (req, reply) => {
     const user = requireUser(req);
     const { id } = parse(uuidParam, req.params);
@@ -117,17 +122,24 @@ export async function darfRoutes(app: FastifyInstance) {
     const { declaration } = await getDeclarationForUser(app.ctx, user, id);
     const total = body.totalCents ?? declaration.taxDueCents;
     if (!total || total <= 0) throw badRequest('Informe o imposto a pagar no resumo da declaração ou o valor total a parcelar.');
-    const existing = await listFor(declaration.id);
-    if (existing.length && !body.replace) throw conflict('Já existem quotas cadastradas. Confirme a substituição para gerar de novo.');
-    if (existing.some((d) => d.status === 'paid' || d.paidAt)) throw conflict('Há quotas pagas; ajuste as quotas manualmente.');
-    const plan = planDarfQuotas(total, body.quotas, body.firstDueDate);
-    if (!plan.quotas.length) throw badRequest(plan.warning ?? 'Não foi possível gerar as quotas.');
-    for (const d of existing) if (d.fileId) await app.ctx.files.remove(user.officeId, d.fileId);
-    if (existing.length) await db.delete(darfs).where(inArray(darfs.id, existing.map((d) => d.id)));
-    const rows = await db
-      .insert(darfs)
-      .values(plan.quotas.map((q) => ({ officeId: user.officeId, customerId: declaration.customerId, declarationId: declaration.id, ...q, source: 'generated' })))
-      .returning();
+    const { plan, rows, replacedFiles } = await db.transaction(async (tx) => {
+      await tx.select({ id: declarations.id }).from(declarations).where(eq(declarations.id, declaration.id)).for('update');
+      const existing = await tx.select().from(darfs).where(eq(darfs.declarationId, declaration.id));
+      if (existing.length && !body.replace) throw conflict('Já existem quotas cadastradas. Confirme a substituição para gerar de novo.');
+      if (existing.some((d) => d.status === 'paid' || d.paidAt)) throw conflict('Há quotas pagas; ajuste as quotas manualmente.');
+      const plan = planDarfQuotas(total, body.quotas, body.firstDueDate);
+      if (!plan.quotas.length) throw badRequest(plan.warning ?? 'Não foi possível gerar as quotas.');
+      if (existing.length) await tx.delete(darfs).where(inArray(darfs.id, existing.map((d) => d.id)));
+      const inserted = await tx
+        .insert(darfs)
+        .values(plan.quotas.map((q) => ({ officeId: user.officeId, customerId: declaration.customerId, declarationId: declaration.id, ...q, source: 'generated' })))
+        .returning();
+      return { plan, rows: inserted, replacedFiles: existing.flatMap((d) => (d.fileId ? [d.fileId] : [])) };
+    });
+    for (const fileId of replacedFiles) {
+      // as quotas novas já estão gravadas: um PDF antigo que não sair fica só como arquivo órfão
+      await app.ctx.files.remove(user.officeId, fileId).catch((err) => req.log.warn({ err, fileId }, 'falha ao remover o PDF de uma quota substituída'));
+    }
     await audit(req, 'generate', 'darf', declaration.id, { totalCents: total, quotas: plan.count });
     reply.status(201);
     return { warning: plan.warning, count: plan.count, totalCents: total, darfs: await present(rows, declaration.customerId) };

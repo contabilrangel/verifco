@@ -11,7 +11,7 @@ import {
   type ItemKind,
 } from '@verifco/shared';
 import type { AppContext } from '../../context';
-import type { Db } from '../../db/client';
+import type { DbOrTx } from '../../db/client';
 import { declarations, documents, files } from '../../db/schema';
 import type { CustomerRow } from '../../services/customers';
 import type { DeclarationRow } from '../../services/declarations';
@@ -65,7 +65,7 @@ export function getExtraction(extracted: Record<string, unknown> | null | undefi
 }
 
 /** Documentos (com dados do arquivo) das declarações informadas. */
-export async function loadDocStats(db: Db, declarationIds: string[]): Promise<Map<string, DocStat[]>> {
+export async function loadDocStats(db: DbOrTx, declarationIds: string[]): Promise<Map<string, DocStat[]>> {
   const map = new Map<string, DocStat[]>();
   if (!declarationIds.length) return map;
   const rows = await db
@@ -122,7 +122,7 @@ export function docCounts(docs: DocStat[]) {
 }
 
 /** Recalcula e grava a situação da elaboração da declaração. */
-export async function refreshElaborationStatus(db: Db, declarationId: string): Promise<ElaborationStatus> {
+export async function refreshElaborationStatus(db: DbOrTx, declarationId: string): Promise<ElaborationStatus> {
   const decl = await db.query.declarations.findFirst({ where: eq(declarations.id, declarationId) });
   if (!decl) return 'no_files';
   const docs = (await loadDocStats(db, [declarationId])).get(declarationId) ?? [];
@@ -304,7 +304,7 @@ export async function extractDocument(
   return extraction;
 }
 
-export async function saveExtraction(db: Db, doc: Pick<DocStat, 'id' | 'extracted'>, status: string, extraction: ElaborationExtraction) {
+export async function saveExtraction(db: DbOrTx, doc: Pick<DocStat, 'id' | 'extracted'>, status: string, extraction: ElaborationExtraction) {
   const extracted = { ...(doc.extracted ?? {}), elaboration: extraction };
   await db.update(documents).set({ processingStatus: status, extracted }).where(eq(documents.id, doc.id));
   doc.extracted = extracted;

@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { sql } from 'drizzle-orm';
 import { brazilToday } from '@verifco/shared';
 import { VALID_CPFS, createEmployee, createTestEnv, registerOffice, type Api, type TestEnv } from './helpers';
 import { FAKE_PDF, upload } from './upload-helpers';
@@ -38,6 +39,35 @@ describe('DARF', () => {
     // quota paga impede gerar de novo
     await api.put(`/api/darfs/${list.body.darfs[0].id}`, { paidAt: '2026-05-28' });
     expect((await api.post(`/api/declarations/${declarationId}/darfs/generate`, { quotas: 1, firstDueDate: '2026-05-29', replace: true })).status).toBe(409);
+  });
+
+  it('falha no meio da regeração mantém as quotas e os PDFs anteriores', async () => {
+    const { api, token } = await registerOffice(env);
+    const { declarationId } = await setup(api);
+    const gen = await api.post(`/api/declarations/${declarationId}/darfs/generate`, { quotas: 2, firstDueDate: '2026-05-29' });
+    const up = await upload(env, token, `/api/darfs/${gen.body.darfs[0].id}/file`, [{ name: 'quota-1.pdf', content: FAKE_PDF, type: 'application/pdf' }]);
+    const fileId = up.body.file.id as string;
+
+    // falha simulada no banco ao incluir as quotas novas (depois de apagar as antigas)
+    await env.ctx.db.execute(sql`create function vf_test_fail_darf() returns trigger language plpgsql as $$ begin raise exception 'falha simulada'; end $$`);
+    await env.ctx.db.execute(sql`create trigger vf_test_fail_darf before insert on darfs for each row execute function vf_test_fail_darf()`);
+    try {
+      const failed = await api.post(`/api/declarations/${declarationId}/darfs/generate`, { quotas: 4, firstDueDate: '2026-05-29', replace: true });
+      expect(failed.status).toBe(500);
+    } finally {
+      await env.ctx.db.execute(sql`drop trigger vf_test_fail_darf on darfs`);
+      await env.ctx.db.execute(sql`drop function vf_test_fail_darf()`);
+    }
+    const kept = (await api.get(`/api/declarations/${declarationId}/darfs`)).body.darfs;
+    expect(kept.map((d: any) => d.id)).toEqual(gen.body.darfs.map((d: any) => d.id));
+    expect(kept[0].file).toMatchObject({ id: fileId, filename: 'quota-1.pdf' });
+    expect((await api.get(`/api/files/${fileId}`)).status).toBe(200);
+
+    // regeração que dá certo troca as quotas e só então apaga o PDF da quota substituída
+    const ok = await api.post(`/api/declarations/${declarationId}/darfs/generate`, { quotas: 4, firstDueDate: '2026-05-29', replace: true });
+    expect(ok.status).toBe(201);
+    expect((await api.get(`/api/declarations/${declarationId}/darfs`)).body.darfs).toHaveLength(4);
+    expect((await api.get(`/api/files/${fileId}`)).status).toBe(404);
   });
 
   it('cria, edita, marca como paga e calcula a situação', async () => {

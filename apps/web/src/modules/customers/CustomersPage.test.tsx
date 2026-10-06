@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router';
 import { ToastProvider } from '../../ds';
@@ -23,8 +23,11 @@ const customer = (over: Partial<CustomerListItem>): CustomerListItem => ({
   ...over,
 });
 
+/** Permissões negadas ao usuário do teste (as demais valem). */
+const auth = vi.hoisted(() => ({ denied: new Set<string>() }));
+
 vi.mock('../../lib/auth', () => ({
-  useAuth: () => ({ can: () => true, me: { favorites: [] }, refresh: async () => {} }),
+  useAuth: () => ({ can: (p: string) => !auth.denied.has(p), me: { favorites: [] }, refresh: async () => {} }),
 }));
 
 vi.mock('../../lib/api', async (importOriginal) => {
@@ -49,19 +52,25 @@ vi.mock('../../lib/api', async (importOriginal) => {
   return { ...original, api: { ...original.api, get } };
 });
 
+const renderPage = () =>
+  render(
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <ToastProvider>
+        <MemoryRouter>
+          <CustomersPage />
+        </MemoryRouter>
+      </ToastProvider>
+    </QueryClientProvider>,
+  );
+
 describe('listagem de clientes', () => {
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    auth.denied.clear();
+  });
 
   it('mostra as observações do cliente abaixo do e-mail (e nada quando estão vazias)', async () => {
-    render(
-      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-        <ToastProvider>
-          <MemoryRouter>
-            <CustomersPage />
-          </MemoryRouter>
-        </ToastProvider>
-      </QueryClientProvider>,
-    );
+    renderPage();
     const note = await screen.findByText('Prefere contato por WhatsApp no período da tarde.');
     expect(note.classList.contains('vf-cus-notes')).toBe(true);
     expect(note.getAttribute('title')).toBe('Prefere contato por WhatsApp no período da tarde.');
@@ -69,5 +78,24 @@ describe('listagem de clientes', () => {
     // só um cliente tem observação de verdade
     expect(document.querySelectorAll('.vf-cus-notes')).toHaveLength(1);
     expect(screen.getByText('Bruno Rodrigues Gomes')).toBeTruthy();
+  });
+
+  it('status da declaração em massa só oferece "Finalizado" a quem pode finalizar', async () => {
+    const bulkStatusOptions = async () => {
+      fireEvent.click(await screen.findByLabelText('Selecionar Aline Almeida Carvalho'));
+      fireEvent.click(screen.getByRole('button', { name: 'Ações' }));
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Alterar status da declaração' }));
+      return [...(screen.getByLabelText('Novo status') as HTMLSelectElement).options].map((o) => o.textContent);
+    };
+
+    renderPage();
+    expect(await bulkStatusOptions()).toEqual(expect.arrayContaining(['Malha fina', 'Finalizado']));
+    cleanup();
+
+    auth.denied.add('declaration.finish');
+    renderPage();
+    const options = await bulkStatusOptions();
+    expect(options).toContain('Malha fina');
+    expect(options).not.toContain('Finalizado');
   });
 });

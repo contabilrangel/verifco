@@ -6,16 +6,14 @@ import {
   CHECKLIST_FINISH_OPTIONS,
   CHECKLIST_SECTIONS,
   onlyDigits,
-  stageOfSubstatus,
   type ChecklistSection,
-  type DeclarationSubstatus,
 } from '@verifco/shared';
 import { checklistItems, checklistSections, checklists, customers, declarations, documents, offices } from '../../db/schema';
 import { safeEqual, sha256 } from '../../lib/crypto';
 import { badRequest, conflict, forbidden, notFound, unauthorized } from '../../lib/errors';
 import { emptyToNull, parse } from '../../lib/http';
 import { signCustomerToken } from '../../plugins/auth';
-import { setDeclarationSubstatus } from '../../services/declarations';
+import { syncSubstatus } from '../../services/declarations';
 import { CUSTOMER_LOGIN_RULE, check, fail, resetLimit } from '../../services/rate-limit';
 import { requireChecklistAccess } from '../portal/access';
 import { attachFiles, checklistAccessValid, checklistCodeHash, customerView, loadBundle, lockOf, notifyOffice, refreshFinished, removeDocument } from './service';
@@ -253,10 +251,9 @@ export async function checklistPublicRoutes(app: FastifyInstance) {
       .set({ status: body.status, note: body.note ?? null, finishedAt: new Date() })
       .where(and(eq(checklistSections.checklistId, l.checklist.id), eq(checklistSections.section, section)));
 
-    // pendências: a declaração em preenchimento passa para "Documentos faltantes"
-    if (body.status === 'pending_documents' && stageOfSubstatus(l.declaration.substatus as DeclarationSubstatus) === 'filling' && l.declaration.substatus !== 'missing_documents') {
-      await setDeclarationSubstatus(db, l.declaration.id, 'missing_documents');
-    }
+    // seção com documentos pendentes: a declaração em preenchimento passa para "Documentos faltantes"
+    // e só sai quando não houver mais seção pendente nem pendência em aberto (regra das pendências)
+    await syncSubstatus(db, l.declaration.id);
 
     const label = CHECKLIST_SECTIONS[section];
     const statusLabel = CHECKLIST_FINISH_OPTIONS.find((o) => o.value === body.status)?.label ?? body.status;
@@ -278,6 +275,7 @@ export async function checklistPublicRoutes(app: FastifyInstance) {
     if (s.status !== 'pending_documents') throw conflict('Só é possível retomar seções que ficaram com documentos pendentes. Para outras mudanças, fale com o escritório.');
     await db.update(checklistSections).set({ status: 'open', finishedAt: null }).where(eq(checklistSections.id, s.id));
     await refreshFinished(db, l.checklist.id);
+    await syncSubstatus(db, l.declaration.id);
     return view(id, req);
   });
 }

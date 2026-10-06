@@ -13,12 +13,12 @@ import {
   stageOfSubstatus,
   type DeclarationSubstatus,
 } from '@verifco/shared';
-import { customerGroupMembers, customerGroups, customers, declarations, procurators, users } from '../../db/schema';
+import { auditLogs, customerGroupMembers, customerGroups, customers, declarations, procurators, users } from '../../db/schema';
 import { randomCode, sha256 } from '../../lib/crypto';
 import { badRequest, conflict, forbidden, notFound } from '../../lib/errors';
 import { audit, can, dateStr, guard, optionalText, paginate, parse, requirePermission, requireUser, uuidParam, yearSchema } from '../../lib/http';
 import { customerScope, getCustomerForUser, publicCustomer } from '../../services/customers';
-import { getOrCreateDeclaration, setDeclarationSubstatus } from '../../services/declarations';
+import { assertCanSetSubstatus, changeSubstatus, getOrCreateDeclarations } from '../../services/declarations';
 import { queueDelivery } from '../../services/delivery';
 import { PdfBuilder, loadBranding } from '../../services/pdf';
 import { CERTIFICATE_TYPES, readUploads } from '../../services/uploads';
@@ -447,11 +447,27 @@ export async function customerRoutes(app: FastifyInstance) {
       }
       case 'substatus': {
         const v = parse(z.enum(Object.keys(DECLARATION_SUBSTATUS) as [DeclarationSubstatus, ...DeclarationSubstatus[]]), body.value);
-        if (!body.year) throw badRequest('Informe o ano-exercício.');
-        for (const cid of ids) {
-          const d = await getOrCreateDeclaration(db, user.officeId, cid, body.year);
-          await setDeclarationSubstatus(db, d.id, v);
-        }
+        const year = body.year;
+        if (!year) throw badRequest('Informe o ano-exercício.');
+        // mesma regra do status da declaração (finalizar exige permissão própria, conferida antes
+        // de gravar; a situação eCAC acompanha), numa transação e com consultas em lote
+        assertCanSetSubstatus(user, v);
+        await db.transaction(async (tx) => {
+          const decls = await getOrCreateDeclarations(tx, user.officeId, ids, year);
+          const changed = await changeSubstatus(tx, user, decls, v);
+          if (changed.length) {
+            await tx.insert(auditLogs).values(
+              changed.map(({ before }) => ({
+                officeId: user.officeId,
+                userId: user.userId,
+                action: 'substatus',
+                entity: 'declaration',
+                entityId: before.id,
+                data: { from: before.substatus, to: v, bulk: true },
+              })),
+            );
+          }
+        });
         break;
       }
       case 'delete':

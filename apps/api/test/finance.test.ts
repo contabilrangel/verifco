@@ -223,6 +223,37 @@ describe('orçamentos', () => {
     expect((await api.del(`/api/finance/budgets/${b.body.id}`)).status).toBe(200);
   });
 
+  it('só o orçamento IRPF move a declaração; recusa, cancelamento e exclusão voltam a etapa', async () => {
+    const { api, customerId } = await setup();
+    const substatus = async () => (await api.get(`/api/customers/${customerId}/declarations/2026`)).body.substatus;
+
+    // consultoria enviada e aprovada não tira a declaração IRPF de "Não iniciado"
+    const consulting = await createBudget(api, customerId, { category: 'consulting' });
+    await sendAndGetToken(api, consulting.body.id);
+    expect(await substatus()).toBe('not_started');
+    expect((await api.post(`/api/finance/budgets/${consulting.body.id}/approve`)).status).toBe(200);
+    expect(await substatus()).toBe('not_started');
+
+    // IRPF enviado → "Orçamento enviado"; recusado pelo cliente → volta para "Não iniciado"
+    const irpf = await createBudget(api, customerId);
+    const { token } = await sendAndGetToken(api, irpf.body.id);
+    expect(await substatus()).toBe('budget_sent');
+    expect((await pub('POST', `/api/public/budgets/${token}/reject`)).status).toBe(200);
+    expect(await substatus()).toBe('not_started');
+
+    // com outro orçamento IRPF enviado, cancelar um mantém a etapa; excluir o último a volta
+    const rectification = await createBudget(api, customerId, { category: 'irpf_rectification' });
+    const again = await createBudget(api, customerId);
+    await sendAndGetToken(api, rectification.body.id);
+    await sendAndGetToken(api, again.body.id);
+    expect(await substatus()).toBe('budget_sent');
+    const canceled = await api.put(`/api/finance/budgets/${rectification.body.id}`, { category: 'irpf_rectification', amountCents: 60_000, status: 'canceled' });
+    expect(canceled.body.status).toBe('canceled');
+    expect(await substatus()).toBe('budget_sent');
+    expect((await api.del(`/api/finance/budgets/${again.body.id}`)).status).toBe(200);
+    expect(await substatus()).toBe('not_started');
+  });
+
   it('enviar ao salvar exige contato do cliente e permissão de envio', async () => {
     const { api } = await setup();
     const semEmail = await api.post('/api/customers', { name: 'Sem Email', cpfCnpj: VALID_CPFS[1] });

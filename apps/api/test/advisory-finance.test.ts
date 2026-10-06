@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { Readable } from 'node:stream';
 import JSZip from 'jszip';
 import ExcelJS from 'exceljs';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { INCOME_HEADERS, PAYMENT_HEADERS } from '@verifco/shared';
 import { contracts, customerGroupMembers, customerGroups, customers, files, procurators } from '../src/db/schema';
@@ -98,6 +98,28 @@ describe('livro caixa', () => {
     expect(exp.raw.headers['content-type']).toBe('application/zip');
     const zip = await JSZip.loadAsync(exp.raw.rawPayload);
     expect(Object.keys(zip.files).sort()).toEqual(['carne-leao-2025-parte-1.csv', 'carne-leao-2025-parte-2.csv']);
+  });
+
+  it('falha ao gravar os lançamentos não deixa o envio registrado pela metade', async () => {
+    const o = await officeWithCustomer(VALID_CPFS[3]);
+    const url = `/api/customers/${o.customerId}/cashbook/import?year=2025`;
+    const file = { filename: 'p.csv', content: csv(PAYMENT_HEADERS, [['05/03/2025', 'P10.01.00012', '10,00', 'Material']]), type: 'text/csv' };
+    // falha simulada no banco ao incluir os lançamentos (depois de criar o envio)
+    await env.ctx.db.execute(sql`create function vf_test_fail_cashbook() returns trigger language plpgsql as $$ begin raise exception 'falha simulada'; end $$`);
+    await env.ctx.db.execute(sql`create trigger vf_test_fail_cashbook before insert on cashbook_entries for each row execute function vf_test_fail_cashbook()`);
+    try {
+      expect((await upload(env, o.token, url, [file])).status).toBe(500);
+    } finally {
+      await env.ctx.db.execute(sql`drop trigger vf_test_fail_cashbook on cashbook_entries`);
+      await env.ctx.db.execute(sql`drop function vf_test_fail_cashbook()`);
+    }
+    const list = await o.api.get(`/api/customers/${o.customerId}/cashbook?year=2025`);
+    expect(list.body).toMatchObject({ entries: [], batches: [] });
+
+    const ok = await upload(env, o.token, url, [file]);
+    expect(ok.body).toMatchObject({ total: 1, succeeded: 1 });
+    const batch = await o.api.get(`/api/customers/${o.customerId}/cashbook/batches/${ok.body.batchId}`);
+    expect(batch.body.results).toEqual([{ row: 2, ok: true, message: 'p.csv: Lançamento incluído (P10.01.00012).' }]);
   });
 
   it('exige cashbook.use e isola escritórios', async () => {
