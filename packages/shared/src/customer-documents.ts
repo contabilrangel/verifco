@@ -10,21 +10,10 @@ export const DOCUMENT_CATEGORIES = {
   previous_declaration: 'Declaração anterior',
   receipt: 'Recibo de entrega',
   darf: 'DARF',
-  shared_with_customer: 'Visível no portal do cliente',
   other: 'Outros',
 } as const;
 export type DocumentCategory = keyof typeof DOCUMENT_CATEGORIES;
 export const DOCUMENT_CATEGORY_LIST = Object.keys(DOCUMENT_CATEGORIES) as DocumentCategory[];
-
-/**
- * Categoria dos arquivos que o escritório compartilha com o cliente: só eles aparecem (e podem
- * ser baixados) no portal, em "Documentos do escritório". Vale só para arquivos enviados pelo
- * escritório (`canShareWithCustomer`).
- */
-export const SHARED_WITH_CUSTOMER = 'shared_with_customer' satisfies DocumentCategory;
-
-/** Categoria gravada ao tirar um arquivo do portal pela ação "Tirar do portal". */
-export const UNSHARED_CATEGORY = 'other' satisfies DocumentCategory;
 
 /**
  * Categorias gravadas pelo sistema (checklist, sincronização, copiloto). Não entram na escolha do
@@ -52,9 +41,10 @@ export const documentCategoryLabel = (c: string) => DOCUMENT_CATEGORIES[c as Doc
 export const documentOriginLabel = (o: string) => DOCUMENT_ORIGINS[o as DocumentOrigin] ?? o;
 
 /**
- * O arquivo pode ficar visível no portal do cliente? Só os enviados pelo escritório: os do
- * próprio cliente e os da sincronização (que contam nos arquivos do programa IRPF) não. Os do
- * copiloto também não: a categoria `copilot` os mantém no copiloto e define quem pode abri-los.
+ * O arquivo pode ficar visível no portal do cliente (`documents.shared_with_customer`, independente
+ * da categoria)? Só os enviados pelo escritório: os do próprio cliente e os da sincronização (que
+ * contam nos arquivos do programa IRPF) não. Os do copiloto também não: a categoria `copilot` os
+ * mantém no copiloto e define quem pode abri-los.
  */
 export const canShareWithCustomer = (doc: { uploadedBy: string; category: string }) =>
   doc.uploadedBy === 'office' && doc.category !== 'copilot';

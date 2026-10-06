@@ -1,16 +1,8 @@
 import { useState, type CSSProperties } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Download, Eye, File as FileIcon, FileArchive, FileImage, FileSpreadsheet, FileText, FolderOpen, Share2, Trash2, Undo2 } from 'lucide-react';
-import {
-  DOCUMENT_CATEGORIES,
-  DOCUMENT_CATEGORY_LIST,
-  SHARED_WITH_CUSTOMER,
-  UNSHARED_CATEGORY,
-  canShareWithCustomer,
-  documentCategoryLabel,
-  documentOriginLabel,
-} from '@verifco/shared';
-import { Alert, Button, Card, ConfirmDialog, DropFile, EmptyState, IconButton, Loading, Select, Tag, useToast, type Tone } from '../../ds';
+import { DOCUMENT_CATEGORIES, DOCUMENT_CATEGORY_LIST, canShareWithCustomer, documentCategoryLabel, documentOriginLabel } from '@verifco/shared';
+import { Alert, Button, Card, Checkbox, ConfirmDialog, DropFile, EmptyState, IconButton, Loading, Select, Tag, useToast, type Tone } from '../../ds';
 import { api, errorMessage, isViewableType } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { useAction, useApi } from '../../lib/hooks';
@@ -28,20 +20,20 @@ interface DocumentRow {
   size: number;
   category: string;
   uploadedBy: string;
+  /** Visível (e baixável) no portal do cliente, independente da categoria. */
+  sharedWithCustomer: boolean;
   processingStatus: string;
   exerciseYear: number | null;
   createdAt: string;
 }
 
 const CATEGORY_OPTIONS = DOCUMENT_CATEGORY_LIST.map((value) => ({ value, label: DOCUMENT_CATEGORIES[value] }));
-/** Arquivos do cliente e da sincronização não podem ficar visíveis no portal. */
-const NOT_SHAREABLE_OPTIONS = CATEGORY_OPTIONS.filter((o) => o.value !== SHARED_WITH_CUSTOMER);
 
 /** Opções da categoria de um arquivo da lista (a categoria gravada pelo sistema continua na lista). */
-const categoryOptionsFor = (d: DocumentRow) => {
-  const base = canShareWithCustomer(d) ? CATEGORY_OPTIONS : NOT_SHAREABLE_OPTIONS;
-  return base.some((o) => o.value === d.category) ? base : [{ value: d.category, label: documentCategoryLabel(d.category) }, ...base];
-};
+const categoryOptionsFor = (d: DocumentRow) =>
+  CATEGORY_OPTIONS.some((o) => o.value === d.category) ? CATEGORY_OPTIONS : [{ value: d.category, label: documentCategoryLabel(d.category) }, ...CATEGORY_OPTIONS];
+/** O cliente vê o arquivo no portal: marcado e compartilhável (a mesma regra da consulta do portal). */
+const inPortal = (d: DocumentRow) => d.sharedWithCustomer && canShareWithCustomer(d);
 const ORIGIN_TONE: Record<string, Tone> = { office: 'primary', customer: 'highlight', sync: 'neutral' };
 
 const iconFor = (mime: string, name: string) => {
@@ -60,6 +52,8 @@ export function DocumentsStep() {
   const qc = useQueryClient();
   const toast = useToast();
   const [category, setCategory] = useState('other');
+  /** Os arquivos enviados aqui são do escritório: podem já sair visíveis no portal do cliente. */
+  const [shareOnUpload, setShareOnUpload] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [remove, setRemove] = useState<DocumentRow | null>(null);
   const [zipping, setZipping] = useState(false);
@@ -71,8 +65,10 @@ export function DocumentsStep() {
     if (!files.length) return;
     setUploading(true);
     try {
-      const saved = await api.upload<DocumentRow[]>(`/customers/${customer.id}/documents?year=${year}`, files, { category });
-      toast.success(`${saved.length} arquivo(s) enviado(s).`);
+      const saved = await api.upload<DocumentRow[]>(`/customers/${customer.id}/documents?year=${year}`, files, { category, sharedWithCustomer: String(shareOnUpload) });
+      toast.success(shareOnUpload ? `${saved.length} arquivo(s) enviado(s) e visível(is) no portal do cliente.` : `${saved.length} arquivo(s) enviado(s).`);
+      // o próximo envio não vai para o portal sem o escritório marcar de novo
+      setShareOnUpload(false);
       refresh();
       void qc.invalidateQueries({ queryKey: declarationKey(customer.id, year) });
     } catch (err) {
@@ -82,8 +78,8 @@ export function DocumentsStep() {
     }
   };
   const changeCategory = useAction((v: { id: string; category: string }) => api.patch(`/documents/${v.id}`, { category: v.category }), { success: 'Categoria atualizada.', onSuccess: refresh });
-  /** "Visível no portal do cliente": o arquivo aparece em "Documentos do escritório" no portal. */
-  const share = useAction((v: { id: string; shared: boolean }) => api.patch(`/documents/${v.id}`, { category: v.shared ? SHARED_WITH_CUSTOMER : UNSHARED_CATEGORY }), {
+  /** "Visível no portal do cliente": o arquivo aparece em "Documentos do escritório" no portal, sem mudar a categoria. */
+  const share = useAction((v: { id: string; shared: boolean }) => api.patch(`/documents/${v.id}/portal`, { shared: v.shared }), {
     success: 'Visibilidade no portal do cliente atualizada.',
     onSuccess: refresh,
   });
@@ -116,7 +112,10 @@ export function DocumentsStep() {
         >
           <div className="vf-stack">
             <DropFile multiple onFiles={(f) => void upload(f)} disabled={uploading} title={uploading ? 'Enviando...' : "Arraste os arquivos ou clique em 'Selecionar'"} hint="PDF, imagens, planilhas e outros arquivos até 25 MB cada, até 20 por vez e 100 MB por envio." />
-            <span className="vf-text-xs vf-muted">Na categoria “{DOCUMENT_CATEGORIES[SHARED_WITH_CUSTOMER]}”, o cliente vê e baixa o arquivo no portal (ex.: declaração, recibo, DARF).</span>
+            <Checkbox label="Visível no portal do cliente" checked={shareOnUpload} onChange={(e) => setShareOnUpload(e.target.checked)} />
+            <span className="vf-text-xs vf-muted">
+              Marcado, o cliente vê e baixa os arquivos no portal (ex.: declaração, recibo, DARF), em qualquer categoria. Depois do envio, use “Mostrar no portal do cliente” ou “Tirar do portal do cliente” na lista; mudar a categoria não muda o que o cliente vê.
+            </span>
           </div>
         </Card>
       )}
@@ -161,7 +160,7 @@ export function DocumentsStep() {
                       <span className="vf-file-cell" title={d.filename}>
                         {iconFor(d.mimeType, d.filename)}
                         <span>{d.filename}</span>
-                        {d.category === SHARED_WITH_CUSTOMER && <Tag tone="success">No portal</Tag>}
+                        {inPortal(d) && <Tag tone="success">No portal</Tag>}
                       </span>
                     </td>
                     <td>
@@ -193,7 +192,7 @@ export function DocumentsStep() {
                       </IconButton>
                       {canEdit &&
                         canShareWithCustomer(d) &&
-                        (d.category === SHARED_WITH_CUSTOMER ? (
+                        (inPortal(d) ? (
                           <IconButton label="Tirar do portal do cliente" disabled={share.isPending} onClick={() => share.mutate({ id: d.id, shared: false })}>
                             <Undo2 />
                           </IconButton>

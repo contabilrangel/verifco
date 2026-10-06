@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   ALL_PERMISSIONS,
+  DOCUMENT_CATEGORY_LIST,
   PERMISSION_CATEGORIES,
   STAGE_SUBSTATUS,
-  SHARED_WITH_CUSTOMER,
   TEMPLATES,
   canShareWithCustomer,
   documentCategoryLabel,
@@ -63,12 +63,14 @@ describe('templates', () => {
 });
 
 describe('documentos do cliente (INT-3)', () => {
-  it('só arquivos do escritório ficam visíveis no portal; categorias do sistema têm rótulo', () => {
+  it('só arquivos do escritório ficam visíveis no portal, em qualquer categoria; categorias do sistema têm rótulo', () => {
     expect(canShareWithCustomer({ uploadedBy: 'office', category: 'darf' })).toBe(true);
     expect(canShareWithCustomer({ uploadedBy: 'customer', category: 'checklist' })).toBe(false);
     expect(canShareWithCustomer({ uploadedBy: 'sync', category: 'irpf_receipt' })).toBe(false);
     expect(canShareWithCustomer({ uploadedBy: 'office', category: 'copilot' })).toBe(false);
-    expect(documentCategoryLabel(SHARED_WITH_CUSTOMER)).toBe('Visível no portal do cliente');
+    for (const category of DOCUMENT_CATEGORY_LIST) expect(canShareWithCustomer({ uploadedBy: 'office', category })).toBe(true);
+    // a visibilidade no portal é um campo do documento, não uma categoria
+    expect(DOCUMENT_CATEGORY_LIST).not.toContain('shared_with_customer');
     expect(documentCategoryLabel('irpf_receipt')).toBe('Recibo de entrega (.REC)');
     expect(documentCategoryLabel('desconhecida')).toBe('desconhecida');
   });

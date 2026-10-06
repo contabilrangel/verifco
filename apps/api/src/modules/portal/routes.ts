@@ -1,8 +1,7 @@
-import { and, asc, count, desc, eq, inArray, isNotNull, isNull, type SQL } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, isNotNull, isNull, ne, type SQL } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
-  SHARED_WITH_CUSTOMER,
   checklistLock,
   checklistProgress,
   currentExerciseYear,
@@ -36,11 +35,18 @@ import { firstName, maskCpf, requirePortal } from './access';
 
 /**
  * Documentos que o escritório compartilhou com o cliente: enviados pelo escritório e marcados
- * "Visível no portal do cliente" na etapa Documentos do IRPF (no upload ou depois). Arquivos do
- * próprio cliente e da sincronização nunca entram.
+ * "Visível no portal do cliente" na etapa Documentos do IRPF (no upload ou depois), em qualquer
+ * categoria. Arquivos do próprio cliente e da sincronização nunca entram, nem os do copiloto
+ * (defesa em profundidade: a API não deixa marcá-los). Vale para a lista e para o download.
  */
 const sharedWithCustomer = (customerId: string, officeId: string): SQL =>
-  and(eq(documents.customerId, customerId), eq(documents.officeId, officeId), eq(documents.uploadedBy, 'office'), eq(documents.category, SHARED_WITH_CUSTOMER))!;
+  and(
+    eq(documents.customerId, customerId),
+    eq(documents.officeId, officeId),
+    eq(documents.uploadedBy, 'office'),
+    eq(documents.sharedWithCustomer, true),
+    ne(documents.category, 'copilot'),
+  )!;
 
 /**
  * Portal do cliente: login com CPF + código do portal (gerado em
