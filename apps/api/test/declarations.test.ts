@@ -1,4 +1,6 @@
+import { and, asc, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { auditLogs } from '../src/db/schema';
 import { VALID_CPFS, createEmployee, createTestEnv, registerOffice, type Api, type TestEnv } from './helpers';
 
 let env: TestEnv;
@@ -129,6 +131,50 @@ describe('linhas da DIRPF e análise de caixa', () => {
     expect((await api.del(`${base}/${dep.body.item.id}`)).status).toBe(200);
     expect((await api.get(base)).body).toHaveLength(4);
     expect((await api.del(`${base}/${dep.body.item.id}`)).status).toBe(404);
+  });
+
+  it('audita criação, edição e exclusão de linhas sem CPF/CNPJ, nomes ou descrição', async () => {
+    const { api, officeId, userId } = await registerOffice(env);
+    const cid = await newCustomer(api, VALID_CPFS[2], 'Rui Audita');
+    const d = await ensureDeclaration(api, cid);
+    const base = `/api/declarations/${d.id}/items`;
+    const logs = async () =>
+      (await env.ctx.db.select().from(auditLogs).where(and(eq(auditLogs.officeId, officeId), eq(auditLogs.entity, 'declaration'))).orderBy(asc(auditLogs.createdAt))).filter((l) =>
+        ['create_item', 'update_item', 'delete_item'].includes(l.action),
+      );
+
+    const salary = { kind: 'income_pj', code: '01', counterpartyName: 'Empresa Sigilosa', counterpartyDoc: '11.222.333/0001-81', ownerCpf: VALID_CPFS[3], valueCents: 1_000_000 };
+    const created = await api.post(base, salary);
+    expect(created.status).toBe(201);
+    const itemId = created.body.item.id as string;
+    // falha de validação não grava auditoria
+    expect((await api.put(`${base}/${itemId}`, { ...salary, ownerCpf: '123.456.789-00' })).status).toBe(400);
+    expect((await api.put(`${base}/${itemId}`, { ...salary, valueCents: 1_250_000, withheldCents: 100_000, counterpartyName: 'Outra Empresa' })).status).toBe(200);
+    // salvar sem mudanças registra a edição sem campos alterados
+    expect((await api.put(`${base}/${itemId}`, { ...salary, valueCents: 1_250_000, withheldCents: 100_000, counterpartyName: 'Outra Empresa' })).status).toBe(200);
+    expect((await api.del(`${base}/${itemId}`)).status).toBe(200);
+
+    const rows = await logs();
+    expect(rows.map((l) => [l.action, l.userId, l.entityId])).toEqual([
+      ['create_item', userId, d.id],
+      ['update_item', userId, d.id],
+      ['update_item', userId, d.id],
+      ['delete_item', userId, d.id],
+    ]);
+    expect(rows[0].data).toEqual({ itemId, kind: 'income_pj', code: '01', valueCents: 1_000_000, source: 'manual' });
+    expect(rows[1].data).toEqual({
+      itemId,
+      kind: 'income_pj',
+      code: '01',
+      valueCents: 1_250_000,
+      source: 'manual',
+      fromValueCents: 1_000_000,
+      fields: ['counterpartyName', 'valueCents', 'withheldCents'],
+    });
+    expect(rows[2].data).toMatchObject({ valueCents: 1_250_000, fromValueCents: 1_250_000, fields: [] });
+    expect(rows[3].data).toEqual({ itemId, kind: 'income_pj', code: '01', valueCents: 1_250_000, source: 'manual' });
+    // nenhum CPF/CNPJ ou nome no registro
+    expect(JSON.stringify(rows.map((l) => l.data))).not.toMatch(new RegExp(`${VALID_CPFS[3]}|11222333000181|Sigilosa|Outra Empresa`));
   });
 
   it('usa outros gastos e a preferência da tributação simplificada', async () => {

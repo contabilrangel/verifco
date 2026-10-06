@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { and, asc, desc, eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -110,6 +111,16 @@ const itemSchema = z
     }
     if (v.kind === 'payment' && (v.extra.reimbursedCents ?? 0) > v.valueCents) issue('extra.reimbursedCents', 'O reembolso não pode passar do valor pago');
   });
+
+type ItemRow = typeof declarationItems.$inferSelect;
+
+/** Dados da linha gravados na auditoria: identificação, ficha e valor em centavos (sem CPF/CNPJ, nomes ou descrição). */
+const itemAudit = (i: ItemRow) => ({ itemId: i.id, kind: i.kind, code: i.code, valueCents: i.valueCents, source: i.source });
+
+const ITEM_AUDIT_FIELDS = ['kind', 'code', 'groupCode', 'description', 'ownerCpf', 'ownerName', 'counterpartyDoc', 'counterpartyName', 'prevValueCents', 'valueCents', 'withheldCents', 'extra'] as const;
+
+/** Nomes dos campos da linha que mudaram na edição (só os nomes: o conteúdo pode ter CPF/CNPJ e nomes). */
+const changedItemFields = (before: ItemRow, after: ItemRow) => ITEM_AUDIT_FIELDS.filter((k) => !isDeepStrictEqual(before[k] ?? null, after[k] ?? null));
 
 const normalizeItem = (v: z.infer<typeof itemSchema>) => ({
   ...v,
@@ -230,6 +241,7 @@ export async function declarationRoutes(app: FastifyInstance) {
       .values({ ...body, officeId: user.officeId, declarationId: declaration.id, source: 'manual' })
       .returning();
     const updated = await refreshDeclaration(app.ctx, declaration.id);
+    await audit(req, 'create_item', 'declaration', declaration.id, itemAudit(item));
     reply.status(201);
     return { item, declaration: presentDeclaration(updated) };
   });
@@ -245,9 +257,10 @@ export async function declarationRoutes(app: FastifyInstance) {
     const { id, itemId } = parse(itemParams, req.params);
     const body = normalizeItem(parse(itemSchema, req.body));
     const { declaration } = await getDeclarationForUser(app.ctx, user, id);
-    await loadItem(declaration.id, itemId);
+    const before = await loadItem(declaration.id, itemId);
     const [item] = await db.update(declarationItems).set(body).where(eq(declarationItems.id, itemId)).returning();
     const updated = await refreshDeclaration(app.ctx, declaration.id);
+    await audit(req, 'update_item', 'declaration', declaration.id, { ...itemAudit(item), fromValueCents: before.valueCents, fields: changedItemFields(before, item) });
     return { item, declaration: presentDeclaration(updated) };
   });
 
@@ -258,7 +271,7 @@ export async function declarationRoutes(app: FastifyInstance) {
     const item = await loadItem(declaration.id, itemId);
     await db.delete(declarationItems).where(eq(declarationItems.id, itemId));
     const updated = await refreshDeclaration(app.ctx, declaration.id);
-    await audit(req, 'delete_item', 'declaration', declaration.id, { itemId, kind: item.kind });
+    await audit(req, 'delete_item', 'declaration', declaration.id, itemAudit(item));
     return { ok: true, declaration: presentDeclaration(updated) };
   });
 
