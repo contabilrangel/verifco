@@ -7,6 +7,19 @@ import type { UploadedFile } from '../../services/uploads';
 
 export type PrefilledRow = typeof prefilledStatements.$inferSelect;
 
+/*
+ * De onde vêm as pré-preenchidas (COB-2). O Verifco não busca o arquivo no eCAC por conta própria:
+ * - SERPRO Integra Contador: o catálogo de serviços não tem pré-preenchida; a sincronização do
+ *   eCAC (`modules/ecac/jobs.ts`) consulta só procuração, caixa postal, situação fiscal e
+ *   pagamentos. Se um serviço for publicado, a busca entra lá e grava por `savePrefilled`.
+ * - Extensão do navegador: não há leitor da página "Declaração pré-preenchida" do eCAC (veja o
+ *   comentário em apps/extension/content/parsers.js).
+ * - Sincronizador: envia os arquivos que o contador baixa no eCAC e salva na pasta de
+ *   pré-preenchidas (`--pasta-pre`), com o cliente identificado pelo CPF no nome do arquivo
+ *   (POST /api/sync/prefilled, com token de escopo Sincronizador ou Extensão do navegador).
+ * - Envio manual na tela Pré-preenchidas (POST /api/prefilled/upload).
+ */
+
 /**
  * Guarda o arquivo da declaração pré-preenchida de um cliente/exercício.
  * O mesmo conteúdo (hash) para o mesmo cliente e ano não é duplicado.

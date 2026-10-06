@@ -471,6 +471,22 @@ export function itemsToCsv(items: DeclarationItem[]): string {
   return '﻿' + [header, ...rows].map((r) => r.map(csvCell).join(';')).join('\r\n') + '\r\n';
 }
 
+/*
+ * Exportação em .DBK/.DEC (COB-4): não implementada, de propósito.
+ *
+ * O leiaute das cópias de segurança (.DBK) e das declarações (.DEC) do programa IRPF não é
+ * publicado pela Receita Federal e muda a cada exercício. Gerar o arquivo exigiria engenharia
+ * reversa sem especificação, e um .DBK malformado restaurado no programa oficial pode corromper ou
+ * alterar a declaração do cliente sem aviso, risco maior que a falta do arquivo. Por isso o pacote
+ * é de CONFERÊNCIA (linhas.csv e linhas.json + documentos, com o LEIA-ME abaixo) e a tela da
+ * Elaboração avisa que ele não é um .DBK. Os .DEC/.REC/.DBK que o sincronizador envia são gerados
+ * pelo próprio programa IRPF e guardados sem leitura do conteúdo (`modules/sync/ingest.ts`).
+ *
+ * Para implementar: (1) obter a especificação oficial do leiaute do exercício (ou validar, por
+ * exercício, um leitor/gravador em ida e volta: ler → gravar → ler); (2) testar a restauração no
+ * programa IRPF oficial de cada exercício; (3) liberar só os exercícios validados, atrás de uma
+ * opção, mantendo o linhas.csv para conferência. Não simule o arquivo.
+ */
 const README = (customer: CustomerRow, year: number) => `PACOTE DE CONFERÊNCIA — VERIFCO
 Cliente: ${customer.name} (CPF ${formatCpfCnpj(customer.cpfCnpj)})
 Exercício ${year} · ano-calendário ${year - 1}

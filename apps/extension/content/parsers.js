@@ -39,6 +39,21 @@
     },
   });
 
+  /*
+   * Pré-preenchida (Meu Imposto de Renda › Declaração pré-preenchida) — SEM parser, de propósito.
+   *
+   * Não há fonte oficial automática: o SERPRO Integra Contador, usado pela sincronização do eCAC na
+   * API, não tem serviço de pré-preenchida, e esta página não tem leitor porque o HTML não é público
+   * (não inventamos seletores). Hoje o arquivo chega ao Verifco pelo sincronizador (pasta de
+   * pré-preenchidas, `--pasta-pre`) ou pelo envio manual na tela Pré-preenchidas.
+   *
+   * Para implementar: na página real, localize o link de download do arquivo, baixe-o com `fetch` na
+   * própria origem (vale a sessão do navegador) e envie pelo service worker, em multipart, para
+   * POST /api/sync/prefilled (campos `file`, `cpf` = ctx.cpf e `ano` = ano-exercício), com o token
+   * da extensão (a rota aceita os escopos Extensão do navegador e Sincronizador). Não é um registro de
+   * /sync/ecac-records: não use `C.register` com `kind` para ele.
+   */
+
   C.register({
     id: 'certidao-cnd',
     description: 'Emissão de certidão (CND) — situação e PDF (a implementar)',
