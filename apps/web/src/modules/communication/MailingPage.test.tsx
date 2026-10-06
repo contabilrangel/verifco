@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router';
 import { MAILING_TYPES } from '@verifco/shared';
@@ -21,12 +21,24 @@ const polls: object[] = [
   { requestId: 'r1', status: 'done', progress: 100, error: null, ...planned, result: { queued: 5000, alreadyQueued: 0, failed: [] }, attachments: null },
 ];
 const sent: unknown[] = [];
+/**
+ * A primeira consulta do andamento só responde quando o teste libera: antes dela a tela mostra o
+ * pedido devolvido pelo envio (0%); sem a trava, a barra podia ser lida antes ou depois da
+ * resposta, conforme a carga da máquina.
+ */
+let releaseFirstPoll: () => void = () => {};
+const firstPoll = new Promise<void>((resolve) => {
+  releaseFirstPoll = resolve;
+});
 
 vi.mock('../../lib/api', async (importOriginal) => {
   const original = await importOriginal<typeof import('../../lib/api')>();
   const get = async (path: string) => {
     if (path === '/mailing/types') return MAILING_TYPES.map((t) => ({ ...t, allowed: true }));
-    if (path === '/mailing/requests/r1') return polls.length > 1 ? polls.shift() : polls[0];
+    if (path === '/mailing/requests/r1') {
+      await firstPoll;
+      return polls.length > 1 ? polls.shift() : polls[0];
+    }
     return [];
   };
   const post = async (path: string, body: unknown) => {
@@ -79,9 +91,14 @@ describe('MailingPage: envio pela fila e aviso de limite (DAD-5)', () => {
 
     expect(await screen.findByText('Preparando os envios...')).toBeTruthy();
     expect(sent).toHaveLength(1);
-    expect((await screen.findByRole('progressbar')).getAttribute('aria-valuenow')).toBe('40');
+    // antes da primeira consulta: o pedido como o envio devolveu
+    expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('0');
+    releaseFirstPoll();
+    // a consulta do andamento atualiza a barra (a seguinte, 1,5 s depois, traz o resumo)
+    await waitFor(() => expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('40'));
     expect(await screen.findByText('5.000 envio(s) na fila para 5.000 cliente(s)', undefined, { timeout: 4000 })).toBeTruthy();
     expect(screen.queryByRole('progressbar')).toBeNull();
     expect(screen.getByText(/refine os filtros e faça outro envio para os demais/)).toBeTruthy();
-  });
+    // a segunda consulta só sai depois do intervalo de 1,5 s: folga para máquinas carregadas
+  }, 15_000);
 });

@@ -1,0 +1,1 @@
+CREATE INDEX "jobs_office_type_idx" ON "jobs" USING btree ("office_id","type","created_at");
