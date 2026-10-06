@@ -18,7 +18,7 @@ import type { FastifyRequest } from 'fastify';
 import { todayIso } from '@verifco/shared';
 import type { AppContext } from '../context';
 import type { DbOrTx } from '../db/client';
-import { contracts, customers, declarations } from '../db/schema';
+import { contracts, customers, declarations, users } from '../db/schema';
 import { HttpError, conflict } from '../lib/errors';
 
 export type ContractRow = typeof contracts.$inferSelect;
@@ -94,11 +94,9 @@ const OPEN_ROUTES = new Set([
   'POST /api/mailing/preview',
   'POST /api/finance/price-tables/:id/simulate',
   // revogar acessos e apagar segredos nunca fica bloqueado
-  'PUT /api/employees/:id',
   'DELETE /api/employees/:id',
   'DELETE /api/robot/tokens/:id',
   'DELETE /api/customers/:id/portal-access',
-  'PUT /api/customers/:id/credentials',
   'DELETE /api/procurators/:id/certificate',
   'DELETE /api/integrations/:provider',
 ]);
@@ -109,5 +107,18 @@ export async function assertPlanAllowsWrite(ctx: AppContext, req: FastifyRequest
   if (!user || READ_METHODS.has(req.method)) return;
   const url = req.routeOptions?.url;
   if (!url || OPEN_PREFIXES.some((p) => url.startsWith(p)) || OPEN_ROUTES.has(`${req.method} ${url}`)) return;
-  if ((await planStatus(ctx.db, user.officeId)).expired) throw new HttpError(403, PLAN_EXPIRED_MESSAGE, { code: 'plan_expired' });
+  if (!(await planStatus(ctx.db, user.officeId)).expired) return;
+  const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body as Record<string, unknown> : null;
+  // A exceção é só para remover segredos, sem permitir cadastrar outros com o plano vencido.
+  if (req.method === 'PUT' && url === '/api/customers/:id/credentials' && body && Object.keys(body).length &&
+      Object.entries(body).every(([k, v]) => ['ecacLogin', 'ecacPassword'].includes(k) && (v === null || v === ''))) return;
+  if (req.method === 'PUT' && url === '/api/employees/:id' && body?.isActive === false) {
+    const id = (req.params as { id?: string }).id;
+    if (typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+      const target = await ctx.db.query.users.findFirst({ where: and(eq(users.id, id), eq(users.officeId, user.officeId)) });
+      // O formulário envia todos os campos: só a desativação pode mudar.
+      if (target && body.name === target.name && typeof body.email === 'string' && body.email.toLowerCase() === target.email.toLowerCase() && body.roleId === target.roleId) return;
+    }
+  }
+  throw new HttpError(403, PLAN_EXPIRED_MESSAGE, { code: 'plan_expired' });
 }

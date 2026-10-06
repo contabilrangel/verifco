@@ -1,15 +1,32 @@
 import { and, eq } from 'drizzle-orm';
-import { currentExerciseYear } from '@verifco/shared';
+import { addDaysIso, currentExerciseYear, todayIso } from '@verifco/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { contracts, customers, declarations, jobs } from '../src/db/schema';
 import { createDeliveryBatch } from '../src/services/delivery';
-import { createTestEnv, registerOffice, VALID_CPFS, type TestEnv } from './helpers';
+import { createEmployee, createTestEnv, registerOffice, VALID_CPFS, type TestEnv } from './helpers';
 
 let env: TestEnv;
 beforeAll(async () => { env = await createTestEnv(); });
 afterAll(async () => { await env.close(); });
 
 describe('integração dos lotes da onda 2', () => {
+  it('o plano vencido permite revogar, mas não editar ou cadastrar credenciais (F1)', async () => {
+    const office = await registerOffice(env);
+    const employee = await createEmployee(env, office.api, ['customer.list']);
+    const person = (await office.api.get('/api/employees')).body.find((e: any) => e.id === employee.userId);
+    const c = await office.api.post('/api/customers', { name: 'Cliente', cpfCnpj: VALID_CPFS[0] });
+    const credentials = `/api/customers/${c.body.id}/credentials`;
+    expect((await office.api.put(credentials, { ecacLogin: 'login', ecacPassword: 'senha-original' })).status).toBe(200);
+    const yesterday = addDaysIso(todayIso(), -1);
+    await env.ctx.db.update(contracts).set({ startsAt: addDaysIso(yesterday, -30), expiresAt: yesterday }).where(eq(contracts.officeId, office.officeId));
+    expect((await office.api.put(credentials, { ecacPassword: 'nova-senha' })).status).toBe(403);
+    expect((await office.api.put(credentials, { ecacLogin: null, ecacPassword: null })).status).toBe(200);
+    const body = { name: person.name, email: person.email, roleId: person.roleId, isActive: false };
+    expect((await office.api.put(`/api/employees/${employee.userId}`, { ...body, name: 'Novo nome' })).status).toBe(403);
+    expect((await office.api.put(`/api/employees/${employee.userId}`, body)).status).toBe(200);
+    expect((await office.api.put(`/api/employees/${employee.userId}`, { ...body, isActive: true })).status).toBe(403);
+  });
+
   it('o status em massa respeita a quota inteira e não grava parte do lote (C + F1)', async () => {
     const office = await registerOffice(env);
     const year = currentExerciseYear();

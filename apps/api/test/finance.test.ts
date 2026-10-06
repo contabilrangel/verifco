@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import ExcelJS from 'exceljs';
 import { addMonthsIso, todayIso } from '@verifco/shared';
-import { billings, budgets, customers, declarations, importBatches, installments, jobs } from '../src/db/schema';
+import { billings, budgets, contracts, customers, declarations, importBatches, installments, jobs } from '../src/db/schema';
 import { signCustomerToken } from '../src/plugins/auth';
 import { buildWorkbook } from '../src/services/xlsx';
 import { VALID_CPFS, client, createEmployee, createTestEnv, registerOffice, type Api, type TestEnv } from './helpers';
@@ -539,6 +539,8 @@ describe('orçamentos em lote', () => {
 
   it('importação grande roda no job, lê clientes e orçamentos de uma vez e atualiza a mesma linha repetida (DAD-5)', async () => {
     const { api, token, officeId, userId } = await setup('Escritório Lote');
+    // Este teste verifica 300 importações; a avaliação padrão só permite 30 declarações (COB-12).
+    await env.ctx.db.update(contracts).set({ declarationLimit: 500 }).where(eq(contracts.officeId, officeId));
     // 300 clientes cadastrados direto no banco, um orçamento por linha
     const valid = Array.from({ length: 300 }, (_, i) => validCpf(String(123_456_000 + i)));
     await env.ctx.db.insert(customers).values(valid.map((cpf, i) => ({ officeId, name: `Lote ${i}`, cpfCnpj: cpf, responsibleUserId: userId })));
