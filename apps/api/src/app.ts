@@ -109,7 +109,7 @@ export async function buildApp(ctx: AppContext, opts: { logger?: boolean } = {})
   });
 
   // contratos do escritório vencidos: a equipe só consulta (services/plan.ts)
-  app.addHook('onRequest', async (req) => assertPlanAllowsWrite(ctx, req));
+  app.addHook('preHandler', async (req) => assertPlanAllowsWrite(ctx, req));
 
   app.setNotFoundHandler((_req, reply) => reply.status(404).send({ error: 'Rota não encontrada.' }));
 
