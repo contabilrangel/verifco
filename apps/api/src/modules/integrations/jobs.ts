@@ -124,8 +124,9 @@ export async function billingSyncStates(ctx: AppContext, officeId: string, list:
     const keys = integrated.slice(i, i + 500).map((b) => b.id);
     rows.push(...(await ctx.db.select().from(jobs).where(and(eq(jobs.officeId, officeId), eq(jobs.type, BILLING_SYNC_JOB), inArray(jobs.idempotencyKey, keys)))));
   }
+  const jobByBilling = new Map(rows.map((j) => [j.idempotencyKey, j]));
   for (const b of integrated) {
-    const job = rows.find((j) => j.idempotencyKey === b.id);
+    const job = jobByBilling.get(b.id);
     const integrationReady = ready[b.provider as BillingProvider];
     if (!job) {
       states.set(b.id, { status: 'none', error: null, attempts: 0, maxAttempts: 0, nextAttemptAt: null, finishedAt: null, integrationReady });
