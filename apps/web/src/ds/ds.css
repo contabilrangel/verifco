@@ -199,6 +199,15 @@ textarea {
 .vf-input-group--icon > .vf-input { padding-left: 38px; }
 .vf-input-group--suffix > .vf-input { padding-right: 40px; }
 .vf-input-group__suffix { position: absolute; right: 12px; color: var(--color-text-low); font: var(--text-xs-regular); }
+/* botão de mostrar/ocultar a senha (PasswordInput), dentro do sufixo */
+.vf-input-toggle {
+  display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; margin-right: calc(-1 * var(--size-spacing-02));
+  padding: 0; border: 0; border-radius: var(--border-radius-sm); background: none; color: var(--color-text-low); cursor: pointer;
+  transition: background var(--motion-duration-fast), color var(--motion-duration-fast);
+}
+.vf-input-toggle:hover { background: var(--color-gray-10); color: var(--color-text-high); }
+.vf-input-toggle[aria-pressed='true'] { color: var(--color-interactive); }
+.vf-input-toggle svg { width: 18px; height: 18px; }
 
 .vf-check { display: inline-flex; align-items: flex-start; gap: var(--size-spacing-02); cursor: pointer; font: var(--text-sm-regular); }
 .vf-check input { width: 18px; height: 18px; margin: 1px 0 0; accent-color: var(--color-interactive); cursor: pointer; flex-shrink: 0; }

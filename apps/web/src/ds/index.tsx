@@ -19,7 +19,7 @@ import {
   type TextareaHTMLAttributes,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, Info, Inbox, UploadCloud, X, XCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, Eye, EyeOff, Info, Inbox, UploadCloud, X, XCircle } from 'lucide-react';
 
 const cx = (...c: (string | false | null | undefined)[]) => c.filter(Boolean).join(' ');
 
@@ -151,6 +151,35 @@ export function Input({ label, help, error, icon, suffix, id, required, style, c
     <Field label={label} help={help} error={error} required={required} htmlFor={inputId} style={style} span={span}>
       {control}
     </Field>
+  );
+}
+
+/**
+ * Campo de senha com o botão "Mostrar senha"/"Ocultar senha" no fim do campo.
+ * Aceita tudo o que o `Input` aceita (inclusive `autoComplete` e `icon`), menos `type` e `suffix`.
+ */
+export function PasswordInput({ id, ...rest }: Omit<InputProps, 'type' | 'suffix'>) {
+  const auto = useId();
+  const inputId = id ?? auto;
+  const [visible, setVisible] = useState(false);
+  return (
+    <Input
+      {...rest}
+      id={inputId}
+      type={visible ? 'text' : 'password'}
+      suffix={
+        <button
+          type="button"
+          className="vf-input-toggle"
+          aria-label={visible ? 'Ocultar senha' : 'Mostrar senha'}
+          aria-pressed={visible}
+          aria-controls={inputId}
+          onClick={() => setVisible((v) => !v)}
+        >
+          {visible ? <EyeOff aria-hidden /> : <Eye aria-hidden />}
+        </button>
+      }
+    />
   );
 }
 

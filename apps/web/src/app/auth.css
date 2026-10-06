@@ -1,0 +1,118 @@
+/* ---------- Telas de acesso (login, cadastro, senha, administração do sistema) ---------- */
+.auth-page {
+  --auth-accent: var(--color-brand-green);
+  --auth-glow: var(--color-primary-60);
+  min-height: 100vh; display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); background: var(--color-surface-low);
+}
+/* administração do sistema: acentos azuis em vez do verde da marca */
+.auth-page--system { --auth-accent: var(--color-primary-40); --auth-glow: var(--color-purple-60); }
+
+/* painel da marca */
+.auth-page__aside {
+  position: relative; overflow: hidden; display: flex; flex-direction: column; justify-content: space-between; gap: var(--size-spacing-08);
+  padding: var(--size-spacing-08) var(--size-spacing-10); color: var(--color-text-on-color);
+  background:
+    radial-gradient(120% 80% at 100% 100%, color-mix(in srgb, var(--auth-glow) 45%, transparent) 0%, transparent 60%),
+    radial-gradient(70% 50% at 0% 0%, color-mix(in srgb, var(--auth-accent) 16%, transparent) 0%, transparent 70%),
+    var(--color-primary-100);
+}
+/* trama de pontos discreta, mais visível no alto */
+.auth-page__aside::before {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background-image: radial-gradient(color-mix(in srgb, var(--color-white) 14%, transparent) 1px, transparent 1.5px);
+  background-size: var(--size-spacing-05) var(--size-spacing-05);
+  mask-image: linear-gradient(to bottom, black 0%, transparent 65%);
+}
+/* losango do símbolo da marca, no canto */
+.auth-page__aside::after {
+  content: ''; position: absolute; right: -140px; bottom: -140px; width: 400px; height: 400px; pointer-events: none;
+  border-radius: var(--size-spacing-08); transform: rotate(45deg);
+  border: 1px solid color-mix(in srgb, var(--color-white) 14%, transparent);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--auth-glow) 40%, transparent), color-mix(in srgb, var(--auth-accent) 22%, transparent));
+}
+.auth-page__aside > * { position: relative; z-index: 1; }
+
+.auth-page__brand { display: flex; align-items: center; flex-wrap: wrap; gap: var(--size-spacing-03); }
+.auth-page__logo { display: block; height: 36px; width: auto; }
+.auth-page__badge {
+  display: inline-flex; align-items: center; gap: var(--size-spacing-02); padding: var(--size-spacing-01) var(--size-spacing-03);
+  border-radius: var(--border-radius-pill); font: var(--text-xs-bold); letter-spacing: 0.02em;
+  color: var(--color-primary-10); background: color-mix(in srgb, var(--color-white) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-white) 22%, transparent);
+}
+.auth-page__badge svg { width: 14px; height: 14px; color: var(--auth-accent); }
+
+.auth-page__pitch { max-width: 520px; }
+.auth-page__eyebrow {
+  display: inline-flex; align-items: center; gap: var(--size-spacing-02); margin: 0 0 var(--size-spacing-05);
+  font: var(--text-xs-bold); letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-primary-30);
+}
+.auth-page__eyebrow::before { content: ''; width: var(--size-spacing-05); height: 2px; border-radius: var(--border-radius-pill); background: var(--auth-accent); }
+.auth-page__title { font: var(--text-xxl-bold); letter-spacing: -0.02em; text-wrap: balance; }
+.auth-page__accent { color: var(--auth-accent); }
+.auth-page__lead { margin-top: var(--size-spacing-04); font: var(--text-md-regular); color: var(--color-primary-20); max-width: 460px; text-wrap: pretty; }
+.auth-page__features { list-style: none; padding: 0; margin: var(--size-spacing-07) 0 0; display: grid; gap: var(--size-spacing-04); }
+.auth-page__features li { display: flex; align-items: center; gap: var(--size-spacing-04); }
+.auth-page__features li > span:last-child { display: flex; flex-direction: column; min-width: 0; }
+.auth-page__features strong { font: var(--text-sm-bold); color: var(--color-text-on-color); }
+.auth-page__features li > span:last-child > span { font: var(--text-sm-regular); color: var(--color-primary-30); }
+.auth-page__feature-icon {
+  flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; width: var(--size-spacing-07); height: var(--size-spacing-07);
+  border-radius: var(--border-radius-md); color: var(--auth-accent);
+  background: color-mix(in srgb, var(--color-white) 8%, transparent); border: 1px solid color-mix(in srgb, var(--color-white) 14%, transparent);
+}
+.auth-page__feature-icon svg { width: 20px; height: 20px; }
+.auth-page__legal { font: var(--text-xs-regular); color: var(--color-primary-40); }
+
+/* lado do formulário */
+.auth-page__main { display: flex; align-items: center; justify-content: center; padding: var(--size-spacing-08) var(--size-spacing-06); min-width: 0; }
+.auth-page__panel {
+  width: 100%; max-width: 456px; padding: var(--size-spacing-07); background: var(--color-surface);
+  border: 1px solid var(--color-border); border-radius: var(--border-radius-lg); box-shadow: var(--shadow-xs);
+}
+.auth-page__form { display: flex; flex-direction: column; gap: var(--size-spacing-05); }
+.auth-page__fields { display: flex; flex-direction: column; gap: var(--size-spacing-04); }
+.auth-page__heading { display: flex; flex-direction: column; gap: var(--size-spacing-02); }
+.auth-page__heading h2 { font: var(--text-xl-bold); letter-spacing: -0.01em; color: var(--color-text-high); }
+.auth-page__heading p { font: var(--text-md-regular); color: var(--color-text-low); text-wrap: pretty; }
+.auth-page__heading-icon {
+  display: inline-flex; align-items: center; justify-content: center; width: var(--size-spacing-08); height: var(--size-spacing-08); margin-bottom: var(--size-spacing-02);
+  border-radius: var(--border-radius-md); background: var(--color-primary-10); color: var(--color-interactive);
+}
+.auth-page__heading-icon svg { width: 24px; height: 24px; }
+.auth-page--system .auth-page__heading-icon { background: var(--color-primary-100); color: var(--color-primary-20); }
+
+/* campos e botão um pouco maiores nas telas de acesso */
+.auth-page__panel .vf-input { height: 44px; }
+.auth-page__panel .vf-btn--block { height: 44px; font: var(--text-md-bold); }
+
+/* "Esqueci minha senha" na linha do rótulo "Senha" */
+.auth-page__password { position: relative; }
+.auth-page__forgot { position: absolute; top: 0; right: 0; font: var(--text-sm-bold); }
+
+.auth-page__alt {
+  display: flex; flex-direction: column; align-items: center; gap: var(--size-spacing-02); padding-top: var(--size-spacing-05);
+  border-top: 1px solid var(--color-border); text-align: center; font: var(--text-sm-regular); color: var(--color-text-low);
+}
+.auth-page__alt a { font: var(--text-sm-bold); }
+.auth-page__back { display: inline-flex; align-items: center; gap: var(--size-spacing-02); }
+.auth-page__back svg { width: 16px; height: 16px; }
+
+/* telas médias: menos respiro para o texto da marca não ficar espremido */
+@media (max-width: 1200px) {
+  .auth-page__aside { padding: var(--size-spacing-08) var(--size-spacing-07); }
+  .auth-page__main { padding: var(--size-spacing-07) var(--size-spacing-05); }
+  .auth-page__panel { padding: var(--size-spacing-06); }
+}
+
+/* celular e tablet: o painel da marca vira um cabeçalho compacto */
+@media (max-width: 900px) {
+  .auth-page { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; background: var(--color-surface); }
+  .auth-page__aside { padding: var(--size-spacing-04); gap: 0; }
+  .auth-page__aside::after { display: none; }
+  .auth-page__pitch, .auth-page__legal { display: none; }
+  .auth-page__brand { justify-content: space-between; }
+  .auth-page__logo { height: 28px; }
+  .auth-page__main { align-items: flex-start; padding: var(--size-spacing-06) var(--size-spacing-04) var(--size-spacing-08); }
+  .auth-page__panel { max-width: 456px; padding: 0; border: 0; border-radius: 0; box-shadow: none; background: none; }
+}

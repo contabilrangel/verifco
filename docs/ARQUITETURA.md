@@ -216,7 +216,7 @@ O menu lateral fica em `src/app/nav.ts` e já tem todos os destinos.
 ### Design system (`src/ds/`)
 
 Componentes no padrão Tangram (fundações públicas do Tangram: DM Sans, escala tipográfica,
-grid de 8px, raios, elevações) com o tema Verifco: `Button`, `IconButton`, `Card`, `Input`,
+grid de 8px, raios, elevações) com o tema Verifco: `Button`, `IconButton`, `Card`, `Input`, `PasswordInput`,
 `MoneyInput`, `Select`, `Textarea`, `Checkbox`, `Switch`, `Field`, `Tag`, `Alert`, `Modal`,
 `Drawer`, `ConfirmDialog`, `Menu`/`MenuItem`, `Tabs`, `Loading`, `Spinner`, `EmptyState`,
 `Avatar`, `Stat`, `Progress`, `Pagination`, `DropFile`, `useToast`.
