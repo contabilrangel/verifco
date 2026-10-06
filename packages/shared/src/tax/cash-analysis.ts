@@ -14,13 +14,19 @@ import { taxParams } from './params';
  *   aplicações = aumento de bens + redução de dívidas
  *              + pagamentos efetuados (ou desconto simplificado como despesa estimada)
  *              + doações + imposto pago no ano + outros gastos informados
+ *                (juros de financiamentos, cartão de crédito, perdas de capital)
  *   saldo      = recursos – aplicações
  */
 export interface CashAnalysisInput {
   exerciseYear: number;
   taxation?: 'complete' | 'simplified' | null;
   items: DeclarationItem[];
-  otherExpenses?: { annualPaymentCents?: number; interestCents?: number; creditCardCents?: number; capitalLossCents?: number };
+  /**
+   * "Outros gastos" informados pelo escritório. Os pagamentos de financiamentos no ano
+   * (total = principal + juros) só entram pelos juros: o principal já aparece como redução
+   * das dívidas declaradas.
+   */
+  otherExpenses?: { annualPaymentCents?: number; principalCents?: number; interestCents?: number; creditCardCents?: number; capitalLossCents?: number };
   /** Como tratar despesas na declaração simplificada: desconto padrão como gasto estimado ou nada. */
   simplifiedDiscountMode?: 'standard' | 'proportional';
 }
@@ -86,9 +92,11 @@ export function cashAnalysis(input: CashAnalysisInput): CashAnalysisResult {
   const payments = by('payment');
   const itemizedPayments = sum(payments, (i) => (i.valueCents ?? 0) - num(i.extra?.reimbursedCents));
   const donations = sum(by('donation'), (i) => i.valueCents ?? 0);
-  const taxPaid = sum(by('tax_paid'), (i) => i.valueCents ?? 0) + num(input.otherExpenses?.annualPaymentCents);
+  const taxPaid = sum(by('tax_paid'), (i) => i.valueCents ?? 0);
   const other = input.otherExpenses ?? {};
-  const otherSpending = num(other.interestCents) + num(other.creditCardCents) + num(other.capitalLossCents);
+  // juros informados; sem eles, a diferença entre o total pago e o principal
+  const interest = other.interestCents != null ? num(other.interestCents) : Math.max(0, num(other.annualPaymentCents) - num(other.principalCents));
+  const otherSpending = interest + num(other.creditCardCents) + num(other.capitalLossCents);
 
   let livingExpenses = itemizedPayments;
   let livingLabel = 'Pagamentos efetuados';
@@ -118,7 +126,7 @@ export function cashAnalysis(input: CashAnalysisInput): CashAnalysisResult {
     { key: 'living', label: livingLabel, cents: livingExpenses },
     { key: 'donations', label: 'Doações efetuadas', cents: donations },
     { key: 'tax_paid', label: 'Imposto pago no ano (carnê-leão, quotas)', cents: taxPaid + carneLeao },
-    { key: 'other', label: 'Outros gastos (juros, cartão, perdas)', cents: otherSpending },
+    { key: 'other', label: 'Outros gastos (juros de financiamentos, cartão, perdas)', cents: otherSpending },
   ];
   if (ruralNet < 0) warnings.push('Atividade rural com resultado negativo no ano.');
 

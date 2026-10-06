@@ -13,3 +13,7 @@ export * from './darf';
 export * from './customer-documents';
 export * from './checklist';
 export * from './ecac';
+export * from './tax/irpf';
+export * from './tax/fine-mesh';
+export * from './html';
+export * from './communication';

@@ -70,7 +70,7 @@ export const NAV: NavGroup[] = [
     label: 'Comunicação',
     icon: Mail,
     children: [
-      { to: '/comunicacao/mala-direta', label: 'Mala direta', perms: ['mailing.send_marketing', 'mailing.send_monthly', 'mailing.send_checklist_digital'] },
+      { to: '/comunicacao/mala-direta', label: 'Mala direta', perms: ['mailing.send_marketing', 'mailing.send_monthly', 'mailing.send_checklist_digital', 'mailing.send_checklist_pdf', 'mailing.send_planning', 'mailing.send_budget', 'post_declaration.send_kit'] },
       { to: '/comunicacao/templates', label: 'Templates de e-mail', perms: ['email_template.list'] },
       { to: '/comunicacao/envios', label: 'E-mails enviados', perms: ['mailing.list'] },
     ],

@@ -53,4 +53,13 @@ describe('análise de caixa', () => {
     expect(t.deductionsCents).toBe(800_000);
     expect(t.totalIncomeCents).toBe(15_000_000);
   });
+
+  it('conta só os juros dos financiamentos, sem duplicar o principal', () => {
+    const base = { exerciseYear: 2025, items: [{ kind: 'income_pj' as const, valueCents: 10_000_000 }] };
+    const other = (o: Record<string, number>) => cashAnalysis({ ...base, otherExpenses: o }).uses.find((l) => l.key === 'other')!.cents;
+    expect(other({ annualPaymentCents: 1_200_000, principalCents: 900_000, interestCents: 300_000 })).toBe(300_000);
+    expect(other({ annualPaymentCents: 1_200_000, principalCents: 900_000 })).toBe(300_000);
+    expect(other({ annualPaymentCents: 1_200_000, interestCents: 300_000, creditCardCents: 50_000 })).toBe(350_000);
+    expect(cashAnalysis({ ...base, otherExpenses: { annualPaymentCents: 1_200_000 } }).uses.find((l) => l.key === 'tax_paid')!.cents).toBe(0);
+  });
 });
