@@ -1,0 +1,91 @@
+x-api: &api
+  build:
+    context: .
+    dockerfile: deploy/api.Dockerfile
+  restart: unless-stopped
+  stop_grace_period: 20s
+  environment: &api-env
+    NODE_ENV: production
+    HOST: 0.0.0.0
+    PORT: "3333"
+    DATABASE_URL: postgres://verifco:${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD}@postgres:5432/verifco
+    DB_SYNC: migrate
+    JWT_SECRET: ${JWT_SECRET:?Defina JWT_SECRET}
+    ENCRYPTION_KEY: ${ENCRYPTION_KEY:?Defina ENCRYPTION_KEY}
+    WEB_URL: ${APP_URL:?Defina APP_URL}
+    API_URL: ${APP_URL:?Defina APP_URL}
+    CORS_ORIGINS: ${APP_URL:?Defina APP_URL}
+    TRUST_PROXY: "2"
+    STORAGE_DIR: /app/storage
+    RUN_WORKER: "false"
+    JOB_CONCURRENCY: "4"
+    SMTP_URL: ${SMTP_URL:-}
+    SMTP_FROM: ${SMTP_FROM:-Verifco <nao-responda@verifco.com.br>}
+  volumes:
+    - uploads:/app/storage
+  networks:
+    - backend
+  healthcheck:
+    test: [CMD, node, -e, "fetch('http://127.0.0.1:3333/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+    interval: 15s
+    timeout: 5s
+    start_period: 60s
+    retries: 5
+
+services:
+  postgres:
+    image: postgres:16-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: verifco
+      POSTGRES_USER: verifco
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD}
+    volumes:
+      - database:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U verifco -d verifco"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    <<: *api
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    <<: *api
+    environment:
+      <<: *api-env
+      RUN_WORKER: "true"
+    depends_on:
+      api:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: deploy/web.Dockerfile
+    restart: unless-stopped
+    expose:
+      - "80"
+    networks:
+      - backend
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, "http://127.0.0.1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+networks:
+  backend:
+
+volumes:
+  database:
+  uploads:
