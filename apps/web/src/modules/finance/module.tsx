@@ -6,6 +6,7 @@ import { BudgetStep } from './BudgetStep';
 import { PaymentMethodsPage } from './PaymentMethodsPage';
 import { PriceTablesPage } from './PriceTablesPage';
 import { PublicBudgetPage } from './PublicBudgetPage';
+import './finance.css';
 
 /** Financeiro: métodos, tabelas, orçamento/faturamento do cliente, relatório e lote. */
 export const module: VerifcoModule = {

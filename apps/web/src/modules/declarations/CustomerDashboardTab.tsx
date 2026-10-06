@@ -119,31 +119,31 @@ export function CustomerDashboardTab() {
         </Card>
       ) : (
         <>
-          <div className="vf-kpis">
-            <div className="vf-kpi">
-              <span className="vf-kpi__label">
+          <div className="vf-dec-kpis">
+            <div className="vf-dec-kpi">
+              <span className="vf-dec-kpi__label">
                 <Wallet /> Saldo de caixa
               </span>
               {d.cash ? (
-                <span className={`vf-kpi__value${d.cash.balanceCents < 0 ? ' vf-kpi__value--danger' : ''}`}>{formatMoney(d.cash.balanceCents)}</span>
+                <span className={`vf-dec-kpi__value${d.cash.balanceCents < 0 ? ' vf-dec-kpi__value--danger' : ''}`}>{formatMoney(d.cash.balanceCents)}</span>
               ) : (
-                <span className="vf-kpi__value vf-muted" style={{ fontSize: 20 }}>
+                <span className="vf-dec-kpi__value vf-muted" style={{ fontSize: 20 }}>
                   Sem lançamentos
                 </span>
               )}
-              <span className="vf-kpi__hint">
+              <span className="vf-dec-kpi__hint">
                 {d.cash && d.cash.balanceCents < 0 ? 'Aplicações maiores que os recursos. ' : ''}
                 <Link to={irpf('declaracao')}>Ver análise de caixa</Link>
               </span>
             </div>
-            <div className="vf-kpi">
-              <span className="vf-kpi__label">
+            <div className="vf-dec-kpi">
+              <span className="vf-dec-kpi__label">
                 {decl.refundCents > 0 ? <HandCoins /> : <Landmark />} Imposto
               </span>
-              <span className={`vf-kpi__value${decl.taxDueCents > 0 ? ' vf-kpi__value--danger' : decl.refundCents > 0 ? ' vf-kpi__value--success' : ''}`}>
+              <span className={`vf-dec-kpi__value${decl.taxDueCents > 0 ? ' vf-dec-kpi__value--danger' : decl.refundCents > 0 ? ' vf-dec-kpi__value--success' : ''}`}>
                 {formatMoney(decl.taxDueCents > 0 ? decl.taxDueCents : decl.refundCents)}
               </span>
-              <span className="vf-kpi__hint">
+              <span className="vf-dec-kpi__hint">
                 {decl.taxDueCents > 0 ? 'a pagar' : decl.refundCents > 0 ? 'a restituir' : 'sem imposto a pagar ou restituir'}
                 {d.darfs.total > 0 && (
                   <>
@@ -155,12 +155,12 @@ export function CustomerDashboardTab() {
                 )}
               </span>
             </div>
-            <div className="vf-kpi">
-              <span className="vf-kpi__label">
+            <div className="vf-dec-kpi">
+              <span className="vf-dec-kpi__label">
                 <Scale /> Variação patrimonial
               </span>
-              <span className={`vf-kpi__value${(d.netWorth?.variationCents ?? 0) < 0 ? ' vf-kpi__value--danger' : ''}`}>{formatMoney(d.netWorth?.variationCents ?? 0)}</span>
-              <span className="vf-kpi__hint">
+              <span className={`vf-dec-kpi__value${(d.netWorth?.variationCents ?? 0) < 0 ? ' vf-dec-kpi__value--danger' : ''}`}>{formatMoney(d.netWorth?.variationCents ?? 0)}</span>
+              <span className="vf-dec-kpi__hint">
                 Patrimônio líquido de {formatMoney((d.netWorth?.assetsPrevCents ?? 0) - (d.netWorth?.debtsPrevCents ?? 0))} para{' '}
                 {formatMoney((d.netWorth?.assetsCents ?? 0) - (d.netWorth?.debtsCents ?? 0))}
               </span>

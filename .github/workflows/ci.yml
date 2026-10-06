@@ -21,7 +21,11 @@ jobs:
         run: pnpm --filter @verifco/api db:check
       - name: Tipagem
         run: pnpm typecheck
-      - name: Testes
-        run: pnpm test
+      # CSS inválido (bloco sem fechar) derruba o build e a aplicação inteira; classes repetidas
+      # entre módulos se sobrescrevem. Roda antes de tudo para o erro aparecer cedo e com o arquivo.
+      - name: CSS da web (sintaxe e classes por módulo)
+        run: pnpm check:css
       - name: Build da web
         run: pnpm --filter @verifco/web build
+      - name: Testes
+        run: pnpm test

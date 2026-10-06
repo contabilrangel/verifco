@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { NavLink, Navigate, Outlet, useLocation, useParams } from 'react-router';
-import { EmptyState, cx } from '../ds';
+import { EmptyState, TabBar, cx } from '../ds';
 import { useAuth } from '../lib/auth';
 import { useYear } from '../lib/year';
 import { useCustomer } from '../modules/customers/customerContext';
@@ -15,18 +15,19 @@ export function TabbedPage({ title, description, base, tabs }: { title: string; 
   const location = useLocation();
   const visible = allowed(tabs, can);
   const atRoot = location.pathname.replace(/\/$/, '') === base;
+  const current = visible.find((t) => location.pathname === `${base}/${t.path}` || location.pathname.startsWith(`${base}/${t.path}/`));
   if (atRoot && visible[0]) return <Navigate to={`${base}/${visible[0].path}`} replace />;
   return (
     <>
-      <PageHeader title={title} description={description} crumbs={[{ label: 'Início', to: '/' }, { label: title }]} />
-      <nav className="vf-tabs" style={{ marginBottom: 24 }} aria-label={title}>
+      <PageHeader title={title} section={current?.label} description={description} crumbs={[{ label: 'Início', to: '/' }, { label: title }]} />
+      <TabBar label={title} activeKey={location.pathname} style={{ marginBottom: 24 }}>
         {visible.map((t) => (
           <NavLink key={t.path} to={`${base}/${t.path}`} className={({ isActive }) => cx('vf-tab', isActive && 'active')}>
             {t.icon && <t.icon />}
             {t.label}
           </NavLink>
         ))}
-      </nav>
+      </TabBar>
       {visible.length ? <Outlet /> : <EmptyState title="Nada disponível" description="Seu perfil não tem acesso a esta área." />}
     </>
   );

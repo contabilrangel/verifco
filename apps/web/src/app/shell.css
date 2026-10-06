@@ -7,6 +7,8 @@
   display: flex; flex-direction: column; padding: var(--size-spacing-04) var(--size-spacing-03); gap: var(--size-spacing-02);
   scrollbar-width: thin; scrollbar-color: #2b3f7a transparent;
 }
+/* o menu rola quando não cabe; os itens não encolhem */
+.sidebar > * { flex-shrink: 0; }
 .sidebar__brand { display: flex; align-items: center; height: 40px; padding: 0 var(--size-spacing-02); margin-bottom: var(--size-spacing-03); }
 .sidebar__brand img { height: 28px; }
 .sidebar__section { font: var(--text-xs-bold); text-transform: uppercase; letter-spacing: 0.06em; color: #7f93c9; padding: var(--size-spacing-04) var(--size-spacing-03) var(--size-spacing-01); }
@@ -24,6 +26,26 @@
 .sidebar__chev { margin-left: auto; transition: transform var(--motion-duration-fast); }
 .sidebar__chev.open { transform: rotate(90deg); }
 .sidebar__footer { margin-top: auto; padding-top: var(--size-spacing-04); }
+/* Favoritos (estrela do cabeçalho das páginas) */
+.sidebar__favs { display: flex; flex-direction: column; gap: 2px; padding-bottom: var(--size-spacing-02); margin-bottom: var(--size-spacing-02); border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
+.sidebar__favs .sidebar__section { padding-top: 0; }
+.sidebar__fav { position: relative; }
+.sidebar__fav .sidebar__link { height: 36px; font: var(--text-sm-regular); }
+.sidebar__fav:hover .sidebar__link, .sidebar__fav:focus-within .sidebar__link { padding-right: 36px; }
+.sidebar__fav .sidebar__link svg { width: 16px; height: 16px; color: var(--color-yellow-60); fill: var(--color-yellow-60); }
+.sidebar__fav .sidebar__label { overflow: hidden; text-overflow: ellipsis; }
+.sidebar__fav-remove {
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%); width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: var(--border-radius-circle); background: none; color: #9fb1e3; cursor: pointer; opacity: 0;
+}
+.sidebar__fav-remove svg { width: 16px; height: 16px; }
+.sidebar__fav:hover .sidebar__fav-remove, .sidebar__fav-remove:focus-visible { opacity: 1; }
+.sidebar__fav-remove:hover { background: rgba(255, 255, 255, 0.12); color: #fff; }
+@media (hover: none) {
+  .sidebar__fav-remove { opacity: 1; }
+  .sidebar__fav .sidebar__link { padding-right: 36px; }
+}
+.shell--collapsed .sidebar__favs,
 .shell--collapsed .sidebar__label,
 .shell--collapsed .sidebar__section,
 .shell--collapsed .sidebar__chev,
@@ -50,6 +72,11 @@
   .content { padding: var(--size-spacing-04); }
   .topbar { padding: 0 var(--size-spacing-04); }
   .topbar__year { width: 110px; }
+}
+@media (max-width: 600px) {
+  .topbar { gap: var(--size-spacing-01); padding: 0 var(--size-spacing-03); }
+  .topbar__year { width: 88px; flex-shrink: 0; }
+  .topbar__search { min-width: 40px; }
 }
 
 /* ---------- Telas públicas (login, cadastro, portal do cliente) ---------- */

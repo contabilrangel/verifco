@@ -1,0 +1,48 @@
+/* Integrações (Administração › Integrações). Prefixo vf-int-, só tokens do design system. */
+
+.vf-int-card { padding: 0; }
+.vf-int-card--open { box-shadow: var(--shadow-xs); }
+.vf-int-head { display: flex; align-items: flex-start; gap: var(--size-spacing-04); padding: var(--size-spacing-05); }
+.vf-int-icon {
+  width: 48px; height: 48px; flex-shrink: 0; display: grid; place-items: center;
+  border-radius: var(--border-radius-md); background: var(--color-primary-10); color: var(--color-primary-70);
+}
+.vf-int-icon svg { width: 24px; height: 24px; }
+.vf-int-icon--billing { background: var(--color-green-10); color: var(--color-green-80); }
+.vf-int-icon--government { background: var(--color-yellow-10); color: var(--color-yellow-100); }
+.vf-int-icon--ai { background: var(--color-purple-10); color: var(--color-purple-70); }
+.vf-int-actions { flex-shrink: 0; --gap: var(--size-spacing-04); }
+.vf-int-body {
+  display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: var(--size-spacing-06);
+  padding: var(--size-spacing-05); border-top: 1px solid var(--color-border);
+}
+.vf-int-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--size-spacing-04); align-items: start; }
+.vf-int-aside {
+  align-self: start; display: flex; flex-direction: column; gap: var(--size-spacing-02);
+  padding: var(--size-spacing-04); border-radius: var(--border-radius-sm); background: var(--color-surface-low);
+}
+.vf-int-steps { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: var(--size-spacing-02); color: var(--color-text-medium); font: var(--text-xs-regular); letter-spacing: 0; }
+.vf-int-steps--check { list-style: none; padding-left: 0; }
+.vf-int-steps--check li { position: relative; padding-left: 20px; }
+.vf-int-steps--check li::before {
+  content: ''; position: absolute; left: 2px; top: 4px; width: 8px; height: 4px;
+  border-left: 2px solid var(--color-success); border-bottom: 2px solid var(--color-success); transform: rotate(-45deg);
+}
+.vf-int-code {
+  flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; padding: var(--size-spacing-02) var(--size-spacing-03);
+  border: 1px solid var(--color-border); border-radius: var(--border-radius-sm); background: var(--color-surface-low);
+  font: var(--text-xs-regular); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 0;
+}
+.vf-int-foot {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--size-spacing-03);
+  padding: var(--size-spacing-04) var(--size-spacing-05); border-top: 1px solid var(--color-border); background: var(--color-surface-low);
+  border-radius: 0 0 var(--border-radius-md) var(--border-radius-md);
+}
+.vf-int-danger { color: var(--color-danger); }
+@media (max-width: 1100px) {
+  .vf-int-body { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 700px) {
+  .vf-int-head { flex-wrap: wrap; }
+  .vf-int-fields { grid-template-columns: minmax(0, 1fr); }
+}

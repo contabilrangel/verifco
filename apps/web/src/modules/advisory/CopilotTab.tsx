@@ -175,10 +175,10 @@ export function CopilotTab() {
             title={`Receitas e despesas de ${year}`}
             actions={
               <span className="vf-inline">
-                <span className="vf-legend">
+                <span className="vf-adv-legend">
                   <i style={{ background: 'var(--chart-2)' }} /> Receitas
                 </span>
-                <span className="vf-legend">
+                <span className="vf-adv-legend">
                   <i style={{ background: 'var(--chart-5)' }} /> Despesas
                 </span>
               </span>
@@ -196,7 +196,7 @@ export function CopilotTab() {
               ))}
             </div>
           </Card>
-          <div className="vf-kpis">
+          <div className="vf-adv-kpis">
             <Kpi label={`Receitas · ${MONTHS[month - 1]}`} value={formatMoney(m.incomeCents)} hint={`Ano: ${formatMoney(d.overview.totals.incomeCents)}`} />
             <Kpi label={`Despesas · ${MONTHS[month - 1]}`} value={formatMoney(m.expenseCents)} hint={`Ano: ${formatMoney(d.overview.totals.expenseCents)}`} />
             <Kpi label="Saldo do mês" value={<span className={m.balanceCents >= 0 ? 'vf-saving' : 'vf-loss'}>{formatMoney(m.balanceCents)}</span>} hint={`Ano: ${formatMoney(d.overview.totals.balanceCents)}`} />
@@ -376,7 +376,7 @@ export function CopilotTab() {
       {view === 'irpfm' && (
         <Card title={`Projeção do IRPFM devido (DAA ${p.declarationYear})`}>
           <div className="vf-stack">
-            <div className="vf-kpis">
+            <div className="vf-adv-kpis">
               <Kpi label="Rendimentos projetados" value={formatMoney(p.result.totalIncomeCents)} hint={`${p.monthsWithData} mês(es) com lançamentos`} />
               <Kpi label="Base de cálculo" value={formatMoney(p.result.baseCents)} hint={`Alíquota ${pct(p.result.ratePercent)}`} />
               <Kpi label="IR já devido (estimado)" value={formatMoney(p.regularTaxDueCents + p.exclusiveWithheldCents)} />
@@ -592,8 +592,8 @@ function EntryModal({ customerId, entry, onClose, onSaved }: { customerId: strin
         {(kind === 'income' || kind === 'expense') && (
           <Select label="Mês" required value={String(e.month ?? '')} placeholder="Selecione" onChange={(ev) => set({ month: ev.target.value ? Number(ev.target.value) : null })} options={MONTHS.map((m, i) => ({ value: String(i + 1), label: m }))} />
         )}
-        {cats && <Select label="Categoria" value={e.category ?? ''} placeholder="Selecione" onChange={(ev) => set({ category: ev.target.value || null })} options={Object.entries(cats).map(([value, label]) => ({ value, label }))} style={{ gridColumn: 'span 2' }} />}
-        <Input label="Descrição" required value={e.description ?? ''} onChange={(ev) => set({ description: ev.target.value })} style={{ gridColumn: 'span 2' }} />
+        {cats && <Select label="Categoria" value={e.category ?? ''} placeholder="Selecione" onChange={(ev) => set({ category: ev.target.value || null })} options={Object.entries(cats).map(([value, label]) => ({ value, label }))} span={2} />}
+        <Input label="Descrição" required value={e.description ?? ''} onChange={(ev) => set({ description: ev.target.value })} span={2} />
         <MoneyInput
           label={kind === 'budget' ? 'Limite mensal' : kind === 'insurance' ? 'Prêmio anual' : kind === 'foreign' ? 'Valor em reais' : 'Valor'}
           value={e.amountCents ?? 0}

@@ -115,7 +115,7 @@ export function IrpfmTab() {
                   Lance ou importe a declaração de {year} para que os rendimentos entrem no cálculo.
                 </Alert>
               ) : null}
-              <div className="vf-kpis">
+              <div className="vf-adv-kpis">
                 <Kpi label="Rendimentos considerados" value={formatMoney(r.totalIncomeCents)} hint={`Limite ${formatMoney(r.thresholdCents)}`} />
                 <Kpi label="Base de cálculo" value={formatMoney(r.baseCents)} hint={`Exclusões ${formatMoney(r.exclusionsCents)}`} />
                 <Kpi label="Excesso sobre o limite" value={formatMoney(r.excessCents)} hint={`Alíquota mínima ${pct(r.ratePercent)}`} />

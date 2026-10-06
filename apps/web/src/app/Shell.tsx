@@ -1,14 +1,114 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { NavLink, Outlet, useLocation, useNavigate } from 'react-router';
+import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
-import { Bell, ChevronRight, CircleHelp, LogOut, Menu as MenuIcon, PanelLeftClose, PanelLeftOpen, Search, Settings, Star, User } from 'lucide-react';
-import { Avatar, IconButton, Menu, MenuItem, Select, cx } from '../ds';
+import { Bell, ChevronRight, CircleHelp, LogOut, Menu as MenuIcon, PanelLeftClose, PanelLeftOpen, RefreshCw, Search, Settings, Star, User, X } from 'lucide-react';
+import { Alert, Avatar, Button, ConfirmDialog, IconButton, Loading, Menu, MenuItem, Modal, Select, cx, useToast } from '../ds';
 import { api } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { useBrowserNotifications } from '../lib/deviceNotifications';
-import { YEAR_OPTIONS, useYear } from '../lib/year';
+import { useAction, useApi, useMediaQuery } from '../lib/hooks';
+import { YEAR_OPTIONS, YEAR_OPTIONS_SHORT, useYear } from '../lib/year';
+import type { RobotOverview } from '../modules/ecac/types';
+import { favoriteLabel, isCurrentFavorite, visibleFavorites, type Favorite } from './favorites';
 import { NAV, type NavGroup } from './nav';
 import './shell.css';
+
+/** Seção "Favoritos" do menu lateral: atalhos gravados pela estrela do cabeçalho das páginas. */
+export function FavoritesNav({ favorites, onRemove }: { favorites: Favorite[] | undefined; onRemove: (f: Favorite) => void }) {
+  const location = useLocation();
+  const list = visibleFavorites(favorites);
+  if (!list.length) return null;
+  return (
+    <div className="sidebar__favs" role="group" aria-label="Favoritos">
+      <div className="sidebar__section">Favoritos</div>
+      {list.map((f) => (
+        <div key={f.path} className="sidebar__fav">
+          <Link to={f.path} className={cx('sidebar__link', isCurrentFavorite(f, location) && 'active')} title={f.label} aria-current={isCurrentFavorite(f, location) ? 'page' : undefined}>
+            <Star />
+            <span className="sidebar__label">{f.label}</span>
+          </Link>
+          <button type="button" className="sidebar__fav-remove" aria-label={`Remover ${f.label} dos favoritos`} title="Remover dos favoritos" onClick={() => onRemove(f)}>
+            <X />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Atalho global: sincroniza pelo SERPRO o eCAC de todos os clientes com procurador (POST /robot/sync-office).
+ * Ao abrir, confere o estado da integração (GET /robot/overview, campo `serpro`): sem o SERPRO pronto,
+ * não enfileira nada e aponta para Administração › Integrações.
+ */
+function EcacSyncButton() {
+  const { can } = useAuth();
+  const [open, setOpen] = useState(false);
+  // só consulta ao abrir: o painel do robô monta o cliente do SERPRO, caro demais para cada página
+  const overview = useApi<Pick<RobotOverview, 'serpro'>>(['robot', 'overview'], '/robot/overview', { enabled: open });
+  const sync = useAction(() => api.post<{ alreadyQueued: boolean }>('/robot/sync-office'), {
+    success: (r) => (r.alreadyQueued ? 'Já existe uma sincronização do eCAC na fila. Acompanhe em Administração › Robô.' : 'Sincronização do eCAC solicitada. Acompanhe em Administração › Robô.'),
+    invalidate: [['robot']],
+    onSuccess: () => setOpen(false),
+  });
+  const close = () => setOpen(false);
+  // falha ao consultar o estado não bloqueia: o job avisa no sino se a sincronização falhar
+  const serpro = overview.isError ? 'ready' : overview.data?.serpro;
+  // um "não configurado" guardado de antes espera a resposta nova (pode ter sido configurado depois)
+  const checking = !serpro || (serpro !== 'ready' && overview.isFetching);
+  return (
+    <>
+      <IconButton label="Sincronizar eCAC" onClick={() => setOpen(true)} disabled={sync.isPending}>
+        <RefreshCw />
+      </IconButton>
+      {open && checking ? (
+        <Modal open title="Sincronizar o eCAC" onClose={close} width={460}>
+          <Loading label="Verificando a integração com o SERPRO..." />
+        </Modal>
+      ) : open && serpro !== 'ready' ? (
+        <Modal
+          open
+          title="Sincronizar o eCAC"
+          onClose={close}
+          width={460}
+          footer={
+            <Button kind="secondary" onClick={close}>
+              Fechar
+            </Button>
+          }
+        >
+          <Alert tone="warning" title="Integração SERPRO não configurada">
+            {serpro === 'missing' ? (
+              <>A integração SERPRO Integra Contador não está disponível nesta instalação do Verifco, e sem ela o robô não consegue consultar o eCAC. Fale com o suporte do Verifco.</>
+            ) : (
+              <>
+                A sincronização usa a integração SERPRO Integra Contador, que ainda não está configurada (ou está inativa) neste escritório. Configure-a em{' '}
+                {can('integrations.manage') ? (
+                  <Link to="/admin/integracoes" onClick={close}>
+                    Administração › Integrações
+                  </Link>
+                ) : (
+                  'Administração › Integrações (peça a quem administra o escritório)'
+                )}{' '}
+                e tente de novo.
+              </>
+            )}
+          </Alert>
+        </Modal>
+      ) : (
+        <ConfirmDialog
+          open={open}
+          title="Sincronizar o eCAC"
+          message="O robô consulta pelo SERPRO a procuração eletrônica e a caixa postal de todos os clientes ativos com procurador. A consulta roda em segundo plano: você recebe uma notificação ao terminar (ou se ela falhar) e o andamento aparece em Administração › Robô."
+          confirmLabel="Sincronizar"
+          loading={sync.isPending}
+          onConfirm={() => sync.mutate(undefined)}
+          onClose={close}
+        />
+      )}
+    </>
+  );
+}
 
 function NavGroupItem({ group, can }: { group: NavGroup; can: (...p: string[]) => boolean }) {
   const location = useLocation();
@@ -60,13 +160,24 @@ interface Notification {
 }
 
 export function Shell() {
-  const { me, logout, can } = useAuth();
+  const { me, logout, can, refresh } = useAuth();
   const { year, setYear } = useYear();
   const navigate = useNavigate();
   const location = useLocation();
+  const toast = useToast();
+  const narrow = useMediaQuery('(max-width: 600px)');
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [search, setSearch] = useState('');
+
+  const removeFavorite = async (f: Favorite) => {
+    try {
+      await api.put('/auth/favorites', { path: f.path, label: f.label, favorite: false });
+      await refresh();
+    } catch {
+      toast.error('Não foi possível remover o favorito. Tente novamente.');
+    }
+  };
 
   useEffect(() => setMobileOpen(false), [location.pathname]);
 
@@ -86,6 +197,7 @@ export function Shell() {
         <div className="sidebar__brand">
           <img src={collapsed ? '/favicon.svg' : '/verifco-logo-negativo.svg'} alt="Verifco" />
         </div>
+        <FavoritesNav favorites={me?.favorites} onRemove={(f) => void removeFavorite(f)} />
         {NAV.map((g) => (
           <NavGroupItem key={g.id} group={g} can={can} />
         ))}
@@ -119,8 +231,9 @@ export function Shell() {
           </form>
           <div className="vf-grow" />
           <div className="topbar__year">
-            <Select aria-label="Ano-exercício" value={String(year)} onChange={(e) => setYear(Number(e.target.value))} options={YEAR_OPTIONS} />
+            <Select aria-label="Ano-exercício" value={String(year)} onChange={(e) => setYear(Number(e.target.value))} options={narrow ? YEAR_OPTIONS_SHORT : YEAR_OPTIONS} />
           </div>
+          {can('ecac.sync') && <EcacSyncButton />}
           <IconButton label="Ajuda" onClick={() => navigate('/ajuda')}>
             <CircleHelp />
           </IconButton>
@@ -211,16 +324,21 @@ export function PageHeader({
   description,
   actions,
   crumbs,
+  section,
 }: {
   title: ReactNode;
   description?: ReactNode;
   actions?: ReactNode;
   crumbs?: { label: string; to?: string }[];
+  /** Aba aberta da página; entra no nome do favorito ("Administração › Colaboradores"). */
+  section?: string;
 }) {
   const { me, refresh } = useAuth();
   const location = useLocation();
+  const toast = useToast();
   const path = location.pathname + location.search;
   const fav = me?.favorites.some((f) => f.path === path);
+  const label = typeof title === 'string' ? favoriteLabel(title, section) : '';
   return (
     <div className="vf-page-header">
       <div>
@@ -239,9 +357,15 @@ export function PageHeader({
           {typeof title === 'string' && (
             <IconButton
               label={fav ? 'Remover dos favoritos' : 'Adicionar aos favoritos'}
+              aria-pressed={Boolean(fav)}
               onClick={async () => {
-                await api.put('/auth/favorites', { path, label: title, favorite: !fav });
-                await refresh();
+                try {
+                  await api.put('/auth/favorites', { path, label, favorite: !fav });
+                  await refresh();
+                  if (!fav) toast.success('Página adicionada aos favoritos do menu lateral.');
+                } catch {
+                  toast.error('Não foi possível atualizar os favoritos. Tente novamente.');
+                }
               }}
             >
               <Star fill={fav ? 'var(--color-yellow-60)' : 'none'} color={fav ? 'var(--color-yellow-80)' : undefined} />

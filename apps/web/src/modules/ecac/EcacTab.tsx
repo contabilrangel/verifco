@@ -565,7 +565,7 @@ function RecordModal({ open, onClose, customerId, onSaved }: { open: boolean; on
             <>
               <Input label="Situação" value={f.situation ?? ''} onChange={set('situation')} />
               <Input label="Mensagem" value={f.message ?? ''} onChange={set('message')} />
-              <div style={{ gridColumn: 'span 2' }}>
+              <div className="vf-span-2">
                 <Textarea label="Pendências (uma por linha)" value={f.pendencies ?? ''} onChange={set('pendencies')} />
               </div>
             </>
@@ -577,7 +577,7 @@ function RecordModal({ open, onClose, customerId, onSaved }: { open: boolean; on
               <Checkbox label="Já lida" checked={flag} onChange={(e) => setFlag(e.target.checked)} />
             </>
           )}
-          {kind === 'other' && <Input label="Descrição" value={f.description ?? ''} onChange={set('description')} style={{ gridColumn: 'span 2' }} />}
+          {kind === 'other' && <Input label="Descrição" value={f.description ?? ''} onChange={set('description')} span={2} />}
         </div>
         {file ? (
           <div className="vf-inline">

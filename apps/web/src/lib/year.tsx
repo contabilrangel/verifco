@@ -33,4 +33,7 @@ export function YearProvider({ children }: { children: ReactNode }) {
 
 export const useYear = () => useContext(Ctx);
 
-export const YEAR_OPTIONS = Array.from({ length: 8 }, (_, i) => thisYear + 1 - i).map((y) => ({ value: String(y), label: `${y} · AC ${y - 1}` }));
+const YEARS = Array.from({ length: 8 }, (_, i) => thisYear + 1 - i);
+export const YEAR_OPTIONS = YEARS.map((y) => ({ value: String(y), label: `${y} · AC ${y - 1}` }));
+/** Rótulos curtos para telas estreitas (o seletor da barra superior não cabe com "· AC"). */
+export const YEAR_OPTIONS_SHORT = YEARS.map((y) => ({ value: String(y), label: String(y) }));

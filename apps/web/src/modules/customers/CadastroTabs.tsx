@@ -71,7 +71,7 @@ export function IdentificationTab() {
       />
       <fieldset disabled={readOnly} style={{ border: 0, padding: 0, margin: 0 }}>
         <div className="vf-grid" style={{ '--cols': 3 } as React.CSSProperties}>
-          <Input label="Nome completo" required value={form.name} onChange={set('name')} style={{ gridColumn: 'span 2' }} />
+          <Input label="Nome completo" required value={form.name} onChange={set('name')} span={2} />
           <Input label="CPF/CNPJ" value={formatCpfCnpj(c.cpfCnpj)} disabled help="Não pode ser alterado" />
           <Input label="Título de eleitor" value={form.voterTitle} onChange={set('voterTitle')} />
           <Input label="Data de nascimento" type="date" value={form.birthDate} onChange={set('birthDate')} />
@@ -138,7 +138,7 @@ function toForm(c: CustomerDetail) {
 }
 
 // ---------------------------------------------------------------- Endereço
-const ADDRESS_FIELDS: [string, string, number][] = [
+const ADDRESS_FIELDS: [string, string, 1 | 2][] = [
   ['street', 'Endereço', 2],
   ['number', 'Número', 1],
   ['complement', 'Complemento', 1],
@@ -159,7 +159,7 @@ function AddressForm({ title, value, onChange, disabled }: { title: string; valu
             disabled={disabled}
             value={k === 'zip' ? formatCep(value[k] ?? '') : (value[k] ?? '')}
             onChange={(e) => onChange({ ...(value as Record<string, string>), [k]: e.target.value })}
-            style={{ gridColumn: `span ${span}` }}
+            span={span === 2 ? 2 : undefined}
             maxLength={k === 'state' ? 2 : undefined}
           />
         ))}

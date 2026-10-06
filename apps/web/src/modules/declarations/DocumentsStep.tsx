@@ -85,11 +85,11 @@ export function DocumentsStep() {
         <Card
           title="Enviar arquivos"
           actions={
-            <span className="vf-inline" style={{ flexWrap: 'nowrap' }}>
+            <span className="vf-inline">
               <label className="vf-field__label" htmlFor="doc-category">
                 Categoria
               </label>
-              <Select id="doc-category" value={category} onChange={(e) => setCategory(e.target.value)} options={CATEGORY_OPTIONS} style={{ minWidth: 260 }} />
+              <Select id="doc-category" value={category} onChange={(e) => setCategory(e.target.value)} options={CATEGORY_OPTIONS} style={{ width: 260, maxWidth: '100%' }} />
             </span>
           }
         >

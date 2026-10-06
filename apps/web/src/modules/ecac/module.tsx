@@ -6,6 +6,7 @@ import { EcacTab } from './EcacTab';
 import { ElaborationPage } from './ElaborationPage';
 import { PrefilledPage } from './PrefilledPage';
 import { RobotAdminTab } from './RobotAdminTab';
+import './ecac.css';
 
 /** eCAC, robô (extensão e sincronizador), pré-preenchidas, elaboração e central de downloads. */
 export const module: VerifcoModule = {

@@ -318,7 +318,7 @@ function FinancialAdvisor({ customerId }: { customerId: string }) {
                 <span className="vf-text-xs-bold vf-muted">ANÁLISES ANTERIORES</span>
                 <div className="vf-inline">
                   {list.map((a) => (
-                    <button key={a.id} type="button" className={cx('vf-chip')} style={{ cursor: 'pointer', paddingRight: 8 }} onClick={() => setCurrentId(a.id)}>
+                    <button key={a.id} type="button" className={cx('vf-adv-chip')} style={{ cursor: 'pointer', paddingRight: 8 }} onClick={() => setCurrentId(a.id)}>
                       <span>
                         {formatDateTime(a.createdAt)} {a.id === current.id ? '•' : ''}
                       </span>

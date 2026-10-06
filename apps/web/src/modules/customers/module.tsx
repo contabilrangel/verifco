@@ -2,6 +2,7 @@ import { IdCard, MapPin } from 'lucide-react';
 import type { VerifcoModule } from '../../app/modules';
 import { AddressTab, IdentificationTab } from './CadastroTabs';
 import { CustomersPage } from './CustomersPage';
+import './customers.css';
 
 export const module: VerifcoModule = {
   routes: [{ path: 'clientes', element: <CustomersPage /> }],

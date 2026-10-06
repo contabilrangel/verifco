@@ -78,34 +78,56 @@ export function registerJobs(ctx: AppContext) {
     return syncCustomerViaSerpro(ctx, client, customer);
   });
 
-  /** Sincronização de todos os clientes com procurador do escritório. */
+  /**
+   * Sincronização de todos os clientes com procurador do escritório. Quem pediu é avisado no sino
+   * ao terminar, inclusive quando a sincronização inteira falha (ex.: SERPRO não configurado).
+   */
   ctx.jobs.register('ecac.sync_office', async (job, { progress }) => {
     const officeId = job.officeId;
     if (!officeId) throw new Error('Job sem escritório.');
-    const client = await requireSerpro(ctx, officeId);
-    const list = await db
-      .select()
-      .from(customers)
-      .where(and(eq(customers.officeId, officeId), isNull(customers.deletedAt), isNotNull(customers.procuratorId), eq(customers.status, 'active')))
-      .orderBy(asc(customers.name));
-    let ok = 0;
-    const errors: { customerId: string; name: string; error: string }[] = [];
-    for (const [i, c] of list.entries()) {
-      try {
-        await syncCustomerViaSerpro(ctx, client, c);
-        ok++;
-      } catch (err) {
-        errors.push({ customerId: c.id, name: c.name, error: err instanceof Error ? err.message : String(err) });
+    try {
+      return await syncOffice(ctx, officeId, job.createdByUserId, progress);
+    } catch (err) {
+      // a fila repete enquanto attempts < maxAttempts: avisa só quando não haverá nova tentativa
+      if (job.attempts >= job.maxAttempts) {
+        await notify(db, {
+          officeId,
+          userId: job.createdByUserId,
+          title: 'Sincronização do eCAC falhou',
+          body: err instanceof Error ? err.message : String(err),
+          link: '/admin/robo',
+        }).catch(() => undefined);
       }
-      await progress(((i + 1) / Math.max(1, list.length)) * 100);
+      throw err;
     }
-    await notify(db, {
-      officeId,
-      userId: job.createdByUserId,
-      title: 'Sincronização eCAC concluída',
-      body: `${ok} de ${list.length} cliente(s) sincronizado(s)${errors.length ? `, ${errors.length} com erro` : ''}.`,
-      link: '/admin/robo',
-    });
-    return { total: list.length, ok, failed: errors.length, errors: errors.slice(0, 50) };
   });
+}
+
+async function syncOffice(ctx: AppContext, officeId: string, userId: string | null, progress: (pct: number) => Promise<void>) {
+  const { db } = ctx;
+  const client = await requireSerpro(ctx, officeId);
+  const list = await db
+    .select()
+    .from(customers)
+    .where(and(eq(customers.officeId, officeId), isNull(customers.deletedAt), isNotNull(customers.procuratorId), eq(customers.status, 'active')))
+    .orderBy(asc(customers.name));
+  let ok = 0;
+  const errors: { customerId: string; name: string; error: string }[] = [];
+  for (const [i, c] of list.entries()) {
+    try {
+      await syncCustomerViaSerpro(ctx, client, c);
+      ok++;
+    } catch (err) {
+      errors.push({ customerId: c.id, name: c.name, error: err instanceof Error ? err.message : String(err) });
+    }
+    await progress(((i + 1) / Math.max(1, list.length)) * 100);
+  }
+  await notify(db, {
+    officeId,
+    userId,
+    title: 'Sincronização eCAC concluída',
+    body: `${ok} de ${list.length} cliente(s) sincronizado(s)${errors.length ? `, ${errors.length} com erro` : ''}.`,
+    link: '/admin/robo',
+  });
+  return { total: list.length, ok, failed: errors.length, errors: errors.slice(0, 50) };
 }

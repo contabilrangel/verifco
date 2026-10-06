@@ -169,6 +169,9 @@ export function createEmailSender(ctx: AppContext, factory: TransportFactory = d
           subject: msg.subject,
           html: msg.html,
           attachments: (msg.attachments ?? []).map((a) => ({ filename: a.filename, content: a.content, contentType: a.contentType })),
+          // Imagens enviadas do computador chegam no HTML como `data:image/...`, que o Gmail e o Outlook
+          // não exibem; o nodemailer as converte em anexos inline (Content-ID) e troca o src por `cid:`.
+          attachDataUrls: true,
         });
         return { messageId: info.messageId ?? `smtp-${Date.now()}` };
       } catch (err) {

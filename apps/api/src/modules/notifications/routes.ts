@@ -43,6 +43,8 @@ export async function notificationRoutes(app: FastifyInstance) {
         title: notifications.title,
         body: notifications.body,
         link: notifications.link,
+        // nulo = aviso do escritório inteiro; preenchido = aviso só deste usuário
+        userId: notifications.userId,
         customerId: notifications.customerId,
         // pessoal: lida na própria linha; do escritório: lida por usuário
         readAt: sql<Date | null>`coalesce(${notifications.readAt}, ${notificationReads.readAt})`,
