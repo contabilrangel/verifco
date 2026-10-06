@@ -134,6 +134,7 @@ export async function portalRoutes(app: FastifyInstance) {
         progress: checklistProgress(items),
         sectionsTotal: sections.length,
         sectionsDone: sections.filter((s) => s.status !== 'open').length,
+        sectionsPending: sections.filter((s) => s.status === 'pending_documents').length,
         finishedAt: checklistRow.finishedAt,
         readOnly: lock.readOnly,
       };

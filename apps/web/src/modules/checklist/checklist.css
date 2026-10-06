@@ -1,0 +1,111 @@
+/* Checklist digital, portal do cliente e mensagens. Só tokens do design system. */
+
+/* ---------- Conversa ---------- */
+.ck-chat-box {
+  max-height: min(60vh, 560px); min-height: 220px; overflow-y: auto; padding: var(--size-spacing-04);
+  background: var(--color-surface-low); border: 1px solid var(--color-border); border-radius: var(--border-radius-md);
+}
+.ck-chat-day { align-self: center; font: var(--text-xs-bold); color: var(--color-text-low); background: var(--color-gray-20); padding: 2px var(--size-spacing-03); border-radius: var(--border-radius-pill); letter-spacing: 0; }
+.ck-chat-box .vf-bubble { overflow-wrap: anywhere; }
+.ck-chat-box .vf-bubble--other { background: var(--color-surface); border: 1px solid var(--color-border); }
+.ck-composer { display: flex; flex-direction: column; gap: var(--size-spacing-03); }
+.ck-composer .vf-textarea { min-height: 72px; }
+
+/* ---------- Páginas públicas ---------- */
+.ck-public .public-page__header { position: sticky; top: 0; z-index: var(--zindex-1); padding: var(--size-spacing-03) var(--size-spacing-04); }
+.ck-brand { display: flex; align-items: center; gap: var(--size-spacing-03); min-width: 0; }
+.ck-brand__mark {
+  width: 36px; height: 36px; border-radius: var(--border-radius-sm); background: var(--color-primary-100); color: var(--color-white);
+  display: inline-flex; align-items: center; justify-content: center; font: var(--text-sm-bold); flex-shrink: 0;
+}
+.ck-brand__name { font: var(--text-sm-bold); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ck-brand__sub { font: var(--text-xs-regular); color: var(--color-text-low); letter-spacing: 0; }
+.ck-nav { display: flex; gap: var(--size-spacing-01); background: var(--color-surface); border-bottom: 1px solid var(--color-border); padding: 0 var(--size-spacing-03); overflow-x: auto; position: sticky; top: 61px; z-index: var(--zindex-0); }
+.ck-nav .vf-tab { padding: var(--size-spacing-03); }
+.ck-login { max-width: 420px; margin: var(--size-spacing-06) auto 0; }
+.ck-login__icon { width: 48px; height: 48px; border-radius: var(--border-radius-md); background: var(--color-primary-10); color: var(--color-interactive); display: inline-flex; align-items: center; justify-content: center; }
+.ck-login__icon svg { width: 24px; height: 24px; }
+.ck-code-input:not(:placeholder-shown) { letter-spacing: 0.3em; font-variant-numeric: tabular-nums; }
+.ck-footer { text-align: center; color: var(--color-text-low); font: var(--text-xs-regular); padding: var(--size-spacing-05) 0 0; letter-spacing: 0; }
+.ck-hello { font: var(--text-lg-bold); }
+
+/* ---------- Status (portal) ---------- */
+.ck-status { display: flex; gap: var(--size-spacing-03); align-items: flex-start; }
+.ck-status__icon { width: 40px; height: 40px; border-radius: var(--border-radius-md); display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; background: var(--color-gray-10); color: var(--color-text-medium); }
+.ck-status__icon svg { width: 22px; height: 22px; }
+.ck-status__icon--primary { background: var(--color-primary-10); color: var(--color-interactive); }
+.ck-status__icon--success { background: var(--color-green-10); color: var(--color-green-90); }
+.ck-status__icon--warning { background: var(--color-yellow-10); color: var(--color-yellow-100); }
+.ck-status__icon--danger { background: var(--color-red-10); color: var(--color-red-80); }
+.ck-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.ck-list > li { display: flex; align-items: center; justify-content: space-between; gap: var(--size-spacing-03); padding: var(--size-spacing-03) 0; border-top: 1px solid var(--color-border); }
+.ck-list > li:first-child { border-top: 0; padding-top: 0; }
+.ck-list > li:last-child { padding-bottom: 0; }
+
+/* ---------- Checklist do cliente ---------- */
+.ck-section { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--border-radius-md); overflow: hidden; }
+.ck-section--done { border-color: var(--color-green-20); }
+.ck-section__head {
+  display: flex; align-items: center; gap: var(--size-spacing-03); width: 100%; padding: var(--size-spacing-04); border: 0; background: none;
+  cursor: pointer; text-align: left; color: inherit;
+}
+.ck-section__head:hover { background: var(--color-surface-low); }
+.ck-section__head > svg { width: 20px; height: 20px; color: var(--color-text-low); flex-shrink: 0; transition: transform var(--motion-duration-fast); }
+.ck-section__head[aria-expanded='true'] > svg { transform: rotate(180deg); }
+.ck-section__n {
+  width: 32px; height: 32px; border-radius: 50%; background: var(--color-primary-10); color: var(--color-interactive);
+  display: inline-flex; align-items: center; justify-content: center; font: var(--text-sm-bold); flex-shrink: 0;
+}
+.ck-section__n--done { background: var(--color-green-10); color: var(--color-green-90); }
+.ck-section__n--pending { background: var(--color-yellow-10); color: var(--color-yellow-100); }
+.ck-section__n svg { width: 18px; height: 18px; }
+.ck-section__title { font: var(--text-md-bold); }
+.ck-section__body { padding: 0 var(--size-spacing-04) var(--size-spacing-04); display: flex; flex-direction: column; gap: var(--size-spacing-03); }
+.ck-item { border: 1px solid var(--color-border); border-radius: var(--border-radius-sm); padding: var(--size-spacing-03) var(--size-spacing-04); display: flex; flex-direction: column; gap: var(--size-spacing-02); background: var(--color-surface); }
+.ck-item--resolved { background: var(--color-surface-low); }
+.ck-item--muted .ck-item__title { color: var(--color-text-low); text-decoration: line-through; }
+.ck-item__top { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--size-spacing-03); }
+.ck-item__title { font: var(--text-sm-bold); overflow-wrap: anywhere; }
+.ck-item__desc { font: var(--text-xs-regular); color: var(--color-text-low); letter-spacing: 0; }
+.ck-item__note { font: var(--text-xs-regular); letter-spacing: 0; background: var(--color-yellow-10); color: var(--color-text-medium); border-radius: var(--border-radius-xs); padding: var(--size-spacing-02) var(--size-spacing-03); white-space: pre-wrap; overflow-wrap: anywhere; }
+.ck-actions { display: flex; flex-wrap: wrap; gap: var(--size-spacing-02); }
+.ck-files { display: flex; flex-wrap: wrap; gap: var(--size-spacing-02); }
+.ck-file {
+  display: inline-flex; align-items: center; gap: var(--size-spacing-01); max-width: 100%; height: 28px; padding: 0 var(--size-spacing-01) 0 var(--size-spacing-02);
+  border-radius: var(--border-radius-xs); background: var(--color-primary-10); color: var(--color-primary-90); font: var(--text-xs-bold); letter-spacing: 0;
+}
+.ck-file > button:first-of-type { border: 0; background: none; color: inherit; font: inherit; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; min-width: 0; padding: 0; }
+.ck-file > button:first-of-type span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px; }
+.ck-file svg { width: 14px; height: 14px; flex-shrink: 0; }
+.ck-file .vf-icon-btn { width: 24px; height: 24px; color: inherit; }
+.ck-file .vf-icon-btn svg { width: 14px; height: 14px; }
+.ck-option {
+  display: flex; gap: var(--size-spacing-03); align-items: flex-start; padding: var(--size-spacing-03) var(--size-spacing-04);
+  border: 1px solid var(--color-border-strong); border-radius: var(--border-radius-sm); cursor: pointer;
+}
+.ck-option:has(input:checked) { border-color: var(--color-interactive); background: var(--color-interactive-low); }
+.ck-option:has(input:disabled) { opacity: 0.5; cursor: not-allowed; }
+.ck-option input { margin-top: 3px; accent-color: var(--color-interactive); width: 18px; height: 18px; flex-shrink: 0; }
+.ck-summary li { align-items: flex-start; }
+.ck-done-banner { display: flex; gap: var(--size-spacing-03); align-items: center; }
+.ck-done-banner svg { width: 40px; height: 40px; color: var(--color-green-80); flex-shrink: 0; }
+
+/* ---------- Checklist do escritório ---------- */
+.ck-office-item { display: flex; flex-direction: column; gap: 2px; }
+.ck-items-table { table-layout: fixed; min-width: 860px; }
+.ck-items-table td { overflow-wrap: anywhere; vertical-align: top; }
+.ck-items-table td.actions { vertical-align: middle; }
+.ck-copy { display: flex; gap: var(--size-spacing-02); align-items: flex-end; }
+.ck-copy .vf-input { font-variant-numeric: tabular-nums; }
+.ck-meta { display: flex; flex-wrap: wrap; gap: var(--size-spacing-02) var(--size-spacing-04); color: var(--color-text-low); font: var(--text-xs-regular); letter-spacing: 0; }
+
+@media (max-width: 600px) {
+  .ck-public .public-page__body { padding-top: var(--size-spacing-04); }
+  .ck-public .vf-card { padding: var(--size-spacing-04); }
+  .ck-section__head { padding: var(--size-spacing-03); }
+  .ck-section__body { padding: 0 var(--size-spacing-03) var(--size-spacing-03); }
+  .ck-item { padding: var(--size-spacing-03); }
+  .ck-login { margin-top: var(--size-spacing-03); }
+  .ck-public .vf-bubble { max-width: 88%; }
+  .ck-chat-box { padding: var(--size-spacing-03); }
+}
