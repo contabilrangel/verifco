@@ -18,7 +18,7 @@ import {
   type ItemKind,
 } from '@verifco/shared';
 import { declarationItems, declarations } from '../../db/schema';
-import { conflict, forbidden, notFound } from '../../lib/errors';
+import { badRequest, conflict, forbidden, notFound } from '../../lib/errors';
 import { audit, can, dateStr, guard, optionalText, parse, requireUser, uuidParam, yearSchema } from '../../lib/http';
 import { getCustomerForUser } from '../../services/customers';
 import { advanceDeclaration, getOrCreateDeclaration, setDeclarationSubstatus } from '../../services/declarations';
@@ -146,6 +146,9 @@ export async function declarationRoutes(app: FastifyInstance) {
     const body = parse(summarySchema, req.body);
     const customer = await getCustomerForUser(app.ctx, user, id);
     const current = await getOrCreateDeclaration(db, user.officeId, customer.id, year);
+    if ((body.taxDueCents ?? current.taxDueCents) > 0 && (body.refundCents ?? current.refundCents) > 0) {
+      throw badRequest('Informe imposto a pagar ou a restituir, não os dois.');
+    }
     const { transmittedAt, otherExpenses, ...fields } = body;
     const [updated] = await db
       .update(declarations)

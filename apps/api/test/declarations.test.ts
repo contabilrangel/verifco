@@ -37,6 +37,9 @@ describe('declaração do exercício', () => {
 
     expect((await api.put(`/api/customers/${cid}/declarations/${YEAR}`, { taxDueCents: -1 })).status).toBe(400);
     expect((await api.put(`/api/customers/${cid}/declarations/${YEAR}`, { ecacStatus: 'qualquer' })).status).toBe(400);
+    const both = await api.put(`/api/customers/${cid}/declarations/${YEAR}`, { refundCents: 10 });
+    expect(both.status).toBe(400);
+    expect(both.body.error).toContain('não os dois');
   });
 
   it('informar a transmissão leva para "Transmitida" e a situação eCAC acompanha', async () => {
