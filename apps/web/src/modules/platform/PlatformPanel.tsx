@@ -53,7 +53,7 @@ function PlatformLogin({ onLogin, error }: { onLogin: (token: string) => void; e
     catch (e) { setFailure(errorMessage(e)); } finally { setBusy(false); }
   }
   return <main className="vf-platform-login">
-    <div className="vf-platform-login__intro"><div className="vf-platform-brand"><ShieldCheck /> Verifco <Tag tone="primary">Sistema</Tag></div>
+    <div className="vf-platform-login__intro"><div className="vf-platform-brand"><img className="vf-platform-brand__logo" src="/verifco-logo.svg" alt="Verifco" /><Tag tone="primary">Sistema</Tag></div>
       <h1>Um lugar para<br />administrar a plataforma.</h1><p>Escritórios, contratos, inteligência artificial e operação do Verifco.</p>
       <div className="vf-platform-login__features"><span><Building2 /> Administração global</span><span><Sparkles /> Conexões de IA</span><span><ShieldCheck /> Acesso exclusivo da equipe do sistema</span></div>
     </div>
@@ -91,7 +91,7 @@ function PlatformShell({ me, logout, error }: { me: Account; logout: () => Promi
   const selected = TABS.find((t) => t.path === tab && (!t.owner || owner));
   return <div className="vf-platform">
     <aside className="vf-platform-sidebar">
-      <div className="vf-platform-brand"><ShieldCheck /> Verifco</div><span className="vf-platform-caption">Administração do sistema</span>
+      <div className="vf-platform-brand"><img className="vf-platform-brand__logo" src="/verifco-logo-negativo.svg" alt="Verifco" /></div><span className="vf-platform-caption">Administração do sistema</span>
       <nav aria-label="Administração global">{TABS.filter((t) => !t.owner || owner).map((t) => <NavLink end to={`/sistema${t.path ? '/' + t.path : ''}`} key={t.path}>
         <t.icon size={19} />{t.label}</NavLink>)}</nav>
       <div className="vf-platform-account"><strong>{me.name}</strong><span>{owner ? 'Proprietário' : 'Desenvolvedor'}</span>

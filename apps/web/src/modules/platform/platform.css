@@ -1,12 +1,15 @@
 .vf-platform { min-height: 100vh; display: grid; grid-template-columns: 248px minmax(0, 1fr); background: var(--color-background); }
 .vf-platform-sidebar { display: flex; flex-direction: column; gap: var(--size-spacing-04); padding: var(--size-spacing-06) var(--size-spacing-04); background: var(--color-primary-100); color: var(--color-text-on-color); }
 .vf-platform-brand { display: flex; align-items: center; gap: var(--size-spacing-03); font: var(--text-xl-bold); }
+.vf-platform-brand__logo { display: block; width: 156px; max-width: 100%; height: auto; }
 .vf-platform-caption { font: var(--text-xs-regular); opacity: .8; }
 .vf-platform-sidebar nav { display: grid; gap: var(--size-spacing-02); margin-top: var(--size-spacing-05); }
 .vf-platform-sidebar nav a { display: flex; align-items: center; gap: var(--size-spacing-03); padding: var(--size-spacing-03); color: var(--color-text-on-color); border-radius: var(--border-radius-sm); text-decoration: none; font: var(--text-sm-regular); }
 .vf-platform-sidebar nav a:hover, .vf-platform-sidebar nav a.active { background: var(--color-primary-80); }
 .vf-platform-account { margin-top: auto; display: grid; gap: var(--size-spacing-02); padding-top: var(--size-spacing-06); font: var(--text-sm-regular); }
-.vf-platform-account .vf-btn { color: var(--color-text-on-color); }
+.vf-platform-account .vf-btn--tertiary { --btn-bg: transparent; --btn-fg: var(--color-text-on-color); --btn-border: var(--color-primary-70); }
+.vf-platform-account .vf-btn--tertiary:is(:hover, :focus-visible, :active):not(:disabled) { --btn-bg: var(--color-primary-80); --btn-border: var(--color-primary-50); }
+.vf-platform-account .vf-btn--tertiary:focus-visible { outline-color: var(--color-primary-30); }
 .vf-platform-body { min-width: 0; }
 .vf-platform-header { display: flex; align-items: center; justify-content: space-between; gap: var(--size-spacing-04); padding: var(--size-spacing-04) var(--size-spacing-06); border-bottom: 1px solid var(--color-border); background: var(--color-surface); font: var(--text-sm-regular); }
 .vf-platform-content { padding: var(--size-spacing-06); max-width: 1440px; margin: auto; display: grid; gap: var(--size-spacing-05); }
