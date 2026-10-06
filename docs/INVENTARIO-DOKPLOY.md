@@ -21,6 +21,7 @@ fixos. Senhas, URLs com credenciais, chaves e dados pessoais não fazem parte do
 | Compose Path | `./compose.dokploy-managed.yml` |
 | Último commit da aplicação implantado | [`e6366bcd6054be6fb6491a05083a72a7225e62f9`](https://github.com/contabilrangel/verifco/commit/e6366bcd6054be6fb6491a05083a72a7225e62f9) — merge do [PR #7](https://github.com/contabilrangel/verifco/pull/7) |
 | Autodeploy | **Desativado**; um merge não dispara a implantação automaticamente |
+| Branch de produção no Git (06/10/2026, noite) | Inclui os PRs #8 a #23, **ainda não implantados**; veja [Mudanças pendentes de implantação](#mudanças-pendentes-de-implantação) |
 
 [Abrir o ambiente de produção](https://dokploy.llypedev.com.br/dashboard/project/IYzXJY6swQ49cLyaqOii-/environment/VUe9y0rnw6LA9UAnjIH5U).
 Aplicação e dois serviços PostgreSQL estão na mesma VM. Os bancos têm uma réplica
@@ -180,11 +181,69 @@ Na conferência da implantação dos bancos gerenciados:
   interativamente. Não recriar o primeiro proprietário durante atualizações.
 - A página de entrada de `ir.verifco.com.br` foi acessada após a troca dos bancos.
 
+Verificação externa somente leitura, feita depois, por volta de 16h30 (America/Sao_Paulo),
+ainda com o commit `e6366bc` no ar:
+
+- DNS: os quatro domínios resolvem para `163.176.238.103`; não há registros AAAA.
+- Certificados Let's Encrypt de `app`, `ir` e `painel` válidos de 06/10/2026 até
+  04/01/2027 (emitidos no mesmo dia; a renovação automática não foi conferida).
+- HTTP na porta 80 redireciona (301) para HTTPS; a raiz de `painel.verifco.com.br`
+  responde 302 para `/sistema`; `/entrar`, `/cadastro` e `/sistema` respondem 200.
+- `/api/platform/me` responde 401 nos três domínios; CORS não aceita origens externas.
+- Nenhum cabeçalho de segurança (HSTS, `X-Frame-Options`, CSP, `nosniff`,
+  `Referrer-Policy`) era enviado. A correção (PR #9) está entre as mudanças pendentes.
+- `dokploy.llypedev.com.br` exibe a tela de login publicamente; avaliar restrição por IP.
+
 Nesta rede de verificação, o FortiGuard bloqueou `app.verifco.com.br` e
 `painel.verifco.com.br` como **Newly Observed Domain**. DNS e cadastro HTTPS desses
 domínios foram conferidos, mas o login externo do proprietário não foi validado
 nessa rede. O bloqueio não foi contornado. Estado de domínio e acesso devem ser
 conferidos novamente em uma rede autorizada sem essa restrição.
+
+## Mudanças pendentes de implantação
+
+Em 06/10/2026 entraram no branch de produção os PRs abaixo, depois do commit implantado
+`e6366bc`. **Nenhum deles está no ar até o próximo Deploy de "Verifco completo".**
+
+| PR | Mudança | Banco |
+| --- | --- | --- |
+| [#8](https://github.com/contabilrangel/verifco/pull/8) | Este inventário e ajustes em DOKPLOY.md | — |
+| [#9](https://github.com/contabilrangel/verifco/pull/9) | Cabeçalhos de segurança no Nginx da web (HSTS, `X-Frame-Options`, CSP `frame-ancestors`, `nosniff`, `Referrer-Policy`, `Permissions-Policy`) | — |
+| [#10](https://github.com/contabilrangel/verifco/pull/10) | Novo visual das telas de acesso e do login de `/sistema` | — |
+| [#11](https://github.com/contabilrangel/verifco/pull/11), [#20](https://github.com/contabilrangel/verifco/pull/20) | Documentos do escritório visíveis no portal do cliente, com campo próprio | `0011` coluna, `0012` dados |
+| [#12](https://github.com/contabilrangel/verifco/pull/12) | Bloqueio de alterações manuais em parcelas emitidas no Asaas/Omie | — |
+| [#13](https://github.com/contabilrangel/verifco/pull/13) | Cartão "Uso do contrato" para o escritório | — |
+| [#14](https://github.com/contabilrangel/verifco/pull/14) | Leitura do relatório SITFIS | — |
+| [#15](https://github.com/contabilrangel/verifco/pull/15) | Sincronização automática do eCAC configurável | `0009` dados |
+| [#16](https://github.com/contabilrangel/verifco/pull/16) | Malas diretas recentes | `0010` índice |
+| [#17](https://github.com/contabilrangel/verifco/pull/17) | Ano atual no fuso de Brasília | — |
+| [#18](https://github.com/contabilrangel/verifco/pull/18) | Data do arquivo .REC na transmissão; sincronizador 0.2.0 | — |
+| [#19](https://github.com/contabilrangel/verifco/pull/19) | Alertas de acesso dos procuradores no painel | — |
+| [#21](https://github.com/contabilrangel/verifco/pull/21) | Auditoria das linhas da DIRPF; "Cobrança não emitida" no relatório | — |
+| [#22](https://github.com/contabilrangel/verifco/pull/22) | Permissões da elaboração; teste do WhatsApp fora da janela de 24 h | — |
+| [#23](https://github.com/contabilrangel/verifco/pull/23) | Etapa DARF e menu conforme as permissões do servidor | — |
+
+Efeitos no banco dos escritórios, aplicados pela API ao iniciar (`DB_SYNC=migrate`):
+
+- `0009`: grava a sincronização automática **diária** nas integrações SERPRO **ativas**
+  e registra isso na auditoria; integrações desativadas ficam com a sincronização
+  automática desligada (o padrão novo).
+- `0010`: cria o índice `jobs_office_type_idx`. A criação bloqueia gravações em `jobs`
+  enquanto o índice é montado; nesta instalação a tabela é pequena.
+- `0011`/`0012`: nova coluna `documents.shared_with_customer`; documentos com a categoria
+  antiga `shared_with_customer` passam para "Outros" com a coluna marcada.
+- Nenhuma migração cria tabela: a contagem de 46 e 5 tabelas públicas continua válida.
+  O banco da plataforma não muda.
+
+Depois do Deploy, conferir, além do roteiro de [Atualização e recuperação](#atualização-e-recuperação):
+
+1. `curl -I https://app.verifco.com.br/` mostra `strict-transport-security`,
+   `x-frame-options: SAMEORIGIN` e `content-security-policy`.
+2. `/entrar` e `/sistema` com o visual novo; login do proprietário em rede sem o bloqueio citado.
+3. Nos logs da API, as migrações `0009` a `0012` aplicadas sem erro.
+4. Os contadores atualizam o sincronizador para a **0.2.0** pela Central de downloads;
+   até lá vale a data de recebimento do .REC.
+5. Atualizar a linha "Último commit da aplicação implantado" deste inventário.
 
 ## Backups e pendências reais
 
