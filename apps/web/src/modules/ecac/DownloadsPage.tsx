@@ -99,7 +99,7 @@ export function DownloadsPage() {
         <Card title={<span className="vf-inline"><Puzzle size={20} /> Extensão Verifco</span>}>
           <div className="vf-stack">
             <span className="vf-muted">
-              Abre os serviços do eCAC a partir da aba “Ações eCAC” do cliente e, quando habilitado, envia ao Verifco os dados das páginas do eCAC que você visitar.
+              Abre os serviços do eCAC a partir da aba “Ações eCAC” do cliente. A leitura automática das páginas ainda não está disponível; os dados que o SERPRO não fornece devem ser lançados na aba eCAC do cliente.
             </span>
             <Tabs<Browser>
               value={browser}
