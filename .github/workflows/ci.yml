@@ -71,6 +71,8 @@ jobs:
         run: |
           docker compose exec -T web wget -q -O - http://127.0.0.1/ | grep -q '<div id="root">'
           docker compose exec -T web wget -q -O - http://127.0.0.1/sistema | grep -q '<div id="root">'
+          docker compose exec -T web sh -c 'wget -S -q -O /dev/null http://127.0.0.1/entrar 2>&1' > headers.txt
+          grep -qi '^ *X-Frame-Options: SAMEORIGIN' headers.txt && grep -qi "frame-ancestors 'self'" headers.txt && grep -qi '^ *Strict-Transport-Security:' headers.txt || { cat headers.txt; echo 'Cabeçalhos de segurança ausentes'; exit 1; }
           docker compose exec -T api node -e "fetch('http://web/api/platform/me').then(r=>{if(r.status!==401)throw Error('API não encaminhada: '+r.status)}).catch(e=>{console.error(e);process.exit(1)})"
           docker compose exec -T api node --input-type=module -e "import http from 'node:http'; http.get('http://web/',{headers:{Host:'painel.verifco.com.br'}},r=>{r.resume();if(r.statusCode!==302||r.headers.location!=='/sistema'){console.error('Entrada do painel incorreta: '+r.statusCode+' '+r.headers.location);process.exitCode=1}}).on('error',e=>{console.error(e);process.exitCode=1})"
       - name: Confere separação real dos bancos PostgreSQL

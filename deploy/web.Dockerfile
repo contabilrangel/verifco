@@ -9,5 +9,6 @@ RUN pnpm --filter @verifco/web... install --frozen-lockfile \
 
 FROM nginx:stable-alpine
 COPY deploy/nginx.conf /etc/nginx/conf.d/default.conf
+COPY deploy/nginx-security-headers.conf /etc/nginx/snippets/verifco-security-headers.conf
 COPY --from=build /app/apps/web/dist /usr/share/nginx/html
 EXPOSE 80
