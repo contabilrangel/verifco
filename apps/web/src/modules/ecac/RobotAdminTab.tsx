@@ -57,7 +57,7 @@ export function RobotAdminTab() {
       >
         <div className="vf-stack">
           <span className="vf-muted">
-            O robô reúne os dados do eCAC por três caminhos: a integração oficial <strong>SERPRO Integra Contador</strong> (procuração e caixa postal, sem depender do seu computador), a{' '}
+            O robô reúne os dados do eCAC por três caminhos: a integração oficial <strong>SERPRO Integra Contador</strong> (procuração, caixa postal, situação fiscal e pagamentos do DARF, sem depender do seu computador), a{' '}
             <strong>extensão do navegador</strong> (abre os serviços do eCAC; a leitura automática das páginas ainda não está disponível) e o <strong>sincronizador</strong> (guarda nos documentos do cliente os arquivos .DEC, .REC e .DBK do programa IRPF, sem ler o conteúdo; o recibo .REC marca a declaração como transmitida). Nada é simulado: sem uma dessas fontes, os painéis ficam vazios.
           </span>
           <ul className="vf-ecac-steps vf-text-xs">
