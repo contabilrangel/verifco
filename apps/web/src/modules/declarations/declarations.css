@@ -143,3 +143,24 @@
 .vf-dec-receipt > svg { width: 20px; height: 20px; flex-shrink: 0; color: var(--color-success); }
 .vf-dec-receipt__text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; font: var(--text-sm-regular); }
 .vf-dec-receipt__name { overflow-wrap: anywhere; color: var(--color-text-medium); }
+
+/* alertas de acesso dos procuradores ao eCAC (dashboard), agrupados por gravidade */
+.vf-dec-proc { display: flex; flex-direction: column; gap: var(--size-spacing-02); padding-left: var(--size-spacing-03); border-left: 3px solid var(--color-border); }
+.vf-dec-proc--danger { border-left-color: var(--color-danger); }
+.vf-dec-proc--warning { border-left-color: var(--color-yellow-80); }
+.vf-dec-proc__title { display: flex; align-items: center; gap: var(--size-spacing-02); margin: 0; font: var(--text-sm-bold); color: var(--color-text-high); }
+.vf-dec-proc__icon { display: inline-flex; color: var(--color-text-low); }
+.vf-dec-proc__icon svg { width: 16px; height: 16px; }
+.vf-dec-proc--danger .vf-dec-proc__icon { color: var(--color-red-70); }
+.vf-dec-proc--warning .vf-dec-proc__icon { color: var(--color-yellow-100); }
+.vf-dec-proc__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.vf-dec-proc__item { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: var(--size-spacing-02) var(--size-spacing-04); padding: var(--size-spacing-02) 0; border-top: 1px solid var(--color-border); }
+.vf-dec-proc__item:first-child { border-top: 0; }
+.vf-dec-proc__main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 280px; }
+.vf-dec-proc__name { display: flex; flex-wrap: wrap; align-items: center; gap: var(--size-spacing-02); color: var(--color-text-high); font: var(--text-sm-regular); overflow-wrap: anywhere; }
+.vf-dec-proc__name > svg { color: var(--color-text-low); flex-shrink: 0; }
+.vf-dec-proc__text { font: var(--text-sm-regular); color: var(--color-text-medium); }
+.vf-dec-proc__meta { font: var(--text-xs-regular); color: var(--color-text-low); }
+.vf-dec-proc__actions { display: flex; flex-wrap: wrap; gap: var(--size-spacing-03); }
+.vf-dec-proc__fix { display: inline-flex; align-items: center; gap: 2px; font: var(--text-sm-bold); color: var(--color-interactive); text-decoration: none; white-space: nowrap; }
+.vf-dec-proc__fix:hover { text-decoration: underline; }

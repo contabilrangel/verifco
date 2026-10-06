@@ -11,13 +11,20 @@ import {
   ECAC_DECLARATION_STATUS,
   IRPFM_THRESHOLD_CENTS,
   PROCURATION_STATUS,
+  CERTIFICATE_EXPIRY_WARNING_DAYS,
+  PROCURATOR_ACCESS,
+  PROCURATOR_ACCESS_SEVERITY,
   brazilToday,
+  certificateDaysLeft,
+  classifyProcuratorAccess,
   currentExerciseYear,
   type DeclarationItem,
+  type ProcuratorAccessSeverity,
 } from '@verifco/shared';
-import { backlogs, budgets, customers, darfs, declarationItems, declarations, procurators } from '../../db/schema';
+import type { AppContext, AuthUser } from '../../context';
+import { backlogs, budgets, customers, darfs, declarationItems, declarations, integrations, procurators } from '../../db/schema';
 import { guard, parse, requireUser, uuidParam, yearSchema } from '../../lib/http';
-import { customerScope, getCustomerForUser } from '../../services/customers';
+import { customerScope, getCustomerForUser, isCustomerScopeRestricted } from '../../services/customers';
 import { listItems } from '../../services/declarations';
 import { computeCashAnalysis, emptyDeclaration, presentDeclaration } from '../declarations/access';
 
@@ -40,6 +47,93 @@ function slices(labels: Record<string, string>, rows: { k: string | null; n: num
 }
 
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+
+const SEVERITY_ORDER: Record<ProcuratorAccessSeverity, number> = { danger: 0, warning: 1, info: 2, ok: 3 };
+
+/**
+ * Acesso dos procuradores ao eCAC (INT-15): situação de cada um pelo certificado (enviado,
+ * validade) e pelo último login no SERPRO, com os clientes ativos afetados. Sai só nome, situação,
+ * datas e contagens: nunca o CPF/CNPJ, o arquivo ou a senha do certificado.
+ *
+ * Com a restrição "contadores veem só seus clientes", entram só os procuradores dos clientes do
+ * usuário, o dele próprio e o do certificado do SERPRO (que acessa o eCAC de todos os clientes).
+ * Três consultas no total, qualquer que seja o número de procuradores.
+ */
+async function procuratorAccessSummary(ctx: AppContext, user: AuthUser, scope: SQL, today: string) {
+  const { db } = ctx;
+  const rows = await db
+    .select({
+      id: procurators.id,
+      name: procurators.name,
+      authType: procurators.authType,
+      hasCertificate: sql<boolean>`(${procurators.certificateFileId} is not null and ${procurators.certificatePasswordEnc} is not null)`,
+      certificateExpiresAt: procurators.certificateExpiresAt,
+      loginStatus: procurators.loginStatus,
+      lastValidatedAt: procurators.lastValidatedAt,
+      userId: procurators.userId,
+    })
+    .from(procurators)
+    .where(eq(procurators.officeId, user.officeId))
+    .orderBy(asc(procurators.name));
+  const customerRows = await db
+    .select({ procuratorId: customers.procuratorId, n: count() })
+    .from(customers)
+    .where(and(scope, eq(customers.status, 'active'), isNotNull(customers.procuratorId)))
+    .groupBy(customers.procuratorId);
+  const serpro = await db.query.integrations.findFirst({ where: and(eq(integrations.officeId, user.officeId), eq(integrations.provider, 'serpro')) });
+  const serproProcuratorId = serpro?.enabled && typeof serpro.publicConfig?.procuratorId === 'string' ? serpro.publicConfig.procuratorId : null;
+  const restricted = await isCustomerScopeRestricted(ctx, user);
+  const customersBy = new Map(customerRows.map((r) => [r.procuratorId, r.n]));
+
+  const items = rows
+    .map((p) => {
+      const access = classifyProcuratorAccess(p, today);
+      const loginStatus = ['ok', 'error', 'expired'].includes(p.loginStatus) ? (p.loginStatus as 'ok' | 'error' | 'expired') : null;
+      return {
+        id: p.id,
+        name: p.name,
+        authType: p.authType,
+        access,
+        label: PROCURATOR_ACCESS[access],
+        severity: PROCURATOR_ACCESS_SEVERITY[access],
+        certificateExpiresAt: p.authType === 'govbr' ? null : p.certificateExpiresAt,
+        daysLeft: p.authType === 'govbr' ? null : certificateDaysLeft(p.certificateExpiresAt, today),
+        // último uso do certificado no SERPRO (teste da integração ou robô)
+        serpro: { status: p.lastValidatedAt ? loginStatus : null, at: p.lastValidatedAt?.toISOString() ?? null, usesThisCertificate: p.id === serproProcuratorId },
+        customers: customersBy.get(p.id) ?? 0,
+        mine: p.userId === user.userId,
+      };
+    })
+    .filter((p) => !restricted || p.customers > 0 || p.mine || p.serpro.usesThisCertificate);
+
+  const byAuth = new Map<string, number>();
+  const byAccess = new Map<string, number>();
+  const counts: Record<ProcuratorAccessSeverity, number> = { danger: 0, warning: 0, info: 0, ok: 0 };
+  for (const p of items) {
+    byAuth.set(p.authType, (byAuth.get(p.authType) ?? 0) + 1);
+    byAccess.set(p.access, (byAccess.get(p.access) ?? 0) + 1);
+    counts[p.severity] += 1;
+  }
+  const alerts = items.filter((p) => p.severity !== 'ok').sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity] || a.name.localeCompare(b.name, 'pt-BR'));
+  return {
+    procuratorLogin: {
+      total: items.length,
+      byAuthType: slices(AUTH_TYPES, [...byAuth].map(([k, n]) => ({ k, n }))),
+      byAccess: slices(PROCURATOR_ACCESS, [...byAccess].map(([k, n]) => ({ k, n }))),
+      // último login no SERPRO com o certificado de cada procurador
+      loginOk: items.filter((p) => p.serpro.status === 'ok').length,
+      loginError: items.filter((p) => p.serpro.status === 'error' || p.serpro.status === 'expired').length,
+      certificatesExpired: byAccess.get('certificate_expired') ?? 0,
+    },
+    procuratorAccess: {
+      warningDays: CERTIFICATE_EXPIRY_WARNING_DAYS,
+      total: items.length,
+      counts,
+      count: alerts.length,
+      items: alerts.slice(0, ALERT_LIMIT),
+    },
+  };
+}
 
 export async function dashboardRoutes(app: FastifyInstance) {
   const { db } = app.ctx;
@@ -103,19 +197,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
       .groupBy(customers.procurationStatus);
     const cndRows = await db.select({ k: customers.cndStatus, n: count() }).from(customers).where(and(scope, eq(customers.status, 'active'))).groupBy(customers.cndStatus);
 
-    const procRows = await db
-      .select({ authType: procurators.authType, loginStatus: procurators.loginStatus, hasCert: isNotNull(procurators.certificateFileId), certExpiresAt: procurators.certificateExpiresAt })
-      .from(procurators)
-      .where(eq(procurators.officeId, user.officeId));
-    const byAuth = new Map<string, number>();
-    for (const p of procRows) byAuth.set(p.authType, (byAuth.get(p.authType) ?? 0) + 1);
-    const procuratorLogin = {
-      total: procRows.length,
-      byAuthType: slices(AUTH_TYPES, [...byAuth].map(([k, n]) => ({ k, n }))),
-      loginOk: procRows.filter((p) => p.loginStatus === 'ok' || p.loginStatus === 'valid').length,
-      loginError: procRows.filter((p) => ['error', 'invalid', 'expired'].includes(p.loginStatus)).length,
-      certificatesExpired: procRows.filter((p) => p.authType !== 'govbr' && p.certExpiresAt && p.certExpiresAt < today).length,
-    };
+    const { procuratorLogin, procuratorAccess } = await procuratorAccessSummary(app.ctx, user, scope, today);
 
     const ecacRows = await db
       .select({ k: declarations.ecacStatus, n: count() })
@@ -167,6 +249,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
         taxDueCount: ind?.taxDueCount ?? 0,
         refundCount: ind?.refundCount ?? 0,
       },
+      procuratorAccess,
       alerts: [
         { key: 'negative_cash', label: 'Saldo de caixa negativo', ...negativeCash },
         { key: 'fine_mesh', label: 'Malha fina', ...fineMesh },

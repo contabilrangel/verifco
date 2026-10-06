@@ -27,3 +27,4 @@ export * from './cashbook';
 export * from './radar';
 export * from './copilot';
 export * from './ai-providers';
+export * from './procurators';

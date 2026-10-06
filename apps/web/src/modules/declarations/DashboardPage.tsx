@@ -27,6 +27,7 @@ import { useApi } from '../../lib/hooks';
 import { formatMoney } from '../../lib/format';
 import { useYear } from '../../lib/year';
 import { BarList, ChartCard, Donut, NEUTRAL, SERIES, StackedBar, type Datum } from './charts';
+import { ProcuratorAlerts, type ProcuratorAccessData } from './ProcuratorAlerts';
 import './declarations.css';
 
 interface Slice {
@@ -56,9 +57,10 @@ interface DashboardData {
     refundCount: number;
   };
   alerts: AlertData[];
+  procuratorAccess: ProcuratorAccessData;
   charts: {
     procurations: Slice[];
-    procuratorLogin: { total: number; byAuthType: Slice[]; loginOk: number; loginError: number; certificatesExpired: number };
+    procuratorLogin: { total: number; byAuthType: Slice[]; byAccess: Slice[]; loginOk: number; loginError: number; certificatesExpired: number };
     ecac: Slice[];
     stages: Slice[];
     cnd: Slice[];
@@ -78,6 +80,18 @@ const share = (n: number, of: number) => (of > 0 ? `${Math.round((n / of) * 100)
 
 /** Cor fixa por etapa (a mesma lógica das tags de etapa). */
 const STAGE_COLOR: Record<string, string> = { not_started: NEUTRAL, negotiation: SERIES[3], filling: SERIES[2], transmitted: SERIES[0], finished: SERIES[1] };
+
+/** Cores da situação do acesso dos procuradores (verde = em ordem, vermelho = precisa de ação). */
+const ACCESS_COLOR: Record<string, string> = {
+  serpro_ok: 'var(--color-green-90)',
+  valid: 'var(--color-green-70)',
+  certificate_expiring: 'var(--color-yellow-80)',
+  certificate_expired: 'var(--color-red-70)',
+  certificate_missing: 'var(--color-red-60)',
+  serpro_error: 'var(--color-red-80)',
+  expiry_unknown: 'var(--color-gray-50)',
+  govbr_unverified: NEUTRAL,
+};
 
 const counts = (list: Slice[]): Datum[] => list.map((s) => ({ key: s.key, label: s.label, value: s.count }));
 const nonZero = (list: Datum[]) => list.filter((d) => d.value > 0);
@@ -149,7 +163,12 @@ export function DashboardPage() {
   const charts = d.charts;
   const stageData: Datum[] = charts.stages.map((s) => ({ key: s.key, label: s.label, value: s.count, color: STAGE_COLOR[s.key] }));
   const taxationData: Datum[] = charts.taxation.map((s, i) => ({ key: s.key, label: s.label, value: s.count, color: s.key === 'none' ? NEUTRAL : SERIES[i] }));
-  const loginData: Datum[] = charts.procuratorLogin.byAuthType.map((s, i) => ({ key: s.key, label: s.label, value: s.count, color: SERIES[i] }));
+  const login = charts.procuratorLogin;
+  const loginData: Datum[] = login.byAccess.map((s) => ({ key: s.key, label: s.label, value: s.count, color: ACCESS_COLOR[s.key] ?? NEUTRAL }));
+  const authSummary = login.byAuthType
+    .filter((s) => s.count > 0)
+    .map((s) => `${fmtInt(s.count)} ${s.label.toLowerCase()}`)
+    .join(' · ');
   const budgetData: Datum[] = charts.budgets.map((s) => ({ key: s.key, label: s.label, value: s.count, display: `${fmtInt(s.count)} · ${compactMoney(s.cents ?? 0)}`, detail: formatMoney(s.cents ?? 0) }));
   const assetData: Datum[] = charts.assets.map((s) => ({ key: s.key, label: s.label, value: s.cents ?? 0, display: compactMoney(s.cents ?? 0), detail: `${fmtInt(s.count)} bem(ns)` }));
   const totalAssets = assetData.reduce((a, x) => a + x.value, 0);
@@ -214,6 +233,7 @@ export function DashboardPage() {
             <AlertCard key={a.key} alert={a} onOpen={() => setOpenAlert(a)} />
           ))}
         </div>
+        <ProcuratorAlerts data={d.procuratorAccess} />
       </section>
 
       <section aria-labelledby="dash-info" className="vf-stack">
@@ -246,15 +266,12 @@ export function DashboardPage() {
             chart={<BarList data={nonZero(counts(charts.procurations))} ariaLabel="Clientes ativos por situação da procuração" />}
           />
           <ChartCard
-            title="Login do procurador"
-            subtitle="Procuradores por forma de acesso"
+            title="Acesso dos procuradores"
+            subtitle="Certificado digital e último login no SERPRO"
             data={loginData}
             empty="Cadastre procuradores em Administração."
-            chart={<Donut data={loginData} ariaLabel="Procuradores por forma de acesso" centerLabel="procuradores" />}
-            footer={
-              charts.procuratorLogin.total > 0 &&
-              `${fmtInt(charts.procuratorLogin.loginError)} com falha de login · ${fmtInt(charts.procuratorLogin.certificatesExpired)} certificado(s) vencido(s)`
-            }
+            chart={<Donut data={nonZero(loginData)} ariaLabel="Procuradores por situação do acesso" centerLabel="procuradores" />}
+            footer={login.total > 0 && authSummary}
           />
           <ChartCard title="CND" subtitle="Certidão negativa dos clientes ativos" data={counts(charts.cnd)} chart={<BarList data={nonZero(counts(charts.cnd))} ariaLabel="Clientes ativos por situação da CND" />} />
           <ChartCard
