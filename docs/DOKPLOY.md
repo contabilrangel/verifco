@@ -9,11 +9,17 @@ o serviço **web**, porta **80**, com HTTPS e Let's Encrypt. A web encaminha `/a
 à API pela rede interna; `TRUST_PROXY=2` representa Nginx e Traefik. Confira em
 **Preview Compose** que a web mantém sua rede `backend` além da rede de roteamento.
 
+Nesta instalação, cadastre os três domínios para o serviço `web`, porta `80`:
+`app.verifco.com.br` e `ir.verifco.com.br` abrem o painel do contador;
+`painel.verifco.com.br` redireciona a raiz para `/sistema`. A separação de contas e
+permissões é aplicada pela API, independentemente do domínio de acesso.
+
 ## Ambiente
 
 Preencha no Dokploy as variáveis de `deploy/dokploy.env.example`:
 
 - `APP_URL`: URL pública com HTTPS, sem barra final; usada também em links enviados.
+- `CORS_ORIGINS`: os três endereços públicos, separados por vírgula; se omitida, usa `APP_URL`.
 - `POSTGRES_PASSWORD`: senha exclusiva, gerada com 32 bytes em hexadecimal, para
   evitar caracteres especiais na URL de conexão.
 - `JWT_SECRET`: 32 bytes aleatórios em base64.

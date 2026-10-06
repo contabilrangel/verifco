@@ -52,6 +52,7 @@ jobs:
           docker compose -f compose.dokploy.yml exec -T web wget -q -O - http://127.0.0.1/ | grep -q '<div id="root">'
           docker compose -f compose.dokploy.yml exec -T web wget -q -O - http://127.0.0.1/sistema | grep -q '<div id="root">'
           docker compose -f compose.dokploy.yml exec -T api node -e "fetch('http://web/api/platform/me').then(r=>{if(r.status!==401)throw Error('API não encaminhada: '+r.status)}).catch(e=>{console.error(e);process.exit(1)})"
+          docker compose -f compose.dokploy.yml exec -T api node --input-type=module -e "import http from 'node:http'; http.get('http://web/',{headers:{Host:'painel.verifco.com.br'}},r=>{r.resume();if(r.statusCode!==302||r.headers.location!=='/sistema'){console.error('Entrada do painel incorreta: '+r.statusCode+' '+r.headers.location);process.exitCode=1}}).on('error',e=>{console.error(e);process.exitCode=1})"
       - name: Diagnóstico de falhas
         if: failure()
         run: docker compose -f compose.dokploy.yml logs --tail 100
