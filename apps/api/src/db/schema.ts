@@ -457,6 +457,12 @@ export const documents = pgTable(
     fileId: uuid('file_id').notNull().references(() => files.id, { onDelete: 'cascade' }),
     category: text('category').notNull().default('other'),
     uploadedBy: text('uploaded_by').notNull().default('office'),
+    /**
+     * Visível (e baixável) no portal do cliente, em "Documentos do escritório". Independe da
+     * categoria; só vale para arquivos enviados pelo escritório fora do copiloto
+     * (`canShareWithCustomer`), conferido de novo na consulta do portal.
+     */
+    sharedWithCustomer: boolean('shared_with_customer').notNull().default(false),
     processingStatus: text('processing_status').notNull().default('not_processed'),
     extracted: jsonb('extracted').$type<Record<string, unknown>>(),
     createdAt: createdAt(),

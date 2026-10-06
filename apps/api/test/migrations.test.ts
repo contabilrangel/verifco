@@ -94,6 +94,58 @@ describe('migrações (SEG-4)', () => {
     }
   });
 
+  it('a visibilidade no portal sai da categoria shared_with_customer para a coluna própria; a categoria vira "Outros"', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'verifco-portal-flag-'));
+    const client = new PGlite();
+    try {
+      cpSync(MIGRATIONS, dir, { recursive: true });
+      const journal = readJournal(MIGRATIONS);
+      const journalPath = join(dir, 'meta/_journal.json');
+      const index = journal.entries.findIndex((e) => e.tag.endsWith('_portal_visibilidade_documento'));
+      expect(index).toBeGreaterThan(0);
+      writeFileSync(journalPath, JSON.stringify({ ...journal, entries: journal.entries.slice(0, index) }));
+      const db = drizzle(client, { schema });
+      await migrate(db, { migrationsFolder: dir });
+
+      // linhas gravadas em SQL: o schema.ts atual já tem a coluna nova
+      const one = async (query: string, params: unknown[]) => (await client.query<{ id: string }>(query, params)).rows[0];
+      const office = await one(`insert into offices (name) values ($1) returning id`, ['Escritório']);
+      const customer = await one(`insert into customers (office_id, name, cpf_cnpj) values ($1, $2, $3) returning id`, [office.id, 'Cliente', '52998224725']);
+      const doc = async (filename: string, category: string, uploadedBy: string) => {
+        const file = await one(`insert into files (office_id, storage_key, filename, mime_type, size, sha256) values ($1, $2, $3, 'application/pdf', 1, 'x') returning id`, [
+          office.id,
+          `k/${filename}`,
+          filename,
+        ]);
+        return (await one(`insert into documents (office_id, customer_id, file_id, category, uploaded_by) values ($1, $2, $3, $4, $5) returning id`, [office.id, customer.id, file.id, category, uploadedBy])).id;
+      };
+      const shared = await doc('recibo.pdf', 'shared_with_customer', 'office');
+      const forcedCustomer = await doc('do-cliente.pdf', 'shared_with_customer', 'customer');
+      const darf = await doc('darf.pdf', 'darf', 'office');
+      const checklist = await doc('rg.pdf', 'checklist', 'customer');
+
+      writeFileSync(journalPath, JSON.stringify(journal));
+      await migrate(db, { migrationsFolder: dir });
+      // a conversão roda de novo sem mudar nada
+      const data = journal.entries.find((e) => e.tag.endsWith('_portal_visibilidade_dados'));
+      expect(data).toBeDefined();
+      await client.exec(readFileSync(join(MIGRATIONS, `${data!.tag}.sql`), 'utf8'));
+      const rows = await db.select({ id: schema.documents.id, category: schema.documents.category, shared: schema.documents.sharedWithCustomer }).from(schema.documents);
+      const byId = Object.fromEntries(rows.map((r) => [r.id, { category: r.category, shared: r.shared }]));
+      expect(byId).toEqual({
+        // a categoria anterior ao compartilhamento não foi guardada: vira "Outros"
+        [shared]: { category: 'other', shared: true },
+        // o portal nunca mostrou arquivo do cliente; continua fora
+        [forcedCustomer]: { category: 'other', shared: false },
+        [darf]: { category: 'darf', shared: false },
+        [checklist]: { category: 'checklist', shared: false },
+      });
+    } finally {
+      await client.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('aplicam num PGlite vazio e chegam ao mesmo banco que o schema.ts', async () => {
     const migrated = await openDatabase('pglite:memory', { sync: 'migrate' });
     const pushed = await openDatabase('pglite:memory', { sync: 'push' });

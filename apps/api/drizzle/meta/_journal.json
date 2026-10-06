@@ -78,6 +78,20 @@
       "when": 1791319125224,
       "tag": "0010_malas_diretas_recentes",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1791319745340,
+      "tag": "0011_portal_visibilidade_documento",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1791322663365,
+      "tag": "0012_portal_visibilidade_dados",
+      "breakpoints": true
     }
   ]
 }
