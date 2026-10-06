@@ -153,6 +153,8 @@ export interface BillingReportRow {
   openCents: number;
   overdueCents: number;
   paymentStatus: PaymentStatus;
+  /** Cobrança no Asaas/Omie não emitida (a emissão falhou de vez ou não foi pedida) com parcela em aberto. */
+  externalSyncFailed: boolean;
 }
 
 export interface BillingReport {

@@ -189,6 +189,61 @@ describe('cobrança integrada depois de falha (DAD-4, INT-9)', () => {
   });
 });
 
+describe('relatório de faturamento: "Cobrança não emitida"', () => {
+  const report = async (api: Api) => {
+    const res = await api.get('/api/finance/reports/billing?year=2026');
+    expect(res.status).toBe(200);
+    return new Map((res.body.data as { budgetId: string; externalSyncFailed: boolean }[]).map((r) => [r.budgetId, r.externalSyncFailed]));
+  };
+  const budgetOf = async (api: Api, customerId: string, billingId: string) =>
+    ((await panel(api, customerId)).data as { id: string; billing: { id: string } | null }[]).find((b) => b.billing?.id === billingId)!.id;
+
+  it('marca a cobrança integrada que falhou de vez ou não foi pedida; não marca a que está na fila, a emitida nem a manual', async () => {
+    const o = await setup('Escritório Relatório Cobrança');
+    // integração desligada: a emissão falha de vez
+    const failed = await approved(o.api, o.customerId, o.methodId);
+    await env.ctx.jobs.drain();
+    expect((await syncJob(failed)).status).toBe('failed');
+    const failedBudget = await budgetOf(o.api, o.customerId, failed);
+    // sem job de emissão (nunca pedida) com parcela em aberto sem cobrança
+    const missing = await approved(o.api, o.customerId, o.methodId, 'consulting');
+    await env.ctx.jobs.drain();
+    await env.ctx.db.delete(jobs).where(eq(jobs.id, (await syncJob(missing)).id));
+    const missingBudget = await budgetOf(o.api, o.customerId, missing);
+    // Pix manual, sem cobrança integrada
+    const methods = (await o.api.get('/api/finance/payment-methods')).body as { id: string; type: string }[];
+    const manual = await o.api.post('/api/finance/budgets', { customerId: o.customerId, exerciseYear: 2026, category: 'capital_gain', amountCents: 10_000, paymentMethodId: methods.find((m) => m.type === 'pix')!.id, status: 'approved' });
+    // orçamento sem faturamento
+    const draft = await o.api.post('/api/finance/budgets', { customerId: o.customerId, exerciseYear: 2026, category: 'holding', amountCents: 5_000 });
+
+    let flags = await report(o.api);
+    expect(flags.get(failedBudget)).toBe(true);
+    expect(flags.get(missingBudget)).toBe(true);
+    expect(flags.get(manual.body.id)).toBe(false);
+    expect(flags.get(draft.body.id)).toBe(false);
+
+    // ativar a integração reenfileira as duas; com instabilidade a fila tenta de novo sozinha e não marca
+    env.providers.fetch = mockFetch(() => ({ status: 503, json: { errors: [{ description: 'Serviço indisponível' }] } })).fn;
+    await o.api.put('/api/integrations/asaas', ASAAS_ON);
+    await env.ctx.jobs.drain();
+    expect(await syncJob(failed)).toMatchObject({ status: 'queued', attempts: 1 });
+    expect(await syncJob(missing)).toMatchObject({ status: 'queued', attempts: 1 });
+    flags = await report(o.api);
+    expect(flags.get(failedBudget)).toBe(false);
+    expect(flags.get(missingBudget)).toBe(false);
+
+    // emitidas: deixam de ser marcadas
+    env.providers.fetch = asaasOk().fn;
+    await env.ctx.db.update(jobs).set({ runAt: new Date() }).where(and(eq(jobs.officeId, o.officeId), eq(jobs.type, 'billing.sync_external')));
+    await env.ctx.jobs.drain();
+    expect((await syncJob(failed)).status).toBe('done');
+    expect((await syncJob(missing)).status).toBe('done');
+    flags = await report(o.api);
+    expect(flags.get(failedBudget)).toBe(false);
+    expect(flags.get(missingBudget)).toBe(false);
+  });
+});
+
 describe('parcela com cobrança emitida no provedor (INT-10)', () => {
   const inst = async (id: string) => (await env.ctx.db.query.installments.findFirst({ where: eq(installments.id, id) }))!;
 

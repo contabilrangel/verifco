@@ -22,6 +22,8 @@
 .vf-fin-facts dd.vf-fin-strong { font: var(--text-md-bold); color: var(--color-primary-100); }
 .vf-fin-note { display: inline-flex; align-items: flex-start; gap: var(--size-spacing-02); align-self: flex-start; padding: var(--size-spacing-02) var(--size-spacing-03); background: var(--color-yellow-10); border-radius: var(--border-radius-xs); color: var(--color-text-medium); font: var(--text-xs-regular); letter-spacing: 0; white-space: pre-wrap; }
 .vf-fin-note > svg { flex: none; margin-top: 2px; color: var(--color-yellow-100); }
+.vf-fin-pay { display: flex; flex-direction: column; align-items: flex-start; gap: var(--size-spacing-01); }
+.vf-fin-flag { display: inline-flex; cursor: help; }
 .vf-fin-total-row td { font: var(--text-sm-bold); background: var(--color-surface-low); border-top: 1px solid var(--color-border-strong); }
 .vf-fin-rules { margin: 0; padding-left: var(--size-spacing-05); color: var(--color-text-medium); font: var(--text-sm-regular); display: flex; flex-direction: column; gap: var(--size-spacing-01); }
 .vf-fin-import { align-items: start; }

@@ -20,6 +20,10 @@ type Filters = {
   overdueOnly: boolean;
 };
 
+/** Explicação da marca "Cobrança não emitida" (dica da marca e aviso acima da tabela). */
+export const EXTERNAL_SYNC_FAILED_HINT =
+  'A cobrança integrada (Asaas/Omie) de parcela em aberto não foi emitida e não há nova tentativa automática. Abra o orçamento do cliente (IRPF › Orçamento) e use “Emitir novamente”.';
+
 const opts = (o: Record<string, string>) => Object.entries(o).map(([value, label]) => ({ value, label }));
 
 /** Relatórios › Faturamento. */
@@ -44,6 +48,7 @@ export function BillingReportPage() {
   };
   const active = [draft.category, draft.responsible, draft.type, draft.paymentStatus, draft.approvedOnly, draft.overdueOnly].filter(Boolean).length;
   const d = report.data;
+  const failedSync = d?.data.filter((r) => r.externalSyncFailed).length ?? 0;
 
   return (
     <div className="vf-stack" style={{ '--gap': '16px' } as React.CSSProperties}>
@@ -120,6 +125,11 @@ export function BillingReportPage() {
               <Stat label="Vencido" value={formatMoney(d.totals.overdueCents)} tone={d.totals.overdueCents > 0 ? 'danger' : undefined} />
             </Card>
           </div>
+          {failedSync > 0 && (
+            <Alert tone="warning" title={`${failedSync} orçamento(s) com cobrança não emitida`}>
+              {EXTERNAL_SYNC_FAILED_HINT}
+            </Alert>
+          )}
           <Card flush>
             <div className="vf-table-wrap">
               <table className="vf-table">
@@ -161,7 +171,14 @@ export function BillingReportPage() {
                         <BudgetStatusTag status={r.status} />
                       </td>
                       <td>
-                        <Tag tone={paymentStatusTone(r.paymentStatus)}>{PAYMENT_STATUS[r.paymentStatus]}</Tag>
+                        <div className="vf-fin-pay">
+                          <Tag tone={paymentStatusTone(r.paymentStatus)}>{PAYMENT_STATUS[r.paymentStatus]}</Tag>
+                          {r.externalSyncFailed && (
+                            <span className="vf-fin-flag" title={EXTERNAL_SYNC_FAILED_HINT}>
+                              <Tag tone="danger">Cobrança não emitida</Tag>
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="num">{formatMoney(r.budgetedCents)}</td>
                       <td className="num">{formatMoney(r.billedCents)}</td>
