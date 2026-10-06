@@ -1,5 +1,5 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
-import { getTemplateDef, htmlToText, renderTemplate, onlyDigits, type DeliveryChannel } from '@verifco/shared';
+import { currentExerciseYear, getTemplateDef, htmlToText, renderTemplate, onlyDigits, type DeliveryChannel } from '@verifco/shared';
 import type { AppContext } from '../context';
 import { customers, deliveries, emailTemplates, jobs, messages, offices, users } from '../db/schema';
 import { badRequest } from '../lib/errors';
@@ -21,7 +21,7 @@ export async function resolveTemplate(ctx: AppContext, officeId: string, key: st
 
 /** Valores comuns a todos os templates a partir do escritório, do cliente e do nome do responsável já carregados. */
 function commonValues(office: OfficeRow | null | undefined, customer: CustomerRow | null | undefined, responsibleName: string | null | undefined, exerciseYear?: number) {
-  const year = exerciseYear ?? new Date().getFullYear();
+  const year = exerciseYear ?? currentExerciseYear();
   return {
     CLIENTE: customer?.name ?? '',
     ESCRITORIO: office?.name ?? '',

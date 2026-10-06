@@ -5,7 +5,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
-import { addDaysIso as addDays, brazilToday } from '@verifco/shared';
+import { addDaysIso as addDays, brazilToday, currentExerciseYear } from '@verifco/shared';
 import { auditLogs, customers, darfs, declarations, ecacRecords, integrations, jobs, procurators } from '../src/db/schema';
 import type { Providers } from '../src/integrations/providers';
 import { clearSerproTokens } from '../src/integrations/serpro';
@@ -467,7 +467,7 @@ describe('rodada diária do robô', () => {
 describe('login do procurador dono do certificado (INT-15)', () => {
   const procurator = async (id: string) => (await env.ctx.db.query.procurators.findFirst({ where: eq(procurators.id, id) }))!;
   const dashboardLogin = async (api: Awaited<ReturnType<typeof registerOffice>>['api']) =>
-    (await api.get(`/api/dashboard?year=${new Date().getFullYear()}`)).body.charts.procuratorLogin;
+    (await api.get(`/api/dashboard?year=${currentExerciseYear()}`)).body.charts.procuratorLogin;
 
   it('o teste da integração grava ok, erro do certificado ou vencido; falha de rede não muda', async () => {
     const office = await officeWithSerpro();

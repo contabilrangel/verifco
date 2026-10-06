@@ -1,11 +1,12 @@
 import { createContext, useContext, useState, type ReactNode } from 'react';
+import { currentExerciseYear } from '@verifco/shared';
 
 /**
  * Ano-exercício selecionado. É global: acompanha a navegação entre telas,
  * filtros, arquivos e relatórios, e fica salvo no navegador.
  */
 const KEY = 'verifco.year';
-const thisYear = new Date().getFullYear();
+const thisYear = currentExerciseYear();
 
 const read = () => {
   try {

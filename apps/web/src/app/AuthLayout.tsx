@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { currentExerciseYear } from '@verifco/shared';
 import './auth.css';
 
 /**
@@ -54,7 +55,7 @@ export function AuthLayout({
             ))}
           </ul>
         </div>
-        <small className="auth-page__legal">© {new Date().getFullYear()} Verifco</small>
+        <small className="auth-page__legal">© {currentExerciseYear()} Verifco</small>
       </aside>
       <main className="auth-page__main">
         <div className="auth-page__panel">{children}</div>
