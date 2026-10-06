@@ -18,7 +18,7 @@ import type { AuthUser } from '../../context';
 import { customers, deliveries, emailTemplates, jobs, offices } from '../../db/schema';
 import { activeJob } from '../../jobs/queue';
 import { badRequest, conflict, notFound } from '../../lib/errors';
-import { audit, can, dateStr, guard, paginate, parse, requirePermission, requireUser, yearSchema } from '../../lib/http';
+import { audit, can, dateStr, guard, paginate, parse, requirePermission, requireUser, uuidParam, yearSchema } from '../../lib/http';
 import { getCustomerForUser } from '../../services/customers';
 import { resolveTemplate } from '../../services/delivery';
 import { getOfficeSettings } from '../../services/settings';
@@ -27,7 +27,9 @@ import { buildKitPdf } from '../reports/kit';
 import {
   checklistPdfFilename,
   findMailingRequest,
+  listMailingRuns,
   mailingRequestView,
+  mailingRunDetail,
   mailingSchema,
   planMailing,
   renderForCustomer,
@@ -37,7 +39,8 @@ import {
 } from './mailing';
 
 const keyParam = z.object({ key: z.string().refine((k) => Boolean(getTemplateDef(k)), 'Template desconhecido') });
-const SEND_PERMS = [...new Set([...MAILING_TYPES.map((t) => t.permission), 'message.send'])];
+const MAILING_PERMS = MAILING_TYPES.map((t) => t.permission);
+const SEND_PERMS = [...new Set([...MAILING_PERMS, 'message.send'])];
 
 /** Assunto é texto puro: sem tags e sem quebras de linha. */
 const cleanSubject = (s: string) =>
@@ -400,6 +403,19 @@ export async function communicationRoutes(app: FastifyInstance) {
     if (!job) throw notFound('Envio');
     typePermission(req, String(job.payload.type));
     return mailingRequestView(ctx, job);
+  });
+
+  /** Malas diretas recentes do escritório (as próprias, para quem não vê todos os envios), com o andamento. */
+  app.get('/mailing/runs', async (req) => {
+    const user = requirePermission(req, ...MAILING_PERMS);
+    return listMailingRuns(ctx, user);
+  });
+
+  /** Uma mala direta: andamento, envios por canal e situação e os clientes com falha. */
+  app.get('/mailing/runs/:id', async (req) => {
+    const user = requirePermission(req, ...MAILING_PERMS);
+    const { id } = parse(uuidParam, req.params);
+    return mailingRunDetail(ctx, user, id);
   });
 
   /** Anexo de exemplo (kit ou checklist em PDF) de um cliente, para conferir antes do envio. */

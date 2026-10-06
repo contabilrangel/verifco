@@ -792,6 +792,8 @@ export const jobs = pgTable(
     index('jobs_parent_idx').on(t.parentId),
     // limite por escritório no claim e deduplicações ("já em andamento")
     index('jobs_running_idx').on(t.officeId, t.type).where(sql`${t.status} = 'running'`),
+    // últimos jobs de um tipo no escritório (malas diretas recentes, backups, tarefas da elaboração)
+    index('jobs_office_type_idx').on(t.officeId, t.type, t.createdAt),
   ],
 );
 

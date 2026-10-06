@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { budgets, checklists, customers, darfs, declarationItems, declarations, deliveries, jobs, messages } from '../src/db/schema';
 import { VALID_CPFS, createEmployee, createTestEnv, registerOffice, type Api, type TestEnv } from './helpers';
 import { pdfContent } from './pdf-text';
@@ -209,6 +209,160 @@ describe('mala direta', () => {
     await env.ctx.jobs.drain();
     const email = env.providers.sentEmails.find((e) => e.officeId === officeId)!;
     expect(email.attachments?.[0].filename).toMatch(/^checklist-irpf-2026-helena-orc\.pdf$/);
+  });
+});
+
+describe('malas diretas recentes', () => {
+  const keyOf = (requestId: string, customerId: string, channel: string) => `mailing:${requestId}:${customerId}:${channel}`;
+
+  it('lista as do escritório (mais novas primeiro) e o detalhe soma os envios por canal e situação', async () => {
+    const { api, officeId } = await registerOffice(env);
+    const ana = await customer(api, 0, { name: 'Ana Recente', mobile: '31999990000' });
+    const bia = await customer(api, 1, { name: 'Bia Recente', mobile: '31988880000' });
+    const caio = await customer(api, 2, { name: 'Caio Sem Contato', email: null });
+    const first = await api.post('/api/mailing/send', { type: 'marketing', channel: 'email', year: 2026, customerIds: [ana], requestId: uuid() });
+    const second = await api.post('/api/mailing/send', { type: 'monthly', channel: 'both', year: 2026, customerIds: [ana, bia, caio], requestId: uuid() });
+    expect(second.status).toBe(202);
+    await env.ctx.db.update(jobs).set({ createdAt: new Date(Date.now() - 60_000) }).where(eq(jobs.id, first.body.jobId));
+    const other = await registerOffice(env);
+    const foreign = await other.api.post('/api/mailing/send', { type: 'marketing', channel: 'email', year: 2026, customerIds: [await customer(other.api, 3)], requestId: uuid() });
+
+    const list = await api.get('/api/mailing/runs');
+    expect(list.status).toBe(200);
+    expect(list.body.map((r: any) => r.id)).toEqual([second.body.jobId, first.body.jobId]);
+    expect(list.body[0]).toMatchObject({
+      requestId: second.body.requestId,
+      type: 'monthly',
+      label: 'E-mail mensal',
+      channel: 'both',
+      status: 'queued',
+      customers: 2,
+      deliveries: { email: 2, whatsapp: 2, total: 4 },
+      skippedCount: 2,
+      createdBy: expect.any(String),
+    });
+    // a lista não traz nomes de clientes nem a lista de destinatários
+    expect(JSON.stringify(list.body)).not.toMatch(/Caio|Ana Recente|customerIds/);
+    expect((await other.api.get('/api/mailing/runs')).body.map((r: any) => r.id)).toEqual([foreign.body.jobId]);
+    expect((await api.get(`/api/mailing/runs/${foreign.body.jobId}`)).status).toBe(404);
+    expect((await api.get('/api/mailing/runs/nao-e-uuid')).status).toBe(400);
+
+    await env.ctx.jobs.drain();
+    // um WhatsApp ainda na fila e outro recusado pelo provedor (com contato no texto do erro)
+    await env.ctx.db
+      .update(deliveries)
+      .set({ status: 'queued' })
+      .where(and(eq(deliveries.officeId, officeId), eq(deliveries.idempotencyKey, keyOf(second.body.requestId, ana, 'whatsapp'))));
+    await env.ctx.db
+      .update(deliveries)
+      .set({ status: 'failed', error: 'Recusado: <c1@ex.com> e +55 (31) 98888-0000 inválidos' })
+      .where(and(eq(deliveries.officeId, officeId), eq(deliveries.idempotencyKey, keyOf(second.body.requestId, bia, 'whatsapp'))));
+
+    const detail = await api.get(`/api/mailing/runs/${second.body.jobId}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body).toMatchObject({
+      id: second.body.jobId,
+      status: 'done',
+      progress: 100,
+      result: { queued: 4, alreadyQueued: 0, failed: [] },
+      sending: {
+        email: { queued: 0, sent: 2, failed: 0, total: 2 },
+        whatsapp: { queued: 1, sent: 0, failed: 1, total: 2 },
+        total: { queued: 1, sent: 2, failed: 1, total: 4 },
+      },
+      failures: { count: 1, items: [{ customerId: bia, name: 'Bia Recente', channel: 'whatsapp', stage: 'delivery', message: 'Recusado: <[e-mail]> e [telefone] inválidos' }] },
+    });
+    expect(detail.body.skipped.map((s: any) => s.names)).toEqual([['Caio Sem Contato'], ['Caio Sem Contato']]);
+    expect(JSON.stringify(detail.body)).not.toMatch(/c1@ex\.com|98888|customerIds/);
+    // os totais batem com os envios gravados do pedido
+    const stored = await env.ctx.db.select().from(deliveries).where(and(eq(deliveries.officeId, officeId), sql`${deliveries.idempotencyKey} like ${`mailing:${second.body.requestId}:%`}`));
+    expect(stored).toHaveLength(detail.body.sending.total.total);
+    // o primeiro pedido conta só os envios dele (Ana recebeu nos dois)
+    expect((await api.get(`/api/mailing/runs/${first.body.jobId}`)).body.sending).toEqual({
+      email: { queued: 0, sent: 1, failed: 0, total: 1 },
+      whatsapp: { queued: 0, sent: 0, failed: 0, total: 0 },
+      total: { queued: 0, sent: 1, failed: 0, total: 1 },
+    });
+  });
+
+  it('com anexo: o cliente cujo PDF não foi gerado aparece com o motivo', async () => {
+    const { api, officeId } = await registerOffice(env);
+    const ok = await customer(api, 2, { name: 'Gil Anexo' });
+    const bad = await customer(api, 3, { name: 'Hugo Anexo' });
+    const sent = await api.post('/api/mailing/send', { type: 'checklist_pdf', channel: 'email', year: 2026, customerIds: [ok, bad], requestId: uuid() });
+    await env.ctx.jobs.drain();
+    await env.ctx.db
+      .update(jobs)
+      .set({ status: 'failed' })
+      .where(and(eq(jobs.officeId, officeId), eq(jobs.type, 'mailing.deliver'), eq(jobs.idempotencyKey, `mailing:${sent.body.requestId}:${bad}`)));
+    const detail = (await api.get(`/api/mailing/runs/${sent.body.jobId}`)).body;
+    expect(detail.attachments).toEqual({ total: 2, done: 1, failed: 1 });
+    expect(detail.failures).toEqual({ count: 1, items: [{ customerId: bad, name: 'Hugo Anexo', channel: null, stage: 'attachment', message: 'Não foi possível gerar o anexo em PDF.' }] });
+    expect(detail.sending.email.total).toBe(2);
+  });
+
+  it('exige permissão de mala direta e mostra a cada um só o que pode acompanhar', async () => {
+    const office = await registerOffice(env);
+    const c = await customer(office.api, 4, { name: 'Dina Perm' });
+    const marketing = await office.api.post('/api/mailing/send', { type: 'marketing', channel: 'email', year: 2026, customerIds: [c], requestId: uuid() });
+    const monthly = await office.api.post('/api/mailing/send', { type: 'monthly', channel: 'email', year: 2026, customerIds: [c], requestId: uuid() });
+
+    const nobody = await createEmployee(env, office.api, ['customer.list', 'mailing.list']);
+    expect((await nobody.api.get('/api/mailing/runs')).status).toBe(403);
+    expect((await nobody.api.get(`/api/mailing/runs/${marketing.body.jobId}`)).status).toBe(403);
+
+    // sem "E-mails enviados": só as próprias
+    const sender = await createEmployee(env, office.api, ['customer.list', 'mailing.send_marketing']);
+    expect((await sender.api.get('/api/mailing/runs')).body).toEqual([]);
+    const own = await sender.api.post('/api/mailing/send', { type: 'marketing', channel: 'email', year: 2026, customerIds: [c], requestId: uuid() });
+    expect((await sender.api.get('/api/mailing/runs')).body.map((r: any) => r.id)).toEqual([own.body.jobId]);
+    expect((await sender.api.get(`/api/mailing/runs/${marketing.body.jobId}`)).status).toBe(404);
+
+    // com "E-mails enviados": as do escritório, só dos tipos que pode enviar
+    const viewer = await createEmployee(env, office.api, ['customer.list', 'mailing.list', 'mailing.send_marketing']);
+    const seen = (await viewer.api.get('/api/mailing/runs')).body.map((r: any) => r.id);
+    expect(seen.sort()).toEqual([marketing.body.jobId, own.body.jobId].sort());
+    expect((await viewer.api.get(`/api/mailing/runs/${monthly.body.jobId}`)).status).toBe(404);
+    expect((await viewer.api.get(`/api/mailing/runs/${own.body.jobId}`)).status).toBe(200);
+    expect((await office.api.get('/api/mailing/runs')).body).toHaveLength(3);
+    await env.ctx.jobs.drain();
+  });
+
+  it('carteira restrita: o contador acompanha só as que pediu, sem nomes de clientes fora da carteira dele', async () => {
+    const o = await registerOffice(env);
+    const acc = await createEmployee(env, o.api, ['customer.list', 'mailing.list', 'mailing.send_monthly']);
+    const mine = await customer(o.api, 5, { name: 'Dora Minha' });
+    const noEmail = await customer(o.api, 6, { name: 'Fábio Sem Email', email: null });
+    const theirs = await customer(o.api, 7, { name: 'Edu Alheio' });
+    await env.ctx.db.update(customers).set({ responsibleUserId: acc.userId }).where(inArray(customers.id, [mine, noEmail]));
+    await o.api.put('/api/office/settings', { restrictCustomersToResponsible: true });
+
+    const ownerRun = await o.api.post('/api/mailing/send', { type: 'monthly', channel: 'email', year: 2026, customerIds: [mine, theirs], requestId: uuid() });
+    const accRun = await acc.api.post('/api/mailing/send', { type: 'monthly', channel: 'email', year: 2026, requestId: uuid() });
+    expect(accRun.status).toBe(202);
+    expect(accRun.body.customers).toBe(1);
+    await env.ctx.jobs.drain();
+    await env.ctx.db
+      .update(deliveries)
+      .set({ status: 'failed', error: 'Caixa cheia' })
+      .where(and(eq(deliveries.officeId, o.officeId), eq(deliveries.idempotencyKey, keyOf(accRun.body.requestId, mine, 'email'))));
+
+    expect((await acc.api.get('/api/mailing/runs')).body.map((r: any) => r.id)).toEqual([accRun.body.jobId]);
+    expect((await acc.api.get(`/api/mailing/runs/${ownerRun.body.jobId}`)).status).toBe(404);
+    const detail = (await acc.api.get(`/api/mailing/runs/${accRun.body.jobId}`)).body;
+    expect(detail.failures).toEqual({ count: 1, items: [{ customerId: mine, name: 'Dora Minha', channel: 'email', stage: 'delivery', message: 'Caixa cheia' }] });
+    // quem ficou de fora na revisão aparece só na contagem
+    expect(detail.skipped).toEqual([expect.objectContaining({ reason: 'no_email', count: 1, names: [] })]);
+
+    // a cliente passou para outro responsável: o contador deixa de ver o nome dela
+    await env.ctx.db.update(customers).set({ responsibleUserId: o.userId }).where(eq(customers.id, mine));
+    const later = (await acc.api.get(`/api/mailing/runs/${accRun.body.jobId}`)).body;
+    expect(later.failures).toEqual({ count: 1, items: [] });
+    expect(JSON.stringify(later)).not.toMatch(/Dora|Edu|Fábio/);
+
+    // o dono vê todas, com os nomes
+    expect((await o.api.get('/api/mailing/runs')).body).toHaveLength(2);
+    expect((await o.api.get(`/api/mailing/runs/${accRun.body.jobId}`)).body.failures.items[0].name).toBe('Dora Minha');
   });
 });
 

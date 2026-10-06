@@ -18,16 +18,16 @@ import {
   Send,
   TrendingUp,
   Users,
-  XCircle,
 } from 'lucide-react';
-import { DECLARATION_STAGES, MAILING_MAX_RECIPIENTS, formatPhone, mailingTypeForTemplate, type MailingType, type MailingTypeKey } from '@verifco/shared';
-import { Alert, Button, Card, Checkbox, ConfirmDialog, EmptyState, Loading, Progress, Select, Stat, Tag, cx, useToast } from '../../ds';
+import { DECLARATION_STAGES, formatPhone, mailingTypeForTemplate, type MailingType, type MailingTypeKey } from '@verifco/shared';
+import { Alert, Button, Card, Checkbox, ConfirmDialog, EmptyState, Loading, Select, Stat, Tag, cx, useToast } from '../../ds';
 import { PageHeader } from '../../app/Shell';
 import { ApiError, api } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { useAction, useApi, useDebounced } from '../../lib/hooks';
 import { stageLabel, stageTone } from '../../lib/format';
 import { useYear } from '../../lib/year';
+import { MailingProgress, MailingRunView, RecentMailings, finished, int, names, truncatedText, type MailingRequest } from './MailingRuns';
 import { MailPreview } from './TemplatesPage';
 import './communication.css';
 
@@ -62,33 +62,6 @@ interface PreviewResult {
   };
 }
 
-/** Pedido de mala direta: preparado na fila de tarefas, acompanhado pela tela. */
-interface MailingRequest {
-  requestId: string;
-  status: 'queued' | 'running' | 'done' | 'failed';
-  progress: number;
-  error: string | null;
-  customers: number;
-  deliveries: { email: number; whatsapp: number; total: number };
-  skipped: PreviewResult['skipped'];
-  truncated: boolean;
-  matched: number;
-  result: null | { queued: number; alreadyQueued: number; failed: { customerId: string; name: string; message: string }[] };
-  /** Anexos em PDF (um job por cliente), contados depois da preparação. */
-  attachments: null | { total: number; done: number; failed: number };
-  repeated?: boolean;
-}
-
-/** Terminou a preparação e, com anexo, a geração dos PDFs? */
-const finished = (r: MailingRequest) =>
-  r.status === 'failed' || (r.status === 'done' && (!r.attachments || r.attachments.done + r.attachments.failed >= r.attachments.total));
-
-const int = (n: number) => n.toLocaleString('pt-BR');
-
-/** Aviso de corte: acima do limite, o envio vai só para os primeiros em ordem alfabética. */
-const truncatedText = (matched: number, limit: number) =>
-  `A seleção tem ${int(matched)} clientes, mais que o limite de ${int(limit)} por envio. Esta mala direta vai para os ${int(limit)} primeiros em ordem alfabética; refine os filtros e faça outro envio para os demais.`;
-
 const ICONS: Record<MailingTypeKey, ReactNode> = {
   checklist_digital: <ClipboardList />,
   checklist_pdf: <FileText />,
@@ -100,7 +73,6 @@ const ICONS: Record<MailingTypeKey, ReactNode> = {
 };
 
 const toggle = (list: string[], v: string) => (list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
-const names = (list: string[], count: number) => (count > list.length ? `${list.join(', ')} e mais ${count - list.length}` : list.join(', '));
 
 export function MailingPage() {
   const { can } = useAuth();
@@ -126,6 +98,8 @@ export function MailingPage() {
   const [confirm, setConfirm] = useState(false);
   const [requestId, setRequestId] = useState(() => crypto.randomUUID());
   const [result, setResult] = useState<MailingRequest | null>(null);
+  /** Mala direta aberta em "Malas diretas recentes". */
+  const [openRun, setOpenRun] = useState<string | null>(null);
 
   const selected = types.data?.find((t) => t.key === type);
   // tipo vindo da URL sem permissão: volta para a escolha
@@ -157,7 +131,7 @@ export function MailingPage() {
   const p = preview.data;
 
   const send = useAction(() => api.post<MailingRequest>('/mailing/send', { ...body, previewCustomerId: undefined, requestId }), {
-    invalidate: [['deliveries']],
+    invalidate: [['deliveries'], ['mailing', 'runs']],
     onSuccess: (r) => {
       setConfirm(false);
       setResult(r);
@@ -173,6 +147,7 @@ export function MailingPage() {
 
   const restart = () => {
     setResult(null);
+    setOpenRun(null);
     setRequestId(crypto.randomUUID());
     setStep(1);
     setType('');
@@ -203,6 +178,8 @@ export function MailingPage() {
           onTrack={() => navigate('/comunicacao/envios')}
           onRestart={restart}
         />
+      ) : openRun ? (
+        <MailingRunView id={openRun} onClose={() => setOpenRun(null)} />
       ) : (
         <>
           <nav className="vf-wizard-steps" aria-label="Etapas">
@@ -265,6 +242,11 @@ export function MailingPage() {
                 </Button>
               </div>
             </Card>
+          )}
+          {step === 1 && (
+            <div style={{ marginTop: 24 }}>
+              <RecentMailings onOpen={setOpenRun} />
+            </div>
           )}
 
           {step === 2 && type && (
@@ -560,92 +542,6 @@ function RecipientsStep({
         </div>
       </Card>
     </div>
-  );
-}
-
-/** Andamento do pedido: preparação na fila, anexos em PDF e o resumo final. */
-function MailingProgress({
-  request: r,
-  withAttachment,
-  retrying,
-  onRetry,
-  onTrack,
-  onRestart,
-}: {
-  request: MailingRequest;
-  withAttachment: boolean;
-  retrying: boolean;
-  onRetry: () => void;
-  onTrack: () => void;
-  onRestart: () => void;
-}) {
-  const done = finished(r);
-  const att = r.attachments;
-  const generating = r.status === 'done' && !done;
-  const title =
-    r.status === 'failed'
-      ? 'Não foi possível preparar os envios'
-      : r.status !== 'done'
-        ? 'Preparando os envios...'
-        : generating
-          ? 'Gerando os anexos em PDF...'
-          : r.result?.queued
-            ? `${int(r.result.queued)} envio(s) na fila para ${int(r.customers)} cliente(s)`
-            : 'Este envio já tinha sido feito';
-  const progress = generating && att ? ((att.done + att.failed) / Math.max(1, att.total)) * 100 : r.progress;
-  const failed = r.result?.failed ?? [];
-  return (
-    <Card>
-      <EmptyState
-        icon={r.status === 'failed' ? <XCircle /> : done ? <CircleCheck /> : <Send />}
-        title={title}
-        description={
-          <div className="vf-stack" style={{ '--gap': '8px' } as React.CSSProperties}>
-            {!done && <Progress value={progress} />}
-            {r.error && <span>{r.error}</span>}
-            <span>
-              {int(r.deliveries.email)} por e-mail e {int(r.deliveries.whatsapp)} por WhatsApp.
-              {r.result && r.result.alreadyQueued > 0 && ` ${int(r.result.alreadyQueued)} já estavam na fila e não foram duplicados.`}
-              {!done && ' Você pode sair desta tela: a preparação continua e os envios aparecem em E-mails enviados.'}
-            </span>
-            {withAttachment &&
-              (att ? (
-                <span>
-                  Anexos em PDF gerados: {int(att.done)} de {int(att.total)}
-                  {att.failed > 0 && ` (${int(att.failed)} com erro)`}.
-                </span>
-              ) : (
-                !done && <span>Os anexos em PDF são gerados um a um e podem levar alguns minutos.</span>
-              ))}
-            {r.truncated && <span className="vf-text-xs">{truncatedText(r.matched, MAILING_MAX_RECIPIENTS)}</span>}
-            {r.skipped.map((s) => (
-              <span key={s.reason} className="vf-text-xs">
-                {s.count} sem envio — {s.label.toLowerCase()}: {names(s.names, s.count)}
-              </span>
-            ))}
-            {failed.length > 0 && (
-              <span className="vf-text-xs">
-                {failed.length} sem envio por erro: {names(failed.slice(0, 8).map((f) => `${f.name} (${f.message})`), failed.length)}
-              </span>
-            )}
-          </div>
-        }
-        action={
-          <div className="vf-inline">
-            {r.status === 'failed' ? (
-              <Button loading={retrying} onClick={onRetry}>
-                Tentar de novo
-              </Button>
-            ) : (
-              <Button onClick={onTrack}>Acompanhar envios</Button>
-            )}
-            <Button kind="secondary" onClick={onRestart}>
-              Nova mala direta
-            </Button>
-          </div>
-        }
-      />
-    </Card>
   );
 }
 

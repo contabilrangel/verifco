@@ -71,6 +71,13 @@
       "when": 1791317628383,
       "tag": "0009_ecac_sincronizacao_automatica",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1791319125224,
+      "tag": "0010_malas_diretas_recentes",
+      "breakpoints": true
     }
   ]
 }

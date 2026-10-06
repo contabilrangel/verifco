@@ -14,10 +14,10 @@ import {
   type MailingTypeKey,
 } from '@verifco/shared';
 import type { AppContext, AuthUser } from '../../context';
-import { budgets, customerGroupMembers, customers, declarations, deliveries, jobs } from '../../db/schema';
+import { budgets, customerGroupMembers, customers, declarations, deliveries, jobs, users } from '../../db/schema';
 import type { JobRow } from '../../jobs/queue';
-import { HttpError } from '../../lib/errors';
-import { yearSchema } from '../../lib/http';
+import { HttpError, notFound } from '../../lib/errors';
+import { can, yearSchema } from '../../lib/http';
 import { customerScope, type CustomerRow } from '../../services/customers';
 import type { DeclarationRow } from '../../services/declarations';
 import { baseTemplateValues, createDeliveryBatch, queueDelivery, resolveTemplate, type BulkDeliveryItem } from '../../services/delivery';
@@ -247,10 +247,13 @@ export interface MailingJobResult {
   failed: { customerId: string; name: string; message: string }[];
 }
 
-/** O pedido do escritório, sem a lista de destinatários (a tela consulta o andamento a cada segundo e meio). */
+/** Colunas do pedido sem a lista de destinatários (até milhares de ids; a tela consulta o andamento a cada segundo e meio). */
+const requestColumns = () => ({ ...getTableColumns(jobs), payload: sql<Record<string, unknown>>`${jobs.payload} - 'customerIds'` });
+
+/** O pedido do escritório, sem a lista de destinatários. */
 export async function findMailingRequest(ctx: AppContext, officeId: string, requestId: string): Promise<JobRow | undefined> {
   const [row] = await ctx.db
-    .select({ ...getTableColumns(jobs), payload: sql<Record<string, unknown>>`${jobs.payload} - 'customerIds'` })
+    .select(requestColumns())
     .from(jobs)
     .where(and(eq(jobs.type, MAILING_JOB), eq(jobs.idempotencyKey, requestKey(officeId, requestId)), eq(jobs.officeId, officeId)))
     .limit(1);
@@ -312,11 +315,9 @@ async function attachmentProgress(ctx: AppContext, p: MailingRequestPayload) {
   return { total: rows.reduce((a, r) => a + Number(r.n), 0), done: by('done'), failed: by('failed') };
 }
 
-/** Andamento do pedido para a tela: preparação (job) e, com anexo, a geração dos PDFs. */
-export async function mailingRequestView(ctx: AppContext, job: JobRow) {
+/** Situação do pedido sem consultar o banco: o que a revisão planejou e o andamento da preparação. */
+function mailingRequestSummary(job: JobRow) {
   const p = job.payload as MailingRequestPayload;
-  const type = getMailingType(p.type);
-  const done = job.status === 'done';
   return {
     requestId: p.requestId,
     jobId: job.id,
@@ -329,8 +330,191 @@ export async function mailingRequestView(ctx: AppContext, job: JobRow) {
     createdAt: job.createdAt,
     finishedAt: job.finishedAt,
     ...p.planned,
+  };
+}
+
+/** Andamento do pedido para a tela: preparação (job) e, com anexo, a geração dos PDFs. */
+export async function mailingRequestView(ctx: AppContext, job: JobRow) {
+  const p = job.payload as MailingRequestPayload;
+  const type = getMailingType(p.type);
+  const done = job.status === 'done';
+  return {
+    ...mailingRequestSummary(job),
     result: done ? ((job.result ?? null) as MailingJobResult | null) : null,
     attachments: type?.attachment && done ? await attachmentProgress(ctx, p) : null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Malas diretas recentes
+// ---------------------------------------------------------------------------
+
+/** Quantas malas diretas a lista de recentes mostra. */
+export const MAILING_RECENT_RUNS = 20;
+
+/** Quantos clientes com falha o detalhe lista (a contagem vem inteira). */
+const RUN_FAILURES_SHOWN = 50;
+
+/**
+ * Malas diretas que o usuário acompanha: as do escritório, dos tipos que ele pode enviar. Quem não
+ * tem "E-mails enviados" ou vê só os próprios clientes (carteira restrita ao responsável)
+ * acompanha só as que pediu: as dos outros trazem clientes fora da carteira dele.
+ */
+async function runScope(ctx: AppContext, user: AuthUser) {
+  const allowed = MAILING_TYPES.filter((t) => can(user, t.permission)).map((t) => t.key as string);
+  const restricted = !user.isOwner && (await getOfficeSettings(ctx.db, user.officeId)).restrictCustomersToResponsible;
+  const conds: SQL[] = [eq(jobs.officeId, user.officeId), eq(jobs.type, MAILING_JOB), inArray(sql`${jobs.payload}->>'type'`, allowed.length ? allowed : [''])];
+  if (restricted || !can(user, 'mailing.list')) conds.push(eq(jobs.createdByUserId, user.userId));
+  return { where: and(...conds)!, restricted };
+}
+
+/** Pedidos de mala direta com o nome de quem pediu (consulta pelo índice escritório + tipo + data). */
+const runQuery = (ctx: AppContext) =>
+  ctx.db
+    .select({ job: requestColumns(), createdByName: users.name })
+    .from(jobs)
+    .leftJoin(users, and(eq(users.id, jobs.createdByUserId), eq(users.officeId, jobs.officeId)));
+
+/** Malas diretas recentes (mais novas primeiro), sem nomes de clientes: o detalhe mostra quem ficou de fora. */
+export async function listMailingRuns(ctx: AppContext, user: AuthUser) {
+  const { where } = await runScope(ctx, user);
+  const rows = await runQuery(ctx).where(where).orderBy(desc(jobs.createdAt), desc(jobs.id)).limit(MAILING_RECENT_RUNS);
+  return rows.map(({ job, createdByName }) => {
+    const { skipped, ...summary } = mailingRequestSummary(job);
+    return {
+      ...summary,
+      id: job.id,
+      label: getMailingType(summary.type)?.label ?? summary.type,
+      createdBy: createdByName ?? null,
+      skippedCount: skipped.reduce((a, s) => a + s.count, 0),
+    };
+  });
+}
+
+/**
+ * Chaves de idempotência dos envios (cliente e canal) ou, sem canal, dos jobs de anexo de um
+ * pedido, montadas no banco a partir dos clientes do payload: a busca usa o índice único de cada
+ * tabela, sem varrer os envios do escritório.
+ */
+function runKeys(jobId: string, perChannel: boolean): SQL {
+  if (!perChannel) {
+    return sql`select 'mailing:' || (j.payload->>'requestId') || ':' || c.id
+      from ${jobs} j cross join lateral jsonb_array_elements_text(j.payload->'customerIds') as c(id)
+      where j.id = ${jobId}`;
+  }
+  return sql`select 'mailing:' || (j.payload->>'requestId') || ':' || c.id || ':' || ch.channel
+    from ${jobs} j cross join lateral jsonb_array_elements_text(j.payload->'customerIds') as c(id)
+    cross join (values ('email'), ('whatsapp')) as ch(channel)
+    where j.id = ${jobId} and (j.payload->>'channel' = 'both' or j.payload->>'channel' = ch.channel)`;
+}
+
+/** Tira e-mails e telefones do erro do provedor: o detalhe da mala direta mostra só o nome do cliente e o canal. */
+export function maskContacts(text: string): string {
+  return text
+    .replace(/[^\s@<>()"',;:]+@[^\s@<>()"',;:]+\.[^\s@<>()"',;:]+/g, '[e-mail]')
+    .replace(/\+?\d[\d\s().-]{6,}\d/g, (m) => (m.replace(/\D/g, '').length >= 8 ? '[telefone]' : m));
+}
+
+interface StatusCount {
+  queued: number;
+  sent: number;
+  failed: number;
+  total: number;
+}
+const noDeliveries = (): StatusCount => ({ queued: 0, sent: 0, failed: 0, total: 0 });
+
+export interface MailingRunFailure {
+  customerId: string | null;
+  name: string;
+  channel: DeliveryChannel | null;
+  /** Onde falhou: na preparação do pedido, na geração do anexo ou na entrega pelo provedor. */
+  stage: 'preparation' | 'attachment' | 'delivery';
+  message: string;
+}
+
+/**
+ * Detalhe de uma mala direta: o andamento do pedido (o mesmo de `/mailing/requests/:requestId`),
+ * os envios por canal e situação e os clientes com falha, com o motivo. Fora do escopo, 404.
+ */
+export async function mailingRunDetail(ctx: AppContext, user: AuthUser, jobId: string) {
+  const { db } = ctx;
+  const { where, restricted } = await runScope(ctx, user);
+  const [row] = await runQuery(ctx).where(and(where, eq(jobs.id, jobId)));
+  if (!row) throw notFound('Mala direta');
+  const view = await mailingRequestView(ctx, row.job);
+  const inRun = and(eq(deliveries.officeId, user.officeId), sql`${deliveries.idempotencyKey} in (${runKeys(jobId, true)})`);
+
+  // envios por canal e situação ("entregue" conta como enviado)
+  const sending = { email: noDeliveries(), whatsapp: noDeliveries(), total: noDeliveries() };
+  const counts = await db
+    .select({ channel: deliveries.channel, status: deliveries.status, n: count() })
+    .from(deliveries)
+    .where(inRun)
+    .groupBy(deliveries.channel, deliveries.status);
+  for (const c of counts) {
+    const bucket = c.status === 'failed' ? 'failed' : c.status === 'queued' ? 'queued' : 'sent';
+    for (const t of [sending[c.channel as DeliveryChannel], sending.total]) {
+      if (!t) continue;
+      t[bucket] += Number(c.n);
+      t.total += Number(c.n);
+    }
+  }
+
+  // carteira restrita: só os nomes dos clientes que o usuário vê hoje
+  const scope = restricted ? await customerScope(ctx, user) : undefined;
+  const customerName = sql<string>`coalesce(${customers.name}, ${deliveries.toName}, '')`;
+  const failedDeliveries = sending.total.failed
+    ? await db
+        .select({ customerId: deliveries.customerId, name: customerName, channel: deliveries.channel, error: deliveries.error })
+        .from(deliveries)
+        .leftJoin(customers, eq(customers.id, deliveries.customerId))
+        .where(and(inRun, eq(deliveries.status, 'failed'), scope))
+        .orderBy(customerName, asc(deliveries.channel))
+        .limit(RUN_FAILURES_SHOWN)
+    : [];
+  const failedAttachments = view.attachments?.failed
+    ? await db
+        .select({ customerId: customers.id, name: customers.name })
+        .from(jobs)
+        .innerJoin(customers, and(sql`${customers.id}::text = ${jobs.payload}->>'customerId'`, eq(customers.officeId, user.officeId)))
+        .where(and(eq(jobs.type, MAILING_DELIVER_JOB), sql`${jobs.idempotencyKey} in (${runKeys(jobId, false)})`, eq(jobs.status, 'failed'), scope))
+        .orderBy(asc(customers.name))
+        .limit(RUN_FAILURES_SHOWN)
+    : [];
+  let prepared = view.result?.failed ?? [];
+  if (scope && prepared.length) {
+    const visible = await db
+      .select({ id: customers.id })
+      .from(customers)
+      .where(and(scope, inArray(customers.id, prepared.map((f) => f.customerId))));
+    const ids = new Set(visible.map((v) => v.id));
+    prepared = prepared.filter((f) => ids.has(f.customerId));
+  }
+
+  const items: MailingRunFailure[] = [
+    ...prepared.map((f) => ({ customerId: f.customerId, name: f.name, channel: null, stage: 'preparation' as const, message: f.message })),
+    ...failedAttachments.map((f) => ({ customerId: f.customerId, name: f.name, channel: null, stage: 'attachment' as const, message: 'Não foi possível gerar o anexo em PDF.' })),
+    ...failedDeliveries.map((f) => ({
+      customerId: f.customerId,
+      name: f.name,
+      channel: f.channel as DeliveryChannel,
+      stage: 'delivery' as const,
+      message: maskContacts(f.error || 'O provedor não entregou a mensagem.'),
+    })),
+  ];
+  return {
+    ...view,
+    // os nomes de quem ficou de fora na revisão não têm o id para conferir a carteira de hoje: só a contagem
+    skipped: scope ? view.skipped.map((s) => ({ ...s, names: [] })) : view.skipped,
+    result: view.result ? { ...view.result, failed: prepared } : null,
+    id: row.job.id,
+    label: getMailingType(view.type)?.label ?? view.type,
+    createdBy: row.createdByName ?? null,
+    sending,
+    failures: {
+      count: prepared.length + (view.attachments?.failed ?? 0) + sending.total.failed,
+      items: items.slice(0, RUN_FAILURES_SHOWN),
+    },
   };
 }
 
