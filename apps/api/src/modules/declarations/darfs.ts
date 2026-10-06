@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { and, asc, desc, eq, inArray, like } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { DARF_MAX_QUOTAS, brazilToday, darfStatus, formatDate, formatMoney, planDarfQuotas } from '@verifco/shared';
+import { DARF_MAX_QUOTAS, DARF_MIN_PAYABLE_CENTS, brazilToday, darfPayable, darfStatus, darfValueText, formatDate, planDarfQuotas } from '@verifco/shared';
 import type { AppContext, AuthUser } from '../../context';
 import { darfs, declarations, deliveries, files } from '../../db/schema';
 import { HttpError, badRequest, conflict, notFound } from '../../lib/errors';
@@ -15,9 +15,15 @@ import { getDeclarationForUser } from './access';
 type DarfRow = typeof darfs.$inferSelect;
 
 const money = z.coerce.number().int().min(1).max(10_000_000_000_000);
+/** O DARF não pode ter valor abaixo de R$ 10,00 (P&R IRPF 2026, pergunta 063). */
+const darfValue = z.coerce
+  .number()
+  .int()
+  .min(DARF_MIN_PAYABLE_CENTS, 'DARF abaixo de R$ 10,00 não pode ser pago: some o valor ao imposto do próximo exercício.')
+  .max(10_000_000_000_000);
 const darfBody = z.object({
   quotaNumber: z.coerce.number().int().min(1).max(99).optional(),
-  valueCents: money,
+  valueCents: darfValue,
   dueDate: dateStr,
   barcode: z.preprocess((v) => (v === '' ? null : v), z.string().trim().max(80).nullable().optional()),
 });
@@ -59,6 +65,7 @@ export async function darfRoutes(app: FastifyInstance) {
       const file = fileRows.find((f) => f.id === r.fileId);
       return {
         ...r,
+        amount: darfPayable(r),
         status: darfStatus({ status: r.status, paidAt: r.paidAt, dueDate: r.dueDate }, today),
         file: file ? { id: file.id, filename: file.filename, size: file.size } : null,
         sendStatus: last ? (last.status === 'delivered' ? 'sent' : last.status) : r.sendStatus,
@@ -113,6 +120,7 @@ export async function darfRoutes(app: FastifyInstance) {
     if (existing.length && !body.replace) throw conflict('Já existem quotas cadastradas. Confirme a substituição para gerar de novo.');
     if (existing.some((d) => d.status === 'paid' || d.paidAt)) throw conflict('Há quotas pagas; ajuste as quotas manualmente.');
     const plan = planDarfQuotas(total, body.quotas, body.firstDueDate);
+    if (!plan.quotas.length) throw badRequest(plan.warning ?? 'Não foi possível gerar as quotas.');
     for (const d of existing) if (d.fileId) await app.ctx.files.remove(user.officeId, d.fileId);
     if (existing.length) await db.delete(darfs).where(inArray(darfs.id, existing.map((d) => d.id)));
     const rows = await db
@@ -130,9 +138,11 @@ export async function darfRoutes(app: FastifyInstance) {
     const body = parse(darfUpdate, req.body);
     const { darf } = await getDarfForUser(app.ctx, user, id);
     const { paidAt, ...fields } = body;
+    // valor editado à mão é o da guia: deixa de ser só o principal gerado
+    const edited = fields.valueCents !== undefined && darf.source === 'generated' && fields.valueCents !== darf.valueCents ? { source: 'edited' } : {};
     const [row] = await db
       .update(darfs)
-      .set({ ...fields, ...(paidAt !== undefined ? { paidAt, status: paidAt ? 'paid' : 'open' } : {}) })
+      .set({ ...fields, ...edited, ...(paidAt !== undefined ? { paidAt, status: paidAt ? 'paid' : 'open' } : {}) })
       .where(eq(darfs.id, darf.id))
       .returning();
     await audit(req, paidAt !== undefined ? (paidAt ? 'pay' : 'unpay') : 'update', 'darf', darf.id);
@@ -158,7 +168,7 @@ export async function darfRoutes(app: FastifyInstance) {
       customerId: darf.customerId,
       channel,
       templateKey: 'darf',
-      values: { VALOR: formatMoney(darf.valueCents), VENCIMENTO: formatDate(darf.dueDate), LINK: `${app.ctx.config.WEB_URL}/portal` },
+      values: { VALOR: darfValueText(darf), VENCIMENTO: formatDate(darf.dueDate), LINK: `${app.ctx.config.WEB_URL}/portal` },
       attachments: [{ fileId: darf.fileId!, filename }],
       idempotencyKey,
       userId: user.userId,

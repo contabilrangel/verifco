@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { CalendarCheck2, CheckCircle2, FileUp, Mail, MessageCircle, MoreHorizontal, Pencil, Plus, RotateCcw, Trash2, Wand2 } from 'lucide-react';
-import { DARF_MAX_QUOTAS, brazilToday, lastBusinessDayOfMonth, planDarfQuotas } from '@verifco/shared';
+import { DARF_MAX_QUOTAS, brazilToday, darfQuotaAmount, lastBusinessDayOfMonth, planDarfQuotas } from '@verifco/shared';
 import { Alert, Button, Card, Checkbox, ConfirmDialog, EmptyState, IconButton, Input, Loading, Menu, MenuItem, Modal, MoneyInput, Select, Tag, useToast, type Tone } from '../../ds';
 import { ApiError, api } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
@@ -21,6 +21,8 @@ interface DarfRow {
   paidAt: string | null;
   barcode: string | null;
   source: string;
+  /** Quotas geradas a partir da 2ª: valor com juros (null quando a Selic do período não saiu). */
+  amount: { principalCents: number; interestPercent: number | null; totalCents: number | null; note: string | null } | null;
   file: { id: string; filename: string; size: number } | null;
   sendStatus: string;
   lastSend: { channel: string; at: string; status: string; error: string | null } | null;
@@ -30,6 +32,22 @@ interface DarfList {
   autoSendDarfEmail: boolean;
   taxDueCents: number;
   darfs: DarfRow[];
+}
+
+const pctLabel = (v: number) => `${v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
+
+/** Valor da quota: o da guia ou, nas geradas a partir da 2ª, o principal com os juros (Selic + 1%). */
+function QuotaValue({ d }: { d: Pick<DarfRow, 'valueCents' | 'amount'> }) {
+  if (!d.amount) return <>{formatMoney(d.valueCents)}</>;
+  const a = d.amount;
+  return (
+    <span className="vf-cell-stack" style={{ alignItems: 'flex-end' }} title={a.note ?? undefined}>
+      <span>{a.totalCents !== null ? formatMoney(a.totalCents) : formatMoney(a.principalCents)}</span>
+      <span className="vf-text-xs vf-muted">
+        {a.totalCents !== null && a.interestPercent !== null ? `principal ${formatMoney(a.principalCents)} + ${pctLabel(a.interestPercent)}` : 'principal + juros (Selic a publicar)'}
+      </span>
+    </span>
+  );
 }
 
 const STATUS: Record<DarfRow['status'], { label: string; tone: Tone }> = {
@@ -91,10 +109,12 @@ export function DarfStep() {
   if (q.error) return <Alert tone="danger">Não foi possível carregar as quotas do DARF.</Alert>;
   const data: DarfList = q.data ?? { autoSendDarfEmail: false, taxDueCents: declaration?.taxDueCents ?? 0, darfs: [] };
   const rows = data.darfs;
+  const payable = (d: DarfRow) => d.amount?.totalCents ?? d.valueCents;
   const totals = {
-    all: rows.reduce((a, d) => a + d.valueCents, 0),
-    paid: rows.filter((d) => d.status === 'paid').reduce((a, d) => a + d.valueCents, 0),
+    all: rows.reduce((a, d) => a + payable(d), 0),
+    paid: rows.filter((d) => d.status === 'paid').reduce((a, d) => a + payable(d), 0),
     overdue: rows.filter((d) => d.status === 'overdue').length,
+    pendingInterest: rows.filter((d) => d.amount && d.amount.totalCents === null).length,
   };
 
   return (
@@ -151,7 +171,9 @@ export function DarfStep() {
                         <strong>{d.quotaNumber}ª</strong>
                         {rows.length === 1 && <span className="vf-muted"> (única)</span>}
                       </td>
-                      <td className="num">{formatMoney(d.valueCents)}</td>
+                      <td className="num">
+                        <QuotaValue d={d} />
+                      </td>
                       <td>{formatDate(d.dueDate)}</td>
                       <td>
                         <span className="vf-cell-stack">
@@ -247,7 +269,8 @@ export function DarfStep() {
             </div>
             <div className="vf-ficha-total">
               <span>
-                Total:<strong>{formatMoney(totals.all)}</strong>
+                {totals.pendingInterest ? 'Total sem os juros pendentes:' : 'Total:'}
+                <strong>{formatMoney(totals.all)}</strong>
               </span>
               <span>
                 Pago:<strong>{formatMoney(totals.paid)}</strong>
@@ -262,9 +285,11 @@ export function DarfStep() {
       </Card>
 
       <p className="vf-rule">
-        <strong>Como as quotas são geradas:</strong> até {DARF_MAX_QUOTAS} quotas mensais; nenhuma menor que R$ 50,00 e imposto abaixo de R$ 100,00 em quota única. A 1ª quota vence na data
-        informada e as demais no último dia útil de cada mês seguinte (sem feriados nacionais). Os juros das quotas a partir da 2ª não são calculados: confira o valor e o vencimento
-        da guia emitida pelo programa da Receita e ajuste aqui se precisar. Para o robô acompanhar o pagamento no eCAC, a procuração do cliente precisa estar válida.
+        <strong>Como as quotas são geradas:</strong> até {DARF_MAX_QUOTAS} quotas mensais; nenhuma menor que R$ 50,00, imposto abaixo de R$ 100,00 em quota única e saldo abaixo de
+        R$ 10,00 sem DARF (soma-se ao imposto do próximo exercício). A 1ª quota vence na data informada e as demais no último dia com expediente bancário de cada mês seguinte (sem
+        feriados nacionais nem 31/12). <strong>Juros:</strong> da 2ª quota em diante, a guia soma a Selic acumulada desde o mês seguinte ao vencimento da 1ª até o mês anterior ao do
+        pagamento, mais 1% (a 2ª tem só 1%). As quotas geradas guardam o principal e mostram o valor com juros quando a Selic do período já foi publicada; sem ela, o envio ao cliente
+        avisa que há juros. Ao editar o valor de uma quota, vale o valor digitado (o da guia). Para o robô acompanhar o pagamento no eCAC, a procuração do cliente precisa estar válida.
       </p>
 
       <input ref={fileInput} type="file" accept="application/pdf,.pdf" hidden onChange={(e) => (void onFile(e.target.files?.[0]), (e.target.value = ''))} />
@@ -287,7 +312,7 @@ export function DarfStep() {
         title={send?.channel === 'email' ? 'Enviar DARF por e-mail' : 'Enviar DARF por WhatsApp'}
         message={
           send
-            ? `A ${send.darf.quotaNumber}ª quota (${formatMoney(send.darf.valueCents)}, vencimento ${formatDate(send.darf.dueDate)}) vai com o PDF anexo para ${
+            ? `A ${send.darf.quotaNumber}ª quota (${send.darf.amount ? (send.darf.amount.totalCents !== null ? `${formatMoney(send.darf.amount.totalCents)} com juros` : `${formatMoney(send.darf.valueCents)} de principal, mais juros`) : formatMoney(send.darf.valueCents)}, vencimento ${formatDate(send.darf.dueDate)}) vai com o PDF anexo para ${
                 send.channel === 'email' ? customer.email : 'o celular do cliente'
               }.`
             : ''
@@ -378,24 +403,41 @@ function GenerateModal({
                 <tr>
                   <th>Quota</th>
                   <th>Vencimento</th>
-                  <th className="num">Valor</th>
+                  <th className="num">Principal</th>
+                  <th className="num">Com juros</th>
                 </tr>
               </thead>
               <tbody>
-                {plan.quotas.map((p) => (
-                  <tr key={p.quotaNumber}>
-                    <td>{p.quotaNumber}ª</td>
-                    <td>{formatDate(p.dueDate)}</td>
-                    <td className="num">{formatMoney(p.valueCents)}</td>
-                  </tr>
-                ))}
+                {plan.quotas.map((p) => {
+                  const a = darfQuotaAmount({ quotaNumber: p.quotaNumber, principalCents: p.valueCents, dueDate: p.dueDate });
+                  return (
+                    <tr key={p.quotaNumber}>
+                      <td>{p.quotaNumber}ª</td>
+                      <td>{formatDate(p.dueDate)}</td>
+                      <td className="num">{formatMoney(p.valueCents)}</td>
+                      <td className="num" title={a.note ?? undefined}>
+                        {a.totalCents !== null ? (
+                          <>
+                            {formatMoney(a.totalCents)}
+                            {a.interestPercent ? <span className="vf-text-xs vf-muted"> (+{pctLabel(a.interestPercent)})</span> : null}
+                          </>
+                        ) : (
+                          <span className="vf-muted">Selic a publicar</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         )}
         {hasPaid && <Alert tone="warning">Há quotas pagas nesta declaração. Para não perder o histórico, ajuste as quotas uma a uma.</Alert>}
         {hasQuotas && !hasPaid && <Checkbox label="Substituir as quotas atuais (as quotas e os PDFs anexados serão apagados)" checked={replace} onChange={(e) => setReplace(e.target.checked)} />}
-        <span className="vf-rule">Juros das quotas a partir da 2ª não são calculados. Ajuste cada quota pelo valor da guia emitida, se precisar.</span>
+        <span className="vf-rule">
+          As quotas guardam o principal. Da 2ª em diante, a guia soma juros (Selic acumulada + 1%); a coluna “Com juros” usa a Selic já publicada. Confira com a guia emitida pelo
+          programa da Receita.
+        </span>
       </div>
     </Modal>
   );
@@ -412,7 +454,7 @@ function DarfModal({ darf, nextNumber, ensure, onClose, onDone }: { darf: DarfRo
     },
     { success: darf ? 'Quota atualizada.' : 'Quota cadastrada.', onSuccess: onDone },
   );
-  const valid = form.valueCents > 0 && /^\d{4}-\d{2}-\d{2}$/.test(form.dueDate) && Number(form.quotaNumber) >= 1;
+  const valid = form.valueCents >= 1_000 && /^\d{4}-\d{2}-\d{2}$/.test(form.dueDate) && Number(form.quotaNumber) >= 1;
   return (
     <Modal
       open
@@ -431,7 +473,13 @@ function DarfModal({ darf, nextNumber, ensure, onClose, onDone }: { darf: DarfRo
     >
       <div className="vf-grid">
         <Input label="Número da quota" type="number" min={1} max={99} value={form.quotaNumber} onChange={(e) => setForm({ ...form, quotaNumber: e.target.value })} />
-        <MoneyInput label="Valor" required value={form.valueCents} onChange={(v) => setForm({ ...form, valueCents: v })} />
+        <MoneyInput
+          label="Valor"
+          required
+          help={Number(form.quotaNumber) >= 2 ? 'Valor da guia, com os juros (Selic acumulada + 1%). Mínimo de R$ 10,00.' : 'Mínimo de R$ 10,00.'}
+          value={form.valueCents}
+          onChange={(v) => setForm({ ...form, valueCents: v })}
+        />
         <Input label="Vencimento" required type="date" value={form.dueDate} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} />
         <Input label="Código de barras" value={form.barcode} onChange={(e) => setForm({ ...form, barcode: e.target.value })} inputMode="numeric" />
       </div>

@@ -13,6 +13,7 @@ const adjustmentsSchema = z
     law14754TaxCents: cents.nullable().optional(),
     definitiveTaxPaidCents: cents.nullable().optional(),
     dividendWithholdingCents: cents.nullable().optional(),
+    ruralTaxableResultCents: cents.nullable().optional(),
     dividendPayers: z
       .array(
         z.object({
@@ -29,7 +30,7 @@ const adjustmentsSchema = z
 const bodySchema = z.object({ year: yearSchema, adjustments: adjustmentsSchema.optional() });
 
 const pct = (v: number) => `${v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
-const REGULAR_SOURCE = { declaration: 'apurado na declaração', estimated: 'estimado pela tabela progressiva', manual: 'informado pelo escritório' } as const;
+const REGULAR_SOURCE = { declaration: 'apurado na declaração', estimated: 'estimado pelas linhas da declaração (deduções legais)', manual: 'informado pelo escritório' } as const;
 
 export async function irpfmRoutes(app: FastifyInstance) {
   async function calculate(req: FastifyRequest, customerId: string, year: number, adjustments: IrpfmAdjustments = {}) {

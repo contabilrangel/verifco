@@ -19,7 +19,7 @@
  * as tabelas ficam em "tabelas auxiliares" do manual do Carnê-Leão Web:
  * https://www.gov.br/receitafederal/pt-br/assuntos/orientacao-tributaria/declaracoes-e-demonstrativos/dirpf/carne-leao/topicos-ajuda-carne-leao-web#tabelas_auxiliares
  */
-import { isValidCnpj, isValidCpf, onlyDigits } from './validators';
+import { isValidCnpj, isValidCpf, onlyDigits, toCents } from './validators';
 
 export const CARNE_LEAO_MODELS_URL =
   'https://www.gov.br/receitafederal/pt-br/centrais-de-conteudo/publicacoes/documentos-tecnicos/escrituracao-do-carne-leao/escrituracao-carne-leao.zip/view';
@@ -227,22 +227,51 @@ export const normalizeHeader = (s: string) =>
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_|_$/g, '');
 
+/** Primeira coluna preenchida entre os apelidos. */
+const pickKey = (v: Record<string, string>, ...keys: string[]) => keys.find((k) => v[k] !== undefined && String(v[k]).trim() !== '');
+
 const pick = (v: Record<string, string>, ...keys: string[]) => {
-  for (const k of keys) {
-    const x = v[k];
-    if (x !== undefined && String(x).trim() !== '') return String(x).trim();
-  }
-  return '';
+  const k = pickKey(v, ...keys);
+  return k === undefined ? '' : String(v[k]).trim();
 };
 
-/** "1.234,56", "1234,56", "1234.56" ou "R$ 1.234,56" → centavos. */
+/**
+ * Valor em reais digitado ou vindo de planilha/CSV → centavos. Parser único do sistema
+ * (livro caixa, importação de orçamentos e demais planilhas):
+ * - "R$ 1.500" e "1.500" → 150000 (ponto com grupos de 3 dígitos é milhar);
+ * - "1.500,50", "1500,50" e "1,5" → vírgula decimal;
+ * - "1500.5" e "1.50" → ponto decimal (sem grupos de milhar);
+ * - "1,500.50" → formato americano com milhar e decimal;
+ * - ambíguos ou malformados devolvem null: "1,500" (milhar americano ou 3 casas?), "1.500.5",
+ *   "1.500,00,0", texto.
+ * Só para texto. Célula numérica de .xlsx tem o número cru (`readSheet` → `numbers`) e vai por
+ * `toCents`: o texto dela usa ponto decimal ("104.895" = R$ 104,90) e seria lido como milhar.
+ */
 export function parseBrMoney(v: string): number | null {
-  const s = v.replace(/[R$\s]/g, '');
+  const s = String(v ?? '').replace(/R\$|\s/g, '');
   if (!s) return null;
-  if (!/^-?[\d.,]+$/.test(s)) return null;
-  const normalized = s.includes(',') ? s.replace(/\./g, '').replace(',', '.') : /^\d{1,3}(\.\d{3})+$/.test(s) ? s.replace(/\./g, '') : s;
-  const n = Number(normalized);
-  return Number.isFinite(n) ? Math.round(n * 100) : null;
+  const m = /^(-?)([\d.,]+)$/.exec(s);
+  if (!m) return null;
+  const [, sign, body] = m;
+  let normalized: string | null = null;
+  const lastComma = body.lastIndexOf(',');
+  const lastDot = body.lastIndexOf('.');
+  if (lastComma >= 0 && lastDot >= 0) {
+    // os dois separadores: o último é o decimal e o outro precisa formar grupos de milhar
+    if (lastComma > lastDot && /^\d{1,3}(\.\d{3})+,\d+$/.test(body)) normalized = body.replace(/\./g, '').replace(',', '.');
+    else if (lastDot > lastComma && /^\d{1,3}(,\d{3})+\.\d+$/.test(body)) normalized = body.replace(/,/g, '');
+  } else if (lastComma >= 0) {
+    // "1,500" pode ser milhar americano ou 1,5 com 3 casas: ambíguo
+    if (/^\d{1,3},\d{3}$/.test(body)) normalized = null;
+    else if (/^\d+,\d+$/.test(body)) normalized = body.replace(',', '.');
+    else if (/^\d{1,3}(,\d{3}){2,}$/.test(body)) normalized = body.replace(/,/g, '');
+  } else if (lastDot >= 0) {
+    if (/^\d{1,3}(\.\d{3})+$/.test(body)) normalized = body.replace(/\./g, '');
+    else if (/^\d*\.\d+$/.test(body)) normalized = body;
+  } else normalized = body;
+  if (normalized === null) return null;
+  const n = Number(`${sign}${normalized}`);
+  return Number.isFinite(n) ? toCents(n) : null;
 }
 
 /** "31/12/2025" ou "2025-12-31" → "2025-12-31" (valida o dia). */
@@ -268,9 +297,25 @@ export function detectCashbookKind(headers: string[]): CashbookKind | null {
   return null;
 }
 
-/** Valida uma linha (valores com cabeçalhos normalizados) e devolve o lançamento ou os erros. */
-export function parseCashbookRow(kind: CashbookKind, values: Record<string, string>, calendarYear: number): CashbookRowResult {
+/**
+ * Valida uma linha (valores com cabeçalhos normalizados) e devolve o lançamento ou os erros.
+ * `numbers` traz o número cru das células numéricas do .xlsx (mesmas chaves de `values`); os
+ * valores em reais saem dele quando houver, e do texto (`parseBrMoney`) nos demais casos.
+ */
+export function parseCashbookRow(
+  kind: CashbookKind,
+  values: Record<string, string>,
+  calendarYear: number,
+  numbers: Record<string, number> = {},
+): CashbookRowResult {
   const errors: string[] = [];
+  /** Coluna de valor: texto para mensagens e centavos (número cru da célula ou texto). */
+  const moneyCell = (...keys: string[]) => {
+    const key = pickKey(values, ...keys);
+    if (key === undefined) return { raw: '', cents: null };
+    const n = numbers[key];
+    return { raw: String(values[key]).trim(), cents: typeof n === 'number' && Number.isFinite(n) ? toCents(n) : parseBrMoney(values[key]) };
+  };
   const rawDate = pick(values, 'data', 'data_de_recebimento', 'data_do_recebimento', 'data_do_pagamento');
   if (rawDate === '99/99/9999') return { ok: false, errors: ['Linha do modelo não preenchida: troque 99/99/9999 pela data ou apague a linha.'] };
   const date = rawDate ? parseBrDate(rawDate) : null;
@@ -285,8 +330,7 @@ export function parseCashbookRow(kind: CashbookKind, values: Record<string, stri
   if (!code) errors.push(`Código do ${kind === 'income' ? 'rendimento' : 'pagamento'} obrigatório.`);
   else if (!codeRe.test(code)) errors.push(`Código "${code}" fora do formato ${kind === 'income' ? 'R00.000.000' : 'P00.00.00000'}.`);
 
-  const rawValue = pick(values, kind === 'income' ? 'valor_recebido' : 'valor_pago', 'valor');
-  const value = rawValue ? parseBrMoney(rawValue) : null;
+  const { raw: rawValue, cents: value } = moneyCell(kind === 'income' ? 'valor_recebido' : 'valor_pago', 'valor');
   if (!rawValue) errors.push('Valor obrigatório.');
   else if (value === null) errors.push(`Valor inválido: "${rawValue}".`);
   else if (value <= 0) errors.push('O valor deve ser maior que zero.');
@@ -295,9 +339,9 @@ export function parseCashbookRow(kind: CashbookKind, values: Record<string, stri
   if (!description) errors.push('Histórico obrigatório.');
   else if (description.length > 500) errors.push('Histórico com mais de 500 caracteres.');
 
-  const money = (label: string, raw: string) => {
+  const money = (label: string, ...keys: string[]) => {
+    const { raw, cents: c } = moneyCell(...keys);
     if (!raw) return null;
-    const c = parseBrMoney(raw);
     if (c === null || c < 0) {
       errors.push(`${label} inválido: "${raw}".`);
       return null;
@@ -306,8 +350,8 @@ export function parseCashbookRow(kind: CashbookKind, values: Record<string, stri
   };
 
   if (kind === 'payment') {
-    const fine = money('Valor da multa', pick(values, 'valor_da_multa', 'multa'));
-    const interest = money('Valor dos juros', pick(values, 'valor_dos_juros', 'juros'));
+    const fine = money('Valor da multa', 'valor_da_multa', 'multa');
+    const interest = money('Valor dos juros', 'valor_dos_juros', 'juros');
     const competenceRaw = pick(values, 'competencia');
     let competence: string | null = null;
     if (competenceRaw && competenceRaw !== '99/9999') {
@@ -325,7 +369,7 @@ export function parseCashbookRow(kind: CashbookKind, values: Record<string, stri
   const occupation = pick(values, 'codigo_de_ocupacao', 'ocupacao');
   if (occupation && !/^\d{1,4}$/.test(occupation)) errors.push(`Código de ocupação inválido: "${occupation}".`);
   if (!occupation && code.startsWith('R01.001')) errors.push('Código de ocupação obrigatório para este código de rendimento.');
-  const deduction = money('Valor de dedução', pick(values, 'valor_de_deducao', 'deducao'));
+  const deduction = money('Valor de dedução', 'valor_de_deducao', 'deducao');
   if (deduction !== null && value !== null && deduction > value) errors.push('A dedução não pode ser maior que o valor recebido.');
 
   const fromRaw = pick(values, 'recebido_de', 'origem').toUpperCase();
@@ -340,7 +384,7 @@ export function parseCashbookRow(kind: CashbookKind, values: Record<string, stri
   const missing = /^s/i.test(pick(values, 'cpf_do_beneficiario_nao_informado', 'indicador_de_cpf_nao_informado'));
   const cnpjRaw = pick(values, 'cnpj', 'cnpj_da_fonte_pagadora');
   const irrfFlag = pick(values, 'houve_irrf', 'indicador_de_irrf').toUpperCase();
-  const irrfValue = money('Valor do IRRF', pick(values, 'valor_do_irrf', 'irrf'));
+  const irrfValue = money('Valor do IRRF', 'valor_do_irrf', 'irrf');
 
   const payerCpf = onlyDigits(payerCpfRaw);
   const beneficiaryCpf = onlyDigits(beneficiaryRaw);

@@ -1,4 +1,5 @@
 import ExcelJS from 'exceljs';
+import { parseBrDate, parseBrMoney, toCents } from '@verifco/shared';
 
 export interface SheetColumn {
   header: string;
@@ -47,11 +48,47 @@ const normalize = (s: string) =>
     .replace(/^_|_$/g, '');
 
 /**
+ * Texto de um CSV/TXT: UTF-8 (com ou sem BOM) ou, se não for UTF-8 válido, Windows-1252 (o
+ * "CSV (separado por vírgulas)" do Excel em português). Sem isso, "Descrição" chega quebrado.
+ */
+export function decodeCsvText(data: Buffer): string {
+  let text: string;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(data);
+  } catch {
+    text = new TextDecoder('windows-1252').decode(data);
+  }
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+}
+
+/** Linha lida de planilha, com os cabeçalhos normalizados como chaves. */
+export interface SheetRow {
+  rowNumber: number;
+  /** Texto de cada célula (no .xlsx, `cell.text`: CPF numérico vira "52998224725"; data, AAAA-MM-DD). */
+  values: Record<string, string>;
+  /**
+   * Número cru das células numéricas do .xlsx (valor digitado ou resultado de fórmula), nas mesmas
+   * chaves de `values`; vazio no CSV. Valores em reais devem sair daqui: o texto de uma célula
+   * numérica usa ponto decimal ("104.895", que o Excel mostra como R$ 104,90) e é ambíguo com o
+   * milhar brasileiro. Ver `sheetMoneyToCents`.
+   */
+  numbers: Record<string, number>;
+}
+
+/** Número de uma célula numérica ou de fórmula com resultado numérico; undefined nas demais. */
+function cellNumber(cell: ExcelJS.Cell): number | undefined {
+  const v = cell.value;
+  const n = typeof v === 'number' ? v : v !== null && typeof v === 'object' && 'result' in v ? v.result : undefined;
+  return typeof n === 'number' && Number.isFinite(n) ? n : undefined;
+}
+
+/**
  * Lê .xlsx ou .csv (separado por ; ou ,) e devolve linhas com os cabeçalhos normalizados
  * (sem acento, minúsculos, com _). Ex.: "CPF/CNPJ - Procurador" → "cpf_cnpj_procurador".
+ * CSV em UTF-8 ou Windows-1252 (detectado).
  */
-export async function readSheet(data: Buffer, filename: string): Promise<{ rowNumber: number; values: Record<string, string> }[]> {
-  if (/\.csv$/i.test(filename) || /\.txt$/i.test(filename)) return readCsv(data.toString('utf8').replace(/^﻿/, ''));
+export async function readSheet(data: Buffer, filename: string): Promise<SheetRow[]> {
+  if (/\.csv$/i.test(filename) || /\.txt$/i.test(filename)) return readCsv(decodeCsvText(data));
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.load(data as unknown as ArrayBuffer);
   const ws = wb.worksheets[0];
@@ -60,22 +97,25 @@ export async function readSheet(data: Buffer, filename: string): Promise<{ rowNu
   ws.getRow(1).eachCell({ includeEmpty: true }, (cell, col) => {
     headers[col] = normalize(String(cell.text ?? ''));
   });
-  const out: { rowNumber: number; values: Record<string, string> }[] = [];
+  const out: SheetRow[] = [];
   ws.eachRow({ includeEmpty: false }, (row, rowNumber) => {
     if (rowNumber === 1) return;
     const values: Record<string, string> = {};
+    const numbers: Record<string, number> = {};
     row.eachCell({ includeEmpty: true }, (cell, col) => {
       const key = headers[col];
       if (!key) return;
       const v = cell.value;
       values[key] = v instanceof Date ? v.toISOString().slice(0, 10) : String(cell.text ?? '').trim();
+      const n = cellNumber(cell);
+      if (n !== undefined) numbers[key] = n;
     });
-    if (Object.values(values).some((v) => v !== '')) out.push({ rowNumber, values });
+    if (Object.values(values).some((v) => v !== '')) out.push({ rowNumber, values, numbers });
   });
   return out;
 }
 
-export function readCsv(text: string): { rowNumber: number; values: Record<string, string> }[] {
+export function readCsv(text: string): SheetRow[] {
   const lines = text.split(/\r?\n/).filter((l) => l.trim() !== '');
   if (!lines.length) return [];
   const sep = (lines[0].match(/;/g)?.length ?? 0) >= (lines[0].match(/,/g)?.length ?? 0) ? ';' : ',';
@@ -103,25 +143,32 @@ export function readCsv(text: string): { rowNumber: number; values: Record<strin
     const cells = parseLine(line);
     const values: Record<string, string> = {};
     headers.forEach((h, j) => (values[h] = cells[j] ?? ''));
-    return { rowNumber: i + 2, values };
+    return { rowNumber: i + 2, values, numbers: {} };
   });
 }
 
-/** Converte "1.234,56" ou "1234.56" em centavos. */
+/**
+ * Converte valor em reais em centavos com o parser único do sistema (`parseBrMoney`):
+ * "R$ 1.500" → 150000, "1.500,50" → 150050, "1500.5" → 150050, "1,5" → 150; ambíguo → null.
+ */
 export function parseMoneyToCents(v: string | undefined | null): number | null {
   if (!v) return null;
-  const s = v.replace(/[R$\s]/g, '');
-  if (!s) return null;
-  const normalized = s.includes(',') ? s.replace(/\./g, '').replace(',', '.') : s;
-  const n = Number(normalized);
-  return Number.isFinite(n) ? Math.round(n * 100) : null;
+  return parseBrMoney(v);
 }
 
-/** Converte "31/12/2025" ou "2025-12-31" em AAAA-MM-DD. */
+/**
+ * Valor em reais de uma coluna da planilha, em centavos: célula numérica do .xlsx (ou fórmula) pelo
+ * número cru, arredondado como o Excel mostra (104,895 → 10490); texto digitado e CSV por
+ * `parseMoneyToCents`. Sem isso, o texto "104.895" de uma célula numérica virava R$ 104.895,00.
+ */
+export function sheetMoneyToCents(row: Pick<SheetRow, 'values' | 'numbers'>, key: string): number | null {
+  const n = row.numbers[key];
+  if (n !== undefined) return toCents(n);
+  return parseMoneyToCents(row.values[key]?.trim());
+}
+
+/** Converte "31/12/2025" ou "2025-12-31" em AAAA-MM-DD, recusando datas que não existem (31/02). */
 export function parseDate(v: string | undefined | null): string | null {
   if (!v) return null;
-  const br = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(v.trim());
-  if (br) return `${br[3]}-${br[2]}-${br[1]}`;
-  const iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(v.trim());
-  return iso ? `${iso[1]}-${iso[2]}-${iso[3]}` : null;
+  return parseBrDate(v);
 }

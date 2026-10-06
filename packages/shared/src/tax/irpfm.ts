@@ -27,6 +27,7 @@
  * Valores em centavos.
  */
 import type { DeclarationItem } from '../dirpf';
+import { ruralResult } from './irpf';
 
 export interface IrpfmParams {
   calendarYear: number;
@@ -76,6 +77,12 @@ export const IRPFM_PARAMS: Record<number, IrpfmParams> = {
 
 /** Primeiro ano-calendário com IRPFM. */
 export const IRPFM_FIRST_CALENDAR_YEAR = 2026;
+
+/**
+ * Dividendos de lucros apurados até 2025 (art. 16-A, § 1º, XII, "c", 1): só saem da base se o
+ * pagamento ocorrer nos anos-calendário de 2026, 2027 e 2028.
+ */
+export const LEGACY_DIVIDENDS_PAYMENT_YEARS = { from: 2026, to: 2028 } as const;
 
 export function irpfmParams(calendarYear: number): IrpfmParams & { fallback: boolean; inForce: boolean } {
   const years = Object.keys(IRPFM_PARAMS)
@@ -161,6 +168,8 @@ export interface IrpfmInput {
   dividendWithholdingCents?: number;
   /** Dados das PJs pagadoras para o redutor do art. 16-B. */
   dividendPayers?: IrpfmDividendPayer[];
+  /** Avisos da montagem das linhas (ex.: `irpfmFromItems`), repetidos no resultado. */
+  notes?: string[];
 }
 
 export interface IrpfmPayerReducer {
@@ -235,7 +244,17 @@ export function computeIrpfm(input: IrpfmInput): IrpfmResult {
     warnings.push(`Parâmetros do IRPFM para ${input.calendarYear} não confirmados; usando os de ${params.calendarYear}.`);
   }
 
-  const incomes = input.incomes.filter((l) => l.cents !== 0);
+  // XII: dividendos de lucros até 2025 só saem da base se pagos de 2026 a 2028
+  const legacyOk = input.calendarYear >= LEGACY_DIVIDENDS_PAYMENT_YEARS.from && input.calendarYear <= LEGACY_DIVIDENDS_PAYMENT_YEARS.to;
+  const incomes = input.incomes
+    .filter((l) => l.cents !== 0)
+    .map((l) => (l.exclusion === 'legacy_dividends' && !legacyOk ? { ...l, exclusion: null } : l));
+  if (!legacyOk && input.incomes.some((l) => l.exclusion === 'legacy_dividends' && l.cents !== 0)) {
+    warnings.push(
+      `Dividendos de lucros apurados até 2025 só saem da base quando pagos nos anos-calendário de ${LEGACY_DIVIDENDS_PAYMENT_YEARS.from} a ${LEGACY_DIVIDENDS_PAYMENT_YEARS.to} (art. 16-A, § 1º, XII): em ${input.calendarYear}, eles entraram na base.`,
+    );
+  }
+  for (const n of input.notes ?? []) if (!warnings.includes(n)) warnings.push(n);
   const included = incomes.filter((l) => !l.exclusion);
   const excluded = incomes.filter((l) => l.exclusion);
   const exclusionsCents = sumBy(excluded, (l) => Math.max(0, l.cents));
@@ -364,19 +383,33 @@ const str = (v: unknown) => (typeof v === 'string' ? v : null);
  * Usa `kind` e a natureza (`extra.nature`, ver INCOME_NATURES). Ajustes por linha:
  * - `extra.irpfmExclusion`: força uma exclusão (chave de IRPFM_EXCLUSIONS);
  * - `extra.irpfmInclude: true`: força a inclusão na base;
- * - `extra.legacyDividends: true`: dividendos de lucros até 2025 aprovados até 31/12/2025 (XII);
+ * - `extra.legacyDividends: true`: dividendos de lucros até 2025 aprovados até 31/12/2025 (XII;
+ *   `computeIrpfm` só os exclui se pagos de 2026 a 2028);
  * - `extra.optedAnnualAdjustment: true`: RRA levado ao ajuste anual (entra na base);
  * - `extra.lostProfits: true`: indenização por lucros cessantes (entra na base);
  * - `extra.law14754: true` em "Imposto pago": IR da Lei 14.754/2023 (dedução III).
+ *
+ * Naturezas e incisos do art. 16-A, § 1º:
+ * - 'indemnity_damages' (acidente de trabalho, danos materiais ou morais) sai da base (IX);
+ *   'indemnity' (rescisão, PDV, aviso prévio, FGTS) fica na base, porque o caput inclui os isentos;
+ * - 'inheritance_donation' (heranças e doações em adiantamento da legítima) sai da base (III);
+ *   'donation' (outras doações) fica;
+ * - isento com natureza 'rural' é a parcela isenta da atividade rural e sai da base (VIII).
+ *
+ * Atividade rural (grupo 'rural'): entra o resultado tributável (arts. 4º, 5º e 14 da Lei 8.023/1990).
+ * Sem `ruralTaxableResultCents`, é a receita − despesa menos a parcela isenta lançada nos isentos;
+ * com ele (resultado tributável da ficha, com a opção de 20% e a compensação de prejuízos), o
+ * restante do resultado vai para as exclusões (VIII).
  */
-export function irpfmFromItems(items: DeclarationItem[]) {
+export function irpfmFromItems(items: DeclarationItem[], options: { ruralTaxableResultCents?: number | null } = {}) {
   const incomes: IrpfmIncomeLine[] = [];
+  const warnings: string[] = [];
   let exclusiveWithheldCents = 0;
   let definitiveTaxPaidCents = 0;
   let law14754TaxCents = 0;
   let dividendWithholdingCents = 0;
 
-  const natureExclusion = (nature: string | null, extra: Record<string, unknown>): IrpfmExclusion | null => {
+  const natureExclusion = (nature: string | null, extra: Record<string, unknown>, kind?: DeclarationItem['kind']): IrpfmExclusion | null => {
     if (extra.irpfmInclude === true) return null;
     const forced = str(extra.irpfmExclusion);
     if (forced && forced in IRPFM_EXCLUSIONS) return forced as IrpfmExclusion;
@@ -387,12 +420,15 @@ export function irpfmFromItems(items: DeclarationItem[]) {
         return 'inheritance_donation';
       case 'financial_exempt':
         return 'exempt_investments';
-      case 'indemnity':
+      case 'indemnity_damages':
         return extra.lostProfits === true ? null : 'indemnity';
       case 'retirement_illness':
         return 'serious_illness';
       case 'dividends':
         return extra.legacyDividends === true ? 'legacy_dividends' : null;
+      case 'rural':
+        // só a linha de isentos é a "parcela isenta correspondente à atividade rural" (VIII)
+        return kind === 'income_exempt' ? 'rural_exempt' : null;
       default:
         return null;
     }
@@ -415,7 +451,7 @@ export function irpfmFromItems(items: DeclarationItem[]) {
         break;
       }
       case 'income_exempt': {
-        const exclusion = natureExclusion(nature, extra);
+        const exclusion = natureExclusion(nature, extra, it.kind);
         incomes.push({ ...base, group: 'exempt', cents: value, exclusion, isDividend });
         if (isDividend) dividendWithholdingCents += withheld;
         break;
@@ -461,14 +497,48 @@ export function irpfmFromItems(items: DeclarationItem[]) {
     }
   });
 
-  // resultado rural negativo não reduz a base (prejuízo é compensado em anos seguintes)
+  // ---- atividade rural: a base recebe o resultado tributável, não a receita − despesa
   const rural = incomes.filter((l) => l.group === 'rural' && !l.exclusion);
-  const ruralResult = sumBy(rural, (l) => l.cents);
-  if (ruralResult < 0) {
-    for (const l of rural) l.cents = 0;
+  const ruralGross = sumBy(rural, (l) => l.cents);
+  // resultado negativo não reduz a base (o prejuízo é compensado em anos seguintes)
+  if (ruralGross < 0) for (const l of rural) l.cents = 0;
+  const informed = options.ruralTaxableResultCents;
+  if (rural.length || (informed !== undefined && informed !== null)) {
+    const rr = ruralResult(items, informed);
+    const positiveGross = Math.max(0, ruralGross);
+    const adjust = rr.taxableCents - positiveGross;
+    if (adjust !== 0) {
+      incomes.push({
+        key: 'rural-taxable-adjustment',
+        label:
+          rr.source === 'informed'
+            ? 'Ajuste ao resultado tributável informado (opção de 20% da receita ou compensação de prejuízos)'
+            : 'Parcela isenta da atividade rural (vai para as exclusões)',
+        group: 'rural',
+        cents: adjust,
+        exclusion: null,
+      });
+    }
+    // com o tributável informado, o resto do resultado do ano é a parcela não tributável (VIII)
+    const nonTaxable = positiveGross - rr.taxableCents - rr.exemptPortionCents;
+    if (rr.source === 'informed' && nonTaxable > 0) {
+      incomes.push({ key: 'rural-non-taxable', label: 'Resultado rural não tributável (diferença para o tributável informado)', group: 'rural', cents: nonTaxable, exclusion: 'rural_exempt' });
+    }
+    if (rr.source === 'gross' && positiveGross > 0) {
+      warnings.push(
+        `O resultado da atividade rural (receitas menos despesas: ${brl(positiveGross)}) entrou inteiro na base. Se o cliente optou pelo resultado de 20% da receita bruta (${brl(rr.option20Cents)}, art. 5º da Lei 8.023/1990) ou compensa prejuízos de anos anteriores (art. 14), informe o resultado tributável nos ajustes do cálculo: a diferença sai da base (art. 16-A, § 1º, VIII).`,
+      );
+    }
   }
 
-  return { incomes, exclusiveWithheldCents, definitiveTaxPaidCents, law14754TaxCents, dividendWithholdingCents };
+  const severance = items.filter((i) => i.extra?.nature === 'indemnity' && (i.kind === 'income_exempt' || i.kind === 'income_exclusive') && (i.valueCents ?? 0) > 0);
+  if (severance.length) {
+    warnings.push(
+      `${severance.length} linha(s) de rescisão, PDV, aviso prévio ou FGTS entraram na base: a lei só exclui indenizações por acidente de trabalho e por danos materiais ou morais (art. 16-A, § 1º, IX). Se for esse o caso, troque a natureza da linha.`,
+    );
+  }
+
+  return { incomes, exclusiveWithheldCents, definitiveTaxPaidCents, law14754TaxCents, dividendWithholdingCents, warnings };
 }
 
 /**

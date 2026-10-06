@@ -116,7 +116,7 @@ describe('DARF', () => {
 
     const other = await registerOffice(env);
     expect((await other.api.get(`/api/declarations/${declarationId}/darfs`)).status).toBe(404);
-    expect((await other.api.put(`/api/darfs/${d.id}`, { valueCents: 1 })).status).toBe(404);
+    expect((await other.api.put(`/api/darfs/${d.id}`, { valueCents: 1_000 })).status).toBe(404);
     expect((await other.api.del(`/api/darfs/${d.id}`)).status).toBe(404);
     expect((await other.api.post(`/api/darfs/${d.id}/send`, { channel: 'email' })).status).toBe(404);
     expect((await upload(env, other.token, `/api/darfs/${d.id}/file`, [{ name: 'x.pdf', content: FAKE_PDF, type: 'application/pdf' }])).status).toBe(404);

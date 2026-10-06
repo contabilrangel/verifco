@@ -3,6 +3,7 @@ import {
   DARF_STATUS,
   DECLARATION_SUBSTATUS,
   ITEM_KINDS,
+  darfPayable,
   declarationTotals,
   fineMeshCheck,
   formatCpfCnpj,
@@ -89,7 +90,7 @@ export async function buildKitPdf(ctx: AppContext, declaration: DeclarationRow, 
           ['Rendimentos tributáveis', m(t.taxableIncomeCents)],
           ['Rendimentos isentos e não tributáveis', m(t.exemptIncomeCents)],
           ['Rendimentos de tributação exclusiva', m(t.exclusiveIncomeCents)],
-          ['Pagamentos e deduções informados', m(t.deductionsCents)],
+          ['Pagamentos efetuados informados', m(t.deductionsCents)],
           ['Imposto retido na fonte', m(t.withheldTaxCents)],
         ],
       },
@@ -99,13 +100,32 @@ export async function buildKitPdf(ctx: AppContext, declaration: DeclarationRow, 
   // imposto a pagar (DARF) ou restituição
   const payBlocks: Block[] = [];
   if (darfs.length) {
+    // quotas geradas guardam o principal: da 2ª em diante, mostra o valor com juros quando a Selic
+    // do período já foi publicada; sem ela, o principal com a marca "+ juros"
+    const payable = darfs.map((d) => ({ d, a: darfPayable(d) }));
+    const pending = payable.filter(({ a }) => a && a.totalCents === null);
+    const valueCell = ({ d, a }: (typeof payable)[number]): Cell => (!a ? m(d.valueCents) : a.totalCents !== null ? m(a.totalCents) : `${formatMoney(a.principalCents)} + juros`);
+    const total = payable.reduce((acc, { d, a }) => acc + (a?.totalCents ?? d.valueCents), 0);
     payBlocks.push({
       type: 'table',
       title: 'Quotas do DARF (código 0211)',
-      columns: [{ label: 'Quota', width: 0.8 }, { label: 'Vencimento', width: 1.3 }, { label: 'Valor', width: 1.3, align: 'right' }, { label: 'Situação', width: 1.4 }],
-      rows: darfs.map((d) => [d.quotaNumber === 1 && darfs.length === 1 ? 'Única' : `${d.quotaNumber}ª`, { date: d.dueDate }, m(d.valueCents), d.paidAt ? `Paga em ${formatDate(d.paidAt)}` : (DARF_STATUS[d.status as keyof typeof DARF_STATUS] ?? d.status)]),
-      totals: ['Total', '', m(darfs.reduce((a, d) => a + d.valueCents, 0)), ''],
+      columns: [{ label: 'Quota', width: 0.8 }, { label: 'Vencimento', width: 1.3 }, { label: 'Valor', width: 1.5, align: 'right' }, { label: 'Situação', width: 1.4 }],
+      rows: payable.map((x) => [
+        x.d.quotaNumber === 1 && darfs.length === 1 ? 'Única' : `${x.d.quotaNumber}ª`,
+        { date: x.d.dueDate },
+        valueCell(x),
+        x.d.paidAt ? `Paga em ${formatDate(x.d.paidAt)}` : (DARF_STATUS[x.d.status as keyof typeof DARF_STATUS] ?? x.d.status),
+      ]),
+      totals: [pending.length ? 'Total sem os juros pendentes' : 'Total', '', m(total), ''],
     });
+    if (payable.some(({ a }) => a)) {
+      payBlocks.push({
+        type: 'text',
+        text:
+          'Da 2ª quota em diante, o valor tem juros: Selic acumulada desde o mês seguinte ao vencimento da 1ª quota até o mês anterior ao do pagamento, mais 1% no mês do pagamento (a 2ª quota tem só 1%).' +
+          (pending.length ? ' Nas quotas marcadas com “+ juros”, a Selic do período ainda não foi publicada: o valor mostrado é só o principal e o valor a pagar é o da guia.' : ' Vale sempre o valor da guia.'),
+      });
+    }
     payBlocks.push({ type: 'text', text: 'Pague cada quota até o vencimento. Quotas pagas com atraso têm multa de 0,33% ao dia (limitada a 20%) e juros Selic.', muted: true });
   } else if (due > 0) {
     payBlocks.push({

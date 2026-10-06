@@ -15,11 +15,11 @@ import {
   type BudgetStatus,
 } from '@verifco/shared';
 import { budgets, customers, importBatches, paymentMethods } from '../../db/schema';
-import { badRequest } from '../../lib/errors';
+import { HttpError, badRequest } from '../../lib/errors';
 import { audit, can, guard, parse, requireUser, yearSchema } from '../../lib/http';
 import { customerScope } from '../../services/customers';
 import { getOrCreateDeclaration } from '../../services/declarations';
-import { buildWorkbook, parseDate, parseMoneyToCents, readSheet } from '../../services/xlsx';
+import { buildWorkbook, parseDate, readSheet, sheetMoneyToCents } from '../../services/xlsx';
 import { applyStatus, resolveBudgetValues, userName, type BudgetRow, type PaymentMethodRow } from './service';
 import { brDate, budgetStatusLabel, categoryLabel } from './text';
 
@@ -152,7 +152,8 @@ export async function importRoutes(app: FastifyInstance) {
     const results: { row: number; ok: boolean; message: string }[] = [];
     let skipped = 0;
 
-    for (const { rowNumber, values: v } of sheet) {
+    for (const line of sheet) {
+      const { rowNumber, values: v } = line;
       const cell = (k: string) => (v[k] ?? '').trim();
       const fail = (message: string) => results.push({ row: rowNumber, ok: false, message });
       const amountText = cell('valor');
@@ -170,9 +171,10 @@ export async function importRoutes(app: FastifyInstance) {
         fail(`Cliente ${formatCpfCnpj(doc)} não encontrado.`);
         continue;
       }
-      const amountCents = parseMoneyToCents(amountText);
+      // célula numérica do .xlsx pelo número cru ("104.895" é R$ 104,90, não 104 mil); texto e CSV pelo parser de reais
+      const amountCents = sheetMoneyToCents(line, 'valor');
       if (amountCents === null || amountCents <= 0) {
-        fail('Valor inválido.');
+        fail(`Valor "${amountText}" inválido. Use o formato 1.500,00 (ou 1500,00).`);
         continue;
       }
       const category: BudgetCategory | null = cell('categoria') ? matchOption(cell('categoria'), BUDGET_CATEGORIES) : 'irpf';
@@ -204,7 +206,7 @@ export async function importRoutes(app: FastifyInstance) {
       const startText = cell('inicio_da_cobranca');
       const start = startText ? parseDate(startText) : null;
       if (startText && !start) {
-        fail('Início da cobrança inválido (use DD/MM/AAAA).');
+        fail(`Início da cobrança "${startText}" inválido: use uma data que exista, no formato DD/MM/AAAA.`);
         continue;
       }
       const statusText = cell('status');
@@ -290,7 +292,12 @@ export async function importRoutes(app: FastifyInstance) {
         const verb = current ? 'atualizado' : 'criado';
         results.push({ row: rowNumber, ok: true, message: row.status === 'approved' && current?.status !== 'approved' ? `Orçamento ${verb} e aprovado (faturamento gerado).` : `Orçamento ${verb}.` });
       } catch (err) {
-        fail(err instanceof Error ? err.message : 'Erro ao gravar a linha.');
+        // erros de regra (HttpError) já vêm em português; erro de banco não vai para o resultado
+        if (err instanceof HttpError) fail(err.message);
+        else {
+          req.log.error({ err, row: rowNumber }, 'Falha ao gravar linha da importação de orçamentos');
+          fail('Erro ao gravar a linha. Confira os valores e tente novamente.');
+        }
       }
     }
 

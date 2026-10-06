@@ -329,6 +329,12 @@ function taxPlanningSection(p: PersonContext, title: string): Section {
           ['Rendimentos tributáveis', m(r.taxableIncomeCents), m(r.taxableIncomeCents)],
           ['Deduções / desconto simplificado', m(r.complete.deductionsCents), m(r.simplified.deductionsCents)],
           ['Base de cálculo', m(r.complete.baseCents), m(r.simplified.baseCents)],
+          ...(r.annualReduction
+            ? ([
+                ['Imposto pela tabela progressiva', m(r.complete.grossTaxCents), m(r.simplified.grossTaxCents)],
+                ['Redução anual (Lei 15.270/2025)', m(r.complete.reductionCents), m(r.simplified.reductionCents)],
+              ] as Cell[][])
+            : []),
           ['Imposto devido', m(r.complete.taxCents), m(r.simplified.taxCents)],
           ['Alíquota efetiva', { pct: r.complete.effectiveRate }, { pct: r.simplified.effectiveRate }],
           ['Imposto pago / retido', m(r.prepaidTaxCents), m(r.prepaidTaxCents)],

@@ -27,13 +27,18 @@ describe('dashboard do escritório', () => {
     const d2 = await decl(ids[1], { taxation: 'simplified', refundCents: 80_000, receiptNumber: '1234', ecacStatus: 'fine_mesh' });
     await api.post(`/api/declarations/${d2.id}/items`, { kind: 'asset', groupCode: '04', prevValueCents: 0, valueCents: 1_000_000 });
     await api.post(`/api/declarations/${d2.id}/items`, { kind: 'income_pj', valueCents: 9_000_000 });
+    // exatamente R$ 600 mil não sujeita ao IRPFM (art. 16-A: "superior a")
+    await api.post(`/api/declarations/${d2.id}/items`, { kind: 'income_exempt', valueCents: IRPFM_THRESHOLD_CENTS - 9_000_000, extra: { nature: 'dividends' } });
     // 3: rendimentos acima do limite do IRPFM, finalizada
     const d3 = await decl(ids[2], { taxation: 'complete' });
-    await api.post(`/api/declarations/${d3.id}/items`, { kind: 'income_exempt', valueCents: IRPFM_THRESHOLD_CENTS, extra: { nature: 'dividends' } });
+    await api.post(`/api/declarations/${d3.id}/items`, { kind: 'income_exempt', valueCents: IRPFM_THRESHOLD_CENTS + 1, extra: { nature: 'dividends' } });
     await api.post(`/api/declarations/${d3.id}/finish`);
     // 4: em preenchimento; 5: inativo sem declaração
     const d4 = await decl(ids[3], {});
     await api.patch(`/api/declarations/${d4.id}/substatus`, { substatus: 'started' });
+    // produtor rural com receita alta e resultado baixo: o alerta usa o resultado, não a receita bruta
+    await api.post(`/api/declarations/${d4.id}/items`, { kind: 'rural_income', valueCents: 90_000_000 });
+    await api.post(`/api/declarations/${d4.id}/items`, { kind: 'rural_expense', valueCents: 80_000_000 });
     await api.post('/api/customers/bulk', { ids: [ids[4]], action: 'status', value: 'inactive' });
     await env.ctx.db.update(customers).set({ procurationStatus: 'valid', cndStatus: 'success' }).where(eq(customers.id, ids[0]));
     await env.ctx.db.insert(budgets).values([

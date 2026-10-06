@@ -21,6 +21,7 @@ interface Adjustments {
   law14754TaxCents?: number | null;
   definitiveTaxPaidCents?: number | null;
   dividendWithholdingCents?: number | null;
+  ruralTaxableResultCents?: number | null;
   dividendPayers?: Payer[];
 }
 interface IrpfmPayload {
@@ -107,7 +108,7 @@ export function IrpfmTab() {
                 <span className="vf-muted vf-text-sm">Ano-calendário {year - 1}</span>
                 <Tag tone={r.subject ? (r.dueCents > 0 ? 'danger' : 'warning') : 'success'}>{r.subject ? 'Sujeito à tributação mínima' : 'Não sujeito ao IRPFM'}</Tag>
                 {!r.inForce && <Tag tone="highlight">Simulação (lei vale a partir de 2026)</Tag>}
-                {(adj.regularTaxDueCents ?? null) !== null || adj.dividendPayers?.length ? <Tag tone="primary">Com ajustes do escritório</Tag> : null}
+                {(adj.regularTaxDueCents ?? null) !== null || (adj.ruralTaxableResultCents ?? null) !== null || adj.dividendPayers?.length ? <Tag tone="primary">Com ajustes do escritório</Tag> : null}
               </div>
               {!data.hasDeclaration || !data.itemsCount ? (
                 <Alert tone="primary" title="Sem linhas da declaração neste exercício">
@@ -377,6 +378,7 @@ function AdjustmentsDrawer({
   const [law, setLaw] = useState<number | null>(current.law14754TaxCents ?? null);
   const [definitive, setDefinitive] = useState<number | null>(current.definitiveTaxPaidCents ?? null);
   const [withholding, setWithholding] = useState<number | null>(current.dividendWithholdingCents ?? null);
+  const [rural, setRural] = useState<number | null>(current.ruralTaxableResultCents ?? null);
   const [payers, setPayers] = useState<Payer[]>(() =>
     result.reducer.payers.map((p) => {
       const cur = current.dividendPayers?.find((c) => (c.payerDoc ?? c.payerName) === (p.payerDoc ?? p.payerName));
@@ -396,7 +398,14 @@ function AdjustmentsDrawer({
           </Button>
           <Button
             onClick={() =>
-              onApply({ regularTaxDueCents: regular, law14754TaxCents: law, definitiveTaxPaidCents: definitive, dividendWithholdingCents: withholding, dividendPayers: payers })
+              onApply({
+                regularTaxDueCents: regular,
+                law14754TaxCents: law,
+                definitiveTaxPaidCents: definitive,
+                dividendWithholdingCents: withholding,
+                ruralTaxableResultCents: rural,
+                dividendPayers: payers,
+              })
             }
           >
             Recalcular
@@ -410,6 +419,12 @@ function AdjustmentsDrawer({
         <MoneyInput label="IR da Lei 14.754/2023 (aplicações no exterior)" value={law} onChange={setLaw} />
         <MoneyInput label="IR pago definitivamente (renda variável etc.)" value={definitive} onChange={setDefinitive} />
         <MoneyInput label="IR retido sobre dividendos (art. 6º-A)" value={withholding} onChange={setWithholding} />
+        <MoneyInput
+          label="Resultado tributável da atividade rural"
+          help="Da ficha Atividade Rural, já com a opção de 20% da receita bruta e a compensação de prejuízos. Em branco: receita − despesa, menos a parcela isenta lançada nos isentos."
+          value={rural}
+          onChange={setRural}
+        />
         <h3 className="vf-text-md-bold">Redutor: empresas pagadoras de dividendos</h3>
         {payers.length === 0 ? (
           <p className="vf-muted">Não há dividendos na base de cálculo.</p>

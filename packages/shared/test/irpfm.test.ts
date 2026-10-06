@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ANNUAL_IRPF_TABLES,
   annualIrpfDue,
   annualProgressiveTax,
   annualTaxReduction,
@@ -29,11 +30,13 @@ describe('tabela progressiva anual', () => {
     expect(annualProgressiveTax(R(60_000), 2026)).toBe(R(5_646.22));
   });
 
-  it('continuidade entre faixas (parcelas a deduzir coerentes)', () => {
-    // a tabela de 2027 é a mensal × 12; o arredondamento mensal das parcelas gera até 7 centavos de salto
-    for (const ex of [2025, 2026, 2027]) {
-      for (const limit of [R(33_919.8), R(45_012.6), R(55_976.16)]) {
-        expect(Math.abs(annualProgressiveTax(limit, ex) - annualProgressiveTax(limit + 1, ex))).toBeLessThanOrEqual(10);
+  it('continuidade entre faixas (parcelas a deduzir oficiais)', () => {
+    // com as parcelas oficiais, o imposto varia no máximo 1 centavo na troca de faixa (arredondamento
+    // das parcelas publicadas); antes, as parcelas de 2027 (mensal × 12) davam até 10 centavos de salto
+    for (const ex of [2017, 2023, 2024, 2025, 2026, 2027]) {
+      const limits = ANNUAL_IRPF_TABLES[ex].brackets.map((b) => b.upToCents).filter((x): x is number => x !== null);
+      for (const limit of limits) {
+        expect(Math.abs(annualProgressiveTax(limit + 1, ex) - annualProgressiveTax(limit, ex))).toBeLessThanOrEqual(1);
       }
     }
   });
@@ -49,13 +52,13 @@ describe('tabela progressiva anual', () => {
   });
 
   it('IR devido: R$ 60 mil zera no exercício 2027 e R$ 80 mil tem redução parcial', () => {
-    // simplificada: base 48.000 → 22,5% × 48.000 − 8.105,88 = 2.694,12, reduzido a zero
+    // simplificada: base 48.000 → 22,5% × 48.000 − 8.105,85 = 2.694,15, reduzido a zero
     expect(annualIrpfDue({ exercise: 2027, taxableIncomeCents: R(60_000) }).taxDueCents).toBe(0);
-    // simplificada: base 64.000 → 27,5% × 64.000 − 10.904,76 = 6.695,24 − 783,73 = 5.911,51
+    // simplificada: base 64.000 → 27,5% × 64.000 − 10.904,66 = 6.695,34 − 783,73 = 5.911,61
     const r = annualIrpfDue({ exercise: 2027, taxableIncomeCents: R(80_000), model: 'simplified' });
-    expect(r.grossTaxCents).toBe(R(6_695.24));
-    expect(r.taxDueCents).toBe(R(5_911.51));
-    expect(r.confirmed).toBe(false);
+    expect(r.grossTaxCents).toBe(R(6_695.34));
+    expect(r.taxDueCents).toBe(R(5_911.61));
+    expect(r.confirmed).toBe(true);
   });
 });
 
@@ -140,8 +143,8 @@ describe('IRPFM — cálculo', () => {
 
   it('R$ 1,2 milhão de salário: 10%, mas o IR da tabela já supera o mínimo', () => {
     const regular = annualIrpfDue({ exercise: 2027, taxableIncomeCents: R(1_200_000) }).taxDueCents;
-    // simplificada: (1.200.000 − 17.640) × 27,5% − 10.904,76 = 314.244,24
-    expect(regular).toBe(R(314_244.24));
+    // simplificada: (1.200.000 − 17.640) × 27,5% − 10.904,66 = 314.244,34
+    expect(regular).toBe(R(314_244.34));
     const r = computeIrpfm({ calendarYear: 2026, incomes: [line('salário', 'taxable', 1_200_000)], regularTaxDueCents: regular, exclusiveWithheldCents: 0 });
     expect(r.ratePercent).toBe(10);
     expect(r.grossTaxCents).toBe(R(120_000));
@@ -215,7 +218,9 @@ describe('IRPFM — linhas da declaração', () => {
     { kind: 'income_exempt', valueCents: R(80_000), extra: { nature: 'financial_exempt' } },
     { kind: 'income_exempt', valueCents: R(50_000), extra: { nature: 'retirement_illness' } },
     { kind: 'income_exempt', valueCents: R(40_000), extra: { nature: 'inheritance_donation' } },
+    // rescisão/FGTS fica na base; acidente de trabalho e danos saem (inciso IX)
     { kind: 'income_exempt', valueCents: R(10_000), extra: { nature: 'indemnity' } },
+    { kind: 'income_exempt', valueCents: R(8_000), extra: { nature: 'indemnity_damages' } },
     { kind: 'income_exclusive', valueCents: R(30_000), withheldCents: R(4_500), extra: { nature: 'financial_taxed' } },
     { kind: 'income_exclusive', valueCents: R(15_000), withheldCents: R(1_000), extra: { nature: 'thirteenth' } },
     { kind: 'income_accumulated', valueCents: R(25_000), withheldCents: R(2_000) },
@@ -230,15 +235,15 @@ describe('IRPFM — linhas da declaração', () => {
   it('classifica inclusões e exclusões', () => {
     const r = irpfmFromItems(items);
     const included = r.incomes.filter((l) => !l.exclusion).reduce((a, l) => a + l.cents, 0);
-    // 100k + 60k + 500k + 30k + 15k + 20k + (50k − 20k) = 755k
-    expect(included).toBe(R(755_000));
+    // 100k + 60k + 500k + 10k (FGTS/rescisão) + 30k + 15k + 20k + (50k − 20k) = 765k
+    expect(included).toBe(R(765_000));
     const excl = Object.fromEntries(r.incomes.filter((l) => l.exclusion).map((l) => [l.exclusion, l.cents]));
     expect(excl).toEqual({
       legacy_dividends: R(200_000),
       exempt_investments: R(80_000),
       serious_illness: R(50_000),
       inheritance_donation: R(40_000),
-      indemnity: R(10_000),
+      indemnity: R(8_000),
       rra_exclusive: R(25_000),
       capital_gain: R(300_000),
     });
