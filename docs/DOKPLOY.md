@@ -3,6 +3,10 @@
 Crie um serviço **Docker Compose** no projeto Verifco. Configure o GitHub/Git com
 `contabilrangel/verifco`, branch principal `claude/laughing-brown-xsyey5`.
 
+O [inventário da produção](INVENTARIO-DOKPLOY.md) registra os IDs, hosts internos,
+domínios, redes, volumes e pendências reais conferidos em 06/10/2026. Este guia
+descreve como instalar; o inventário identifica o que já está instalado.
+
 ## Bancos como serviços do Dokploy (instalação atual)
 
 Em **Create Service → Database → PostgreSQL**, crie dois serviços no mesmo
@@ -12,6 +16,9 @@ ambiente e servidor da aplicação, com senhas diferentes:
 | --- | --- | --- | --- | --- |
 | Verifco — escritórios | `verifco-escritorios` | `verifco` | `verifco` | `postgres:16-bookworm` |
 | Verifco — plataforma | `verifco-plataforma` | `verifco_platform` | `verifco_platform` | `postgres:16-bookworm` |
+
+Os App Names acima são exemplos para criação. Use nas conexões os nomes finais
+gerados pelo Dokploy, incluindo o sufixo, conforme o inventário e **Credentials**.
 
 Implante os dois bancos e espere ficarem prontos **antes** de implantar a aplicação.
 Em **Credentials**, copie a **Internal Connection URL** do primeiro para
@@ -63,12 +70,14 @@ o serviço **web**, porta **80**, com HTTPS e Let's Encrypt. A web encaminha `/a
 à API pela rede interna; `TRUST_PROXY=2` representa Nginx e Traefik. Confira em
 **Preview Compose** que a web mantém sua rede `backend` além da rede de roteamento.
 
-Nesta instalação, cadastre os três domínios para o serviço `web`, porta `80`:
+## Domínios (ambas as variantes)
+
+Cadastre os três domínios para o serviço `web`, porta `80`:
 `app.verifco.com.br` e `ir.verifco.com.br` abrem o painel do contador;
 `painel.verifco.com.br` redireciona a raiz para `/sistema`. A separação de contas e
 permissões é aplicada pela API, independentemente do domínio de acesso.
 
-## Ambiente
+## Ambiente da alternativa com bancos no Compose
 
 Preencha no Dokploy as variáveis de `deploy/dokploy.env.example`:
 
@@ -144,12 +153,15 @@ no próprio banco e refletida na URL correspondente.
 
 1. Crie o registro DNS do domínio apontando para o servidor do Dokploy.
 2. Salve o ambiente e o domínio, confira o Compose e clique **Deploy**.
-3. Confirme que os cinco serviços estão saudáveis. A API aplica as migrações dos dois bancos antes
+3. Na instalação gerenciada, confirme web, API e worker saudáveis no Compose e os
+   dois PostgreSQL prontos em seus serviços independentes. Na alternativa com bancos
+   no Compose, confira os cinco componentes no próprio Compose. A API aplica as migrações dos dois bancos antes
    de aceitar conexões; o worker espera a API para evitar migrações simultâneas.
 4. No terminal do container `api`, crie o proprietário sem guardar a senha no Git
    nem no ambiente permanente. Digite os valores de forma interativa:
 
 ```sh
+cd /app/apps/api
 read -r -p 'Nome: ' PLATFORM_OWNER_NAME
 read -r -p 'E-mail: ' PLATFORM_OWNER_EMAIL
 read -r -s -p 'Senha (mínimo 12 caracteres): ' PLATFORM_OWNER_PASSWORD
@@ -160,7 +172,7 @@ unset PLATFORM_OWNER_NAME PLATFORM_OWNER_EMAIL PLATFORM_OWNER_PASSWORD
 ```
 
 Selecione o container **api** no Docker Terminal, não `web`, e use Bash para esse
-comando. Execute antes `cd /app/apps/api`. A imagem `web` é Nginx/Alpine e oferece
+comando. A imagem `web` é Nginx/Alpine e oferece
 `/bin/sh`, sem Bash; ela não contém o comando de criação do proprietário.
 O proprietário acessa `/sistema`;
 os contadores acessam `/entrar` e criam os escritórios em `/cadastro`. Nenhuma conta
@@ -173,7 +185,8 @@ não precisam de serviços extras no servidor.
 
 ## Verificação automatizada
 
-O CI constrói as duas imagens, sobe a stack com os dois PostgreSQL e valores exclusivos
-de teste, confere a web, a navegação `/sistema` e o encaminhamento autenticado da
+O CI valida as duas variantes: bancos dentro do Compose e bancos independentes na
+rede externa `dokploy-network`. Constrói as imagens e usa valores exclusivos de
+teste, confere a web, a navegação `/sistema` e o encaminhamento autenticado da
 API, verifica que as tabelas operacionais e administrativas estão em bancos
 diferentes e encerra os containers. A implantação real ainda depende de DNS e ambiente.

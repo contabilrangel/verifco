@@ -40,6 +40,7 @@ pnpm typecheck   # tipagem
 - [Mapeamento funcional](docs/mapeamento-conferir.md) e [levantamento das telas](docs/especificacao-levantamento.md)
 - Marca: `brand/` (logo, símbolo, ícone e o gerador `gerar-logo.mjs`)
 - Produção: [Implantação completa no Dokploy](docs/DOKPLOY.md)
+- Instalação existente: [Inventário da produção e pendências](docs/INVENTARIO-DOKPLOY.md)
 
 ## Administração do sistema e IA
 
