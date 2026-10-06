@@ -1,7 +1,7 @@
 import { and, asc, count, eq, exists, ilike, inArray, isNotNull, isNull, notExists, or, sql, type SQL } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { DECLARATION_STAGES, currentExerciseYear, onlyDigits, type DeclarationStage } from '@verifco/shared';
+import { DECLARATION_STAGES, KANBAN_PERMISSIONS, currentExerciseYear, onlyDigits, type DeclarationStage } from '@verifco/shared';
 import { backlogs, customerGroupMembers, customerGroups, customers, declarations, users } from '../../db/schema';
 import { guard, parse, requireUser, yearSchema } from '../../lib/http';
 import { customerScope } from '../../services/customers';
@@ -49,7 +49,7 @@ export interface KanbanCard {
 export async function kanbanRoutes(app: FastifyInstance) {
   const { db } = app.ctx;
 
-  app.get('/kanban', { preHandler: guard('declaration.view') }, async (req) => {
+  app.get('/kanban', { preHandler: guard(...KANBAN_PERMISSIONS) }, async (req) => {
     const user = requireUser(req);
     const q = parse(kanbanQuery, req.query);
     const year = q.year ?? currentExerciseYear();

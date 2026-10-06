@@ -261,6 +261,18 @@ export const ELABORATION_LIST_PERMISSIONS: string[] = [
   'pre_declaration.edit',
 ];
 
+/**
+ * Quem abre o dashboard do escritório (`GET /dashboard`, a rota "/" da web): quem vê declarações ou
+ * lista clientes. A API (`modules/dashboard/routes.ts`) e o menu da web usam esta mesma lista.
+ */
+export const DASHBOARD_PERMISSIONS: string[] = ['declaration.view', 'customer.list'];
+
+/**
+ * Quem abre o Kanban das declarações (`GET /kanban`). A API (`modules/declarations/kanban.ts`) e o
+ * menu da web usam esta mesma lista.
+ */
+export const KANBAN_PERMISSIONS: string[] = ['declaration.view'];
+
 /** Função padrão de quem cria o escritório: todas as permissões. */
 export const ADMIN_ROLE_NAME = 'Administrador';
 

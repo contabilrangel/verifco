@@ -12,7 +12,7 @@ import {
   Users,
   Wand2,
 } from 'lucide-react';
-import { ELABORATION_LIST_PERMISSIONS } from '@verifco/shared';
+import { DASHBOARD_PERMISSIONS, ELABORATION_LIST_PERMISSIONS, KANBAN_PERMISSIONS } from '@verifco/shared';
 import { ADMIN_TABS, type SubTab } from './modules';
 
 export interface NavLink {
@@ -47,8 +47,9 @@ export const NAV: NavGroup[] = [
     label: 'Início',
     icon: Home,
     children: [
-      { to: '/', label: 'Dashboard', end: true },
-      { to: '/kanban', label: 'Kanban' },
+      // as mesmas permissões que abrem GET /dashboard e GET /kanban na API
+      { to: '/', label: 'Dashboard', end: true, perms: DASHBOARD_PERMISSIONS },
+      { to: '/kanban', label: 'Kanban', perms: KANBAN_PERMISSIONS },
       { to: '/radar', label: 'Radar de oportunidades', perms: ['radar.view'] },
     ],
   },
@@ -105,3 +106,30 @@ export const NAV: NavGroup[] = [
 ];
 
 export const DOC_ICON = FileText;
+
+/** `useAuth().can`: true se o usuário tem ao menos uma das permissões (o dono tem todas). */
+export type Can = (...permissions: string[]) => boolean;
+
+const allowed = (perms: string[] | undefined, can: Can) => !perms?.length || can(...perms);
+
+/**
+ * O menu que o usuário vê: grupos com destino conforme as próprias permissões; grupos com
+ * subitens só com os subitens permitidos (e somem se não sobrar nenhum). O menu lateral e a
+ * página inicial usam esta mesma regra.
+ */
+export function visibleNav(can: Can, nav: NavGroup[] = NAV): NavGroup[] {
+  return nav.flatMap((g) => {
+    if (g.to) return allowed(g.perms, can) ? [g] : [];
+    const children = (g.children ?? []).filter((c) => allowed(c.perms, can));
+    return children.length ? [{ id: g.id, label: g.label, icon: g.icon, children }] : [];
+  });
+}
+
+/** Primeiro destino do menu que o usuário vê (na ordem do menu), ou null se não vê nenhum. */
+export function firstNavPath(can: Can, nav: NavGroup[] = NAV): string | null {
+  for (const g of visibleNav(can, nav)) {
+    const to = g.to ?? g.children?.[0]?.to;
+    if (to) return to;
+  }
+  return null;
+}

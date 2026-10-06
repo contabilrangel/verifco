@@ -1,5 +1,6 @@
 import { and, asc, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { KANBAN_PERMISSIONS } from '@verifco/shared';
 import { auditLogs } from '../src/db/schema';
 import { VALID_CPFS, createEmployee, createTestEnv, registerOffice, type Api, type TestEnv } from './helpers';
 
@@ -238,6 +239,10 @@ describe('kanban', () => {
     const office = await registerOffice(env);
     const emp = await createEmployee(env, office.api, ['customer.list']);
     expect((await emp.api.get(`/api/kanban?year=${YEAR}`)).status).toBe(403);
+    // a mesma lista que o menu da web usa para mostrar o Kanban
+    expect(KANBAN_PERMISSIONS).toEqual(['declaration.view']);
+    const viewer = await createEmployee(env, office.api, KANBAN_PERMISSIONS);
+    expect((await viewer.api.get(`/api/kanban?year=${YEAR}`)).status).toBe(200);
   });
 });
 

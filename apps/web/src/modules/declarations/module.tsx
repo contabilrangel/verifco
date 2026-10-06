@@ -1,4 +1,6 @@
 import { ClipboardList, FileSpreadsheet, FolderOpen, LayoutDashboard, Receipt } from 'lucide-react';
+import { KANBAN_PERMISSIONS } from '@verifco/shared';
+import { HomeRoute, RequirePermission } from '../../app/access';
 import type { VerifcoModule } from '../../app/modules';
 import { BacklogsStep } from './BacklogsStep';
 import { CustomerDashboardTab } from './CustomerDashboardTab';
@@ -11,8 +13,23 @@ import { KanbanPage } from './KanbanPage';
 /** Núcleo do IRPF: dashboard, Kanban, painel do cliente e etapas da declaração. */
 export const module: VerifcoModule = {
   routes: [
-    { index: true, element: <DashboardPage /> },
-    { path: 'kanban', element: <KanbanPage /> },
+    // "/" é a página inicial: sem as permissões do dashboard, leva ao primeiro destino do menu
+    {
+      index: true,
+      element: (
+        <HomeRoute>
+          <DashboardPage />
+        </HomeRoute>
+      ),
+    },
+    {
+      path: 'kanban',
+      element: (
+        <RequirePermission perms={KANBAN_PERMISSIONS} title="Kanban">
+          <KanbanPage />
+        </RequirePermission>
+      ),
+    },
   ],
   profileTabs: [{ path: '', label: 'Painel', icon: LayoutDashboard, element: CustomerDashboardTab, order: 10, perms: ['declaration.view'] }],
   irpfSteps: [

@@ -200,7 +200,12 @@ Além de `routes`, `publicRoutes` e `profileTabs`, um módulo pode registrar `ad
 (etapas da aba IRPF do cliente, `/clientes/:id/irpf/<path>`). As páginas com abas e a aba
 IRPF são montadas em `src/app/routes.tsx` e `src/app/TabbedPage.tsx`.
 
-O menu lateral fica em `src/app/nav.ts` e já tem todos os destinos.
+O menu lateral fica em `src/app/nav.ts` e já tem todos os destinos. Cada destino exige as mesmas
+permissões que a API confere na rota que a página usa (listas compartilhadas de
+`packages/shared/src/permissions.ts`, como `DASHBOARD_PERMISSIONS` e `KANBAN_PERMISSIONS`, quando a API
+também as usa); `visibleNav` dá o menu do usuário. A página inicial (`/`, destino do login) abre o
+dashboard para quem pode; os demais vão ao primeiro destino do menu que veem (`HomeRoute` em
+`src/app/access.tsx`), e `RequirePermission` mostra "sem permissão" a quem abre a página pelo endereço.
 
 ### Mapa de rotas, abas e etapas
 

@@ -10,7 +10,7 @@ import { useAction, useApi, useMediaQuery } from '../lib/hooks';
 import { YEAR_OPTIONS, YEAR_OPTIONS_SHORT, useYear } from '../lib/year';
 import type { RobotOverview } from '../modules/ecac/types';
 import { favoriteLabel, isCurrentFavorite, visibleFavorites, type Favorite } from './favorites';
-import { NAV, type NavGroup } from './nav';
+import { visibleNav, type NavGroup } from './nav';
 import './shell.css';
 
 /** Seção "Favoritos" do menu lateral: atalhos gravados pela estrela do cabeçalho das páginas. */
@@ -110,9 +110,10 @@ function EcacSyncButton() {
   );
 }
 
-function NavGroupItem({ group, can }: { group: NavGroup; can: (...p: string[]) => boolean }) {
+/** Item do menu lateral; recebe o grupo já filtrado pelas permissões (`visibleNav`). */
+function NavGroupItem({ group }: { group: NavGroup }) {
   const location = useLocation();
-  const children = (group.children ?? []).filter((c) => !c.perms?.length || can(...c.perms));
+  const children = group.children ?? [];
   const activeChild = children.some((c) => (c.end ? location.pathname === c.to : location.pathname.startsWith(c.to)));
   const [open, setOpen] = useState(activeChild);
   useEffect(() => {
@@ -121,7 +122,6 @@ function NavGroupItem({ group, can }: { group: NavGroup; can: (...p: string[]) =
   const Icon = group.icon;
 
   if (group.to) {
-    if (group.perms?.length && !can(...group.perms)) return null;
     return (
       <NavLink to={group.to} className={({ isActive }) => cx('sidebar__link', isActive && 'active')} title={group.label}>
         <Icon />
@@ -198,8 +198,8 @@ export function Shell() {
           <img src={collapsed ? '/favicon.svg' : '/verifco-logo-negativo.svg'} alt="Verifco" />
         </div>
         <FavoritesNav favorites={me?.favorites} onRemove={(f) => void removeFavorite(f)} />
-        {NAV.map((g) => (
-          <NavGroupItem key={g.id} group={g} can={can} />
+        {visibleNav(can).map((g) => (
+          <NavGroupItem key={g.id} group={g} />
         ))}
         <div className="sidebar__footer">
           <button type="button" className="sidebar__link" onClick={() => setCollapsed((c) => !c)} title={collapsed ? 'Expandir menu' : 'Recolher menu'}>
