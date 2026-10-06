@@ -115,6 +115,8 @@
 .vf-file-cell { display: flex; align-items: center; gap: var(--size-spacing-02); min-width: 0; }
 .vf-file-cell svg { width: 18px; height: 18px; color: var(--color-text-low); flex-shrink: 0; }
 .vf-file-cell span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; }
+/* "No portal" ao lado do nome: não encolhe nem corta */
+.vf-file-cell .vf-tag { flex-shrink: 0; overflow: visible; }
 .vf-rule { font: var(--text-xs-regular); color: var(--color-text-low); letter-spacing: 0; line-height: 1.5; }
 .vf-preview { border: 1px solid var(--color-border); border-radius: var(--border-radius-sm); overflow: hidden; }
 

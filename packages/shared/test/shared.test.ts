@@ -3,7 +3,10 @@ import {
   ALL_PERMISSIONS,
   PERMISSION_CATEGORIES,
   STAGE_SUBSTATUS,
+  SHARED_WITH_CUSTOMER,
   TEMPLATES,
+  canShareWithCustomer,
+  documentCategoryLabel,
   formatCpfCnpj,
   isValidCnpj,
   isValidCpf,
@@ -56,5 +59,16 @@ describe('templates', () => {
   });
   it('permite HTML bruto quando pedido', () => {
     expect(renderTemplate('{{PENDENCIAS}}', { PENDENCIAS: '<ul></ul>' }, { rawHtml: ['PENDENCIAS'] })).toBe('<ul></ul>');
+  });
+});
+
+describe('documentos do cliente (INT-3)', () => {
+  it('só arquivos do escritório ficam visíveis no portal; categorias do sistema têm rótulo', () => {
+    expect(canShareWithCustomer('office')).toBe(true);
+    expect(canShareWithCustomer('customer')).toBe(false);
+    expect(canShareWithCustomer('sync')).toBe(false);
+    expect(documentCategoryLabel(SHARED_WITH_CUSTOMER)).toBe('Visível no portal do cliente');
+    expect(documentCategoryLabel('irpf_receipt')).toBe('Recibo de entrega (.REC)');
+    expect(documentCategoryLabel('desconhecida')).toBe('desconhecida');
   });
 });

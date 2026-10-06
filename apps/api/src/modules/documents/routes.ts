@@ -1,7 +1,7 @@
 import { and, asc, desc, eq, inArray, type SQL } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { DOCUMENT_CATEGORY_LIST, formatCpfCnpj, type DocumentCategory } from '@verifco/shared';
+import { DOCUMENT_CATEGORY_LIST, SHARED_WITH_CUSTOMER, canShareWithCustomer, formatCpfCnpj, type DocumentCategory } from '@verifco/shared';
 import type { AppContext, AuthUser } from '../../context';
 import { customers, declarations, documents, files } from '../../db/schema';
 import { HttpError, badRequest, notFound } from '../../lib/errors';
@@ -69,7 +69,10 @@ export async function documentRoutes(app: FastifyInstance) {
     return selectDocs(and(...conds)!).orderBy(desc(documents.createdAt));
   });
 
-  /** Upload múltiplo. Campos do formulário: `category` (opcional) antes ou depois dos arquivos. */
+  /**
+   * Upload múltiplo. Campos do formulário: `category` (opcional) antes ou depois dos arquivos.
+   * Com `shared_with_customer`, os arquivos já ficam visíveis no portal do cliente.
+   */
   app.post('/customers/:id/documents', { preHandler: guard('declaration.edit') }, async (req, reply) => {
     const user = requireUser(req);
     const { id } = parse(uuidParam, req.params);
@@ -90,18 +93,34 @@ export async function documentRoutes(app: FastifyInstance) {
       created.push({ ...doc, filename: saved.filename, mimeType: saved.mimeType, size: saved.size, exerciseYear: year });
     }
     await refreshElaborationStatus(db, declaration.id);
-    await audit(req, 'upload', 'document', customer.id, { count: created.length, year });
+    await audit(req, 'upload', 'document', customer.id, {
+      count: created.length,
+      year,
+      category,
+      ...(category === SHARED_WITH_CUSTOMER && { sharedWithCustomer: true, documentIds: created.map((d) => d.id) }),
+    });
     reply.status(201);
     return created;
   });
 
+  /**
+   * Muda a categoria. `shared_with_customer` deixa o arquivo visível (e baixável) no portal do
+   * cliente, em "Documentos do escritório"; trocar por outra categoria o tira de lá. Só arquivos
+   * enviados pelo escritório podem ser compartilhados.
+   */
   app.patch('/documents/:id', { preHandler: guard('declaration.edit') }, async (req) => {
     const user = requireUser(req);
     const { id } = parse(uuidParam, req.params);
     const { category } = parse(z.object({ category: categoryEnum }), req.body);
     const doc = await getDocumentForUser(app.ctx, user, id);
+    const shared = category === SHARED_WITH_CUSTOMER;
+    if (shared && !canShareWithCustomer(doc.uploadedBy)) {
+      throw badRequest('Só arquivos enviados pelo escritório podem ficar visíveis no portal do cliente.');
+    }
     const [row] = await db.update(documents).set({ category }).where(eq(documents.id, doc.id)).returning();
-    await audit(req, 'update', 'document', doc.id, { category, from: doc.category });
+    const wasShared = doc.category === SHARED_WITH_CUSTOMER;
+    const action = shared === wasShared ? 'update' : shared ? 'share_with_customer' : 'unshare_with_customer';
+    await audit(req, action, 'document', doc.id, { category, from: doc.category, customerId: doc.customerId });
     // a categoria conta nos arquivos do programa IRPF da elaboração
     if (doc.declarationId) await refreshElaborationStatus(db, doc.declarationId);
     return row;
