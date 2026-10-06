@@ -10,7 +10,8 @@ const auth = vi.hoisted(() => ({
   favorites: [] as { path: string; label: string }[],
   refresh: vi.fn(async () => {}),
 }));
-const calls = vi.hoisted(() => ({ post: [] as string[], put: [] as unknown[] }));
+const calls = vi.hoisted(() => ({ get: [] as string[], post: [] as string[], put: [] as unknown[] }));
+const robot = vi.hoisted(() => ({ serpro: 'ready' as 'ready' | 'not_configured' | 'missing' }));
 
 vi.mock('../lib/auth', () => ({
   useAuth: () => ({
@@ -27,7 +28,11 @@ vi.mock('../lib/api', async (importOriginal) => {
     ...original,
     api: {
       ...original.api,
-      get: async () => [],
+      get: async (path: string) => {
+        calls.get.push(path);
+        if (path === '/robot/overview') return { serpro: robot.serpro, customersWithProcurator: 3, activeTokens: 0, lastOfficeSync: null, activity: [] };
+        return [];
+      },
       post: async (path: string) => {
         calls.post.push(path);
         return { alreadyQueued: false, job: { id: 'j1' } };
@@ -55,8 +60,10 @@ describe('Shell', () => {
   beforeEach(() => {
     auth.perms = [];
     auth.favorites = [];
+    calls.get = [];
     calls.post = [];
     calls.put = [];
+    robot.serpro = 'ready';
     auth.refresh.mockClear();
   });
   afterEach(cleanup);
@@ -69,12 +76,43 @@ describe('Shell', () => {
   it('com ecac.sync sincroniza o escritório pela barra superior, depois de confirmar', async () => {
     auth.perms = ['ecac.sync'];
     renderShell();
+    // o estado do SERPRO só é consultado ao abrir o atalho
+    expect(calls.get).not.toContain('/robot/overview');
     fireEvent.click(screen.getByRole('button', { name: 'Sincronizar eCAC' }));
-    expect(screen.getByText(/clientes ativos com procurador/)).toBeTruthy();
+    expect(await screen.findByText(/clientes ativos com procurador/)).toBeTruthy();
+    expect(calls.get).toContain('/robot/overview');
     expect(calls.post).toEqual([]);
     fireEvent.click(screen.getByRole('button', { name: 'Sincronizar' }));
     await screen.findByText(/Sincronização do eCAC solicitada/);
     expect(calls.post).toEqual(['/robot/sync-office']);
+  });
+
+  it('sem o SERPRO configurado não enfileira: avisa e leva a Administração › Integrações', async () => {
+    robot.serpro = 'not_configured';
+    auth.perms = ['ecac.sync', 'integrations.manage'];
+    renderShell();
+    fireEvent.click(screen.getByRole('button', { name: 'Sincronizar eCAC' }));
+    expect(await screen.findByText('Integração SERPRO não configurada')).toBeTruthy();
+    const link = screen.getByRole('link', { name: 'Administração › Integrações' });
+    expect(link.getAttribute('href')).toBe('/admin/integracoes');
+    expect(screen.queryByRole('button', { name: 'Sincronizar' })).toBeNull();
+    expect(screen.queryByText(/você recebe uma notificação/)).toBeNull();
+    fireEvent.click(link);
+    await waitFor(() => expect(screen.queryByText('Integração SERPRO não configurada')).toBeNull());
+    expect(calls.post).toEqual([]);
+  });
+
+  it('sem o SERPRO e sem acesso às integrações, explica sem link', async () => {
+    robot.serpro = 'not_configured';
+    auth.perms = ['ecac.sync'];
+    renderShell();
+    fireEvent.click(screen.getByRole('button', { name: 'Sincronizar eCAC' }));
+    expect(await screen.findByText(/peça a quem administra o escritório/)).toBeTruthy();
+    expect(screen.queryByRole('link', { name: 'Administração › Integrações' })).toBeNull();
+    // o X do cabeçalho e o botão do rodapé fecham; usa o do rodapé
+    fireEvent.click(screen.getAllByRole('button', { name: 'Fechar' }).at(-1)!);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(calls.post).toEqual([]);
   });
 
   it('mostra os favoritos no menu lateral e remove pelo X', async () => {

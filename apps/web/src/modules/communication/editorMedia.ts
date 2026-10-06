@@ -3,7 +3,8 @@
  *
  * Clientes de e-mail não reproduzem vídeo: o vídeo entra como link (com a miniatura,
  * quando é do YouTube). Imagens entram por endereço público (https) ou embutidas no
- * próprio e-mail (data:image), o que o sanitizador do servidor aceita.
+ * template (data:image), o que o sanitizador do servidor aceita; no envio SMTP o servidor
+ * converte cada data:image em anexo inline referenciado por `cid:` (Gmail e Outlook não exibem data: URI).
  */
 
 export const escapeHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');

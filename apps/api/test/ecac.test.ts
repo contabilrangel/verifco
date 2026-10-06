@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { apiTokens, darfs, declarations, documents } from '../src/db/schema';
+import { apiTokens, darfs, declarations, documents, jobs } from '../src/db/schema';
 import { syncCustomerViaSerpro } from '../src/modules/ecac/jobs';
 import { interpretMailbox, interpretProcuration } from '../src/modules/ecac/serpro';
 import { VALID_CPFS, createEmployee, createTestEnv, registerOffice, type TestEnv } from './helpers';
@@ -233,6 +233,36 @@ describe('aba eCAC do cliente', () => {
     expect(overview.lastOfficeSync.error).toMatch(/SERPRO não configurada/);
     // sem a integração (ou sem configurá-la no escritório) nunca aparece como ativa
     expect(['missing', 'not_configured']).toContain(overview.serpro);
+  });
+
+  it('sincronização geral que falha (sem SERPRO) avisa quem pediu no sino, só na última tentativa', async () => {
+    const office = await registerOffice(env);
+    const requester = await createEmployee(env, office.api, ['ecac.sync']);
+    const colleague = await createEmployee(env, office.api, ['ecac.sync']);
+    const failedNotes = async (a: typeof office.api) => (await a.get('/api/notifications')).body.filter((n: any) => n.title === 'Sincronização do eCAC falhou');
+
+    const res = await requester.api.post('/api/robot/sync-office');
+    expect(res.status).toBe(202);
+    await env.ctx.jobs.drain();
+    const job = await env.ctx.db.query.jobs.findFirst({ where: eq(jobs.id, res.body.job.id) });
+    expect(job!.status).toBe('failed');
+    const mine = await failedNotes(requester.api);
+    expect(mine).toHaveLength(1);
+    expect(mine[0]).toMatchObject({ userId: requester.userId, link: '/admin/robo', body: job!.error });
+    expect(mine[0].body).toMatch(/SERPRO não configurada/);
+    // o aviso é de quem pediu, não do escritório inteiro
+    expect(await failedNotes(colleague.api)).toHaveLength(0);
+    expect((await requester.api.get('/api/notifications')).body.some((n: any) => n.title === 'Sincronização eCAC concluída')).toBe(false);
+
+    // com nova tentativa prevista, ainda não avisa; avisa uma vez quando esgota
+    const retried = await env.ctx.jobs.enqueue('ecac.sync_office', {}, { officeId: office.officeId, userId: colleague.userId, maxAttempts: 2 });
+    await env.ctx.jobs.drain();
+    expect((await env.ctx.db.query.jobs.findFirst({ where: eq(jobs.id, retried.id) }))!.status).toBe('queued');
+    expect(await failedNotes(colleague.api)).toHaveLength(0);
+    await env.ctx.db.update(jobs).set({ runAt: new Date(Date.now() - 1000) }).where(eq(jobs.id, retried.id));
+    await env.ctx.jobs.drain();
+    expect((await env.ctx.db.query.jobs.findFirst({ where: eq(jobs.id, retried.id) }))!.status).toBe('failed');
+    expect(await failedNotes(colleague.api)).toHaveLength(1);
   });
 
   it('interpreta as respostas do SERPRO de forma defensiva (cliente falso injetado)', async () => {

@@ -2,11 +2,12 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { Bell, ChevronRight, CircleHelp, LogOut, Menu as MenuIcon, PanelLeftClose, PanelLeftOpen, RefreshCw, Search, Settings, Star, User, X } from 'lucide-react';
-import { Avatar, ConfirmDialog, IconButton, Menu, MenuItem, Select, cx, useToast } from '../ds';
+import { Alert, Avatar, Button, ConfirmDialog, IconButton, Loading, Menu, MenuItem, Modal, Select, cx, useToast } from '../ds';
 import { api } from '../lib/api';
 import { useAuth } from '../lib/auth';
-import { useAction, useMediaQuery } from '../lib/hooks';
+import { useAction, useApi, useMediaQuery } from '../lib/hooks';
 import { YEAR_OPTIONS, YEAR_OPTIONS_SHORT, useYear } from '../lib/year';
+import type { RobotOverview } from '../modules/ecac/types';
 import { favoriteLabel, isCurrentFavorite, visibleFavorites, type Favorite } from './favorites';
 import { NAV, type NavGroup } from './nav';
 import './shell.css';
@@ -34,28 +35,76 @@ export function FavoritesNav({ favorites, onRemove }: { favorites: Favorite[] | 
   );
 }
 
-/** Atalho global: sincroniza pelo SERPRO o eCAC de todos os clientes com procurador (POST /robot/sync-office). */
+/**
+ * Atalho global: sincroniza pelo SERPRO o eCAC de todos os clientes com procurador (POST /robot/sync-office).
+ * Ao abrir, confere o estado da integração (GET /robot/overview, campo `serpro`): sem o SERPRO pronto,
+ * não enfileira nada e aponta para Administração › Integrações.
+ */
 function EcacSyncButton() {
-  const [confirming, setConfirming] = useState(false);
+  const { can } = useAuth();
+  const [open, setOpen] = useState(false);
+  // só consulta ao abrir: o painel do robô monta o cliente do SERPRO, caro demais para cada página
+  const overview = useApi<Pick<RobotOverview, 'serpro'>>(['robot', 'overview'], '/robot/overview', { enabled: open });
   const sync = useAction(() => api.post<{ alreadyQueued: boolean }>('/robot/sync-office'), {
     success: (r) => (r.alreadyQueued ? 'Já existe uma sincronização do eCAC na fila. Acompanhe em Administração › Robô.' : 'Sincronização do eCAC solicitada. Acompanhe em Administração › Robô.'),
     invalidate: [['robot']],
-    onSuccess: () => setConfirming(false),
+    onSuccess: () => setOpen(false),
   });
+  const close = () => setOpen(false);
+  // falha ao consultar o estado não bloqueia: o job avisa no sino se a sincronização falhar
+  const serpro = overview.isError ? 'ready' : overview.data?.serpro;
+  // um "não configurado" guardado de antes espera a resposta nova (pode ter sido configurado depois)
+  const checking = !serpro || (serpro !== 'ready' && overview.isFetching);
   return (
     <>
-      <IconButton label="Sincronizar eCAC" onClick={() => setConfirming(true)} disabled={sync.isPending}>
+      <IconButton label="Sincronizar eCAC" onClick={() => setOpen(true)} disabled={sync.isPending}>
         <RefreshCw />
       </IconButton>
-      <ConfirmDialog
-        open={confirming}
-        title="Sincronizar o eCAC"
-        message="O robô consulta pelo SERPRO a procuração eletrônica e a caixa postal de todos os clientes ativos com procurador. A consulta roda em segundo plano: você recebe uma notificação ao terminar e o andamento aparece em Administração › Robô."
-        confirmLabel="Sincronizar"
-        loading={sync.isPending}
-        onConfirm={() => sync.mutate(undefined)}
-        onClose={() => setConfirming(false)}
-      />
+      {open && checking ? (
+        <Modal open title="Sincronizar o eCAC" onClose={close} width={460}>
+          <Loading label="Verificando a integração com o SERPRO..." />
+        </Modal>
+      ) : open && serpro !== 'ready' ? (
+        <Modal
+          open
+          title="Sincronizar o eCAC"
+          onClose={close}
+          width={460}
+          footer={
+            <Button kind="secondary" onClick={close}>
+              Fechar
+            </Button>
+          }
+        >
+          <Alert tone="warning" title="Integração SERPRO não configurada">
+            {serpro === 'missing' ? (
+              <>A integração SERPRO Integra Contador não está disponível nesta instalação do Verifco, e sem ela o robô não consegue consultar o eCAC. Fale com o suporte do Verifco.</>
+            ) : (
+              <>
+                A sincronização usa a integração SERPRO Integra Contador, que ainda não está configurada (ou está inativa) neste escritório. Configure-a em{' '}
+                {can('integrations.manage') ? (
+                  <Link to="/admin/integracoes" onClick={close}>
+                    Administração › Integrações
+                  </Link>
+                ) : (
+                  'Administração › Integrações (peça a quem administra o escritório)'
+                )}{' '}
+                e tente de novo.
+              </>
+            )}
+          </Alert>
+        </Modal>
+      ) : (
+        <ConfirmDialog
+          open={open}
+          title="Sincronizar o eCAC"
+          message="O robô consulta pelo SERPRO a procuração eletrônica e a caixa postal de todos os clientes ativos com procurador. A consulta roda em segundo plano: você recebe uma notificação ao terminar (ou se ela falhar) e o andamento aparece em Administração › Robô."
+          confirmLabel="Sincronizar"
+          loading={sync.isPending}
+          onConfirm={() => sync.mutate(undefined)}
+          onClose={close}
+        />
+      )}
     </>
   );
 }

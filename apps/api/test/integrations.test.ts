@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
+import nodemailer from 'nodemailer';
+import { sanitizeHtml } from '@verifco/shared';
 import type { AppContext } from '../src/context';
 import { billings, budgets, customers, installments, integrations, jobs, notifications, procurators } from '../src/db/schema';
 import { createProviders } from '../src/integrations';
@@ -505,6 +507,49 @@ describe('E-mail (SMTP)', () => {
     expect(office.created[0].connectionTimeout).toBeGreaterThan(0);
     expect(office.mails[0]).toMatchObject({ from: { name: 'Contábil Alfa', address: 'contato@alfa.com.br' }, to: { name: 'Cliente', address: 'cliente@ex.com' }, subject: 'Seu checklist' });
     expect(office.mails[0].attachments[0].filename).toBe('checklist.pdf');
+  });
+
+  it('imagem enviada do computador (data: URI) sai como anexo inline referenciado por cid:', async () => {
+    const { officeId } = await registerOffice(env, 'Contábil Beta');
+    // transporte real do nodemailer, mas gravando a mensagem montada em vez de abrir conexão SMTP
+    const raw: string[] = [];
+    const factory = (): MailTransport => {
+      const t = nodemailer.createTransport({ streamTransport: true, buffer: true, newline: 'unix' });
+      return {
+        verify: async () => true,
+        sendMail: async (m) => {
+          const info = await t.sendMail(m as never);
+          raw.push((info.message as Buffer).toString('utf8'));
+          return { messageId: info.messageId };
+        },
+      };
+    };
+    const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+    const ctx = withConfig({ SMTP_URL: 'smtp://smtp.verifco.com:587', SMTP_FROM: 'Verifco <nao-responda@verifco.com.br>' });
+    await createProviders(ctx, { createTransport: factory }).email.send(officeId, {
+      to: 'cliente@ex.com',
+      subject: 'Comunicado com logo',
+      // mesmo caminho do envio real: corpo do template passa pelo sanitizeHtml (que preserva data:image)
+      html: sanitizeHtml(`<p>Olá</p><p><img alt="Logo do escritório" src="data:image/png;base64,${png}" style="max-width:100%"></p>`),
+    });
+    expect(raw).toHaveLength(1);
+    const message = raw[0];
+    // nada de data: URI no e-mail que sai
+    expect(message).not.toContain('data:image');
+    const cid = /^Content-ID: <([^>]+)>$/im.exec(message)?.[1];
+    expect(cid).toBeTruthy();
+    expect(message).toMatch(/^Content-Type: multipart\/related/im);
+    // a parte da imagem é inline, PNG, com o conteúdo original
+    const part = message.split(/^--/m).find((p) => p.includes(`<${cid}>`))!;
+    expect(part).toMatch(/^Content-Type: image\/png/im);
+    expect(part).toMatch(/^Content-Disposition: inline/im);
+    const body = part.split(/\n\n/).slice(1).join('').replace(/\s+/g, '');
+    expect(Buffer.from(body, 'base64').equals(Buffer.from(png, 'base64'))).toBe(true);
+    // e o HTML aponta para o anexo (decodifica o quoted-printable da parte HTML)
+    const htmlPart = message.split(/^--/m).find((p) => /^Content-Type: text\/html/im.test(p))!;
+    const html = htmlPart.replace(/=\n/g, '').replace(/=([0-9A-F]{2})/g, (_, h: string) => String.fromCharCode(parseInt(h, 16)));
+    expect(html).toContain(`src="cid:${cid}"`);
+    expect(html).toMatch(/<img alt="Logo do escrit[^"]*" src="cid:/);
   });
 
   it('teste de conexão envia mensagem e traduz falha de autenticação', async () => {

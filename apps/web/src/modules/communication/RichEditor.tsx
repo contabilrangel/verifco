@@ -278,7 +278,7 @@ function UrlDialog({ kind, onClose, onConfirm }: { kind: null | 'link' | 'video'
   );
 }
 
-/** Imagem por endereço público ou enviada do computador (fica embutida no e-mail). */
+/** Imagem por endereço público ou enviada do computador (no envio, vira anexo inline referenciado por `cid:`). */
 function ImageDialog({ open, onClose, onConfirm }: { open: boolean; onClose: () => void; onConfirm: (src: string, alt: string) => void }) {
   const [source, setSource] = useState<'url' | 'file'>('url');
   const [url, setUrl] = useState('https://');
@@ -347,9 +347,9 @@ function ImageDialog({ open, onClose, onConfirm }: { open: boolean; onClose: () 
           />
         ) : (
           <>
-            <Alert tone="warning">
-              A imagem enviada do computador fica embutida no próprio e-mail (reduzida para até 640 px de largura). O Gmail e algumas versões do Outlook não exibem imagens embutidas; para
-              logo, banner ou assinatura, prefira o endereço público da imagem.
+            <Alert>
+              A imagem enviada do computador vai junto com o e-mail, como anexo exibido no corpo da mensagem (reduzida para até 640 px de largura), e aparece no Gmail e no Outlook. Ela
+              aumenta o tamanho de cada envio; para logo, banner ou assinatura repetidos em muitos e-mails, o endereço público da imagem deixa a mensagem mais leve.
             </Alert>
             {embedded ? (
               <div className="vf-inline vf-between">
