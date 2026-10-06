@@ -62,11 +62,15 @@ export function RobotAdminTab() {
           </span>
           <ul className="vf-ecac-steps vf-text-xs">
             <li>
-              Pelo SERPRO, todo dia de madrugada e quando você pede: procuração eletrônica, mensagens da caixa postal, relatório de situação fiscal (a cada 30 dias, com a leitura das pendências e da certidão vigente) e
+              Pelo SERPRO, quando você pede e na sincronização automática (desligada, diária ou semanal, em Administração › Integrações): procuração eletrônica, mensagens da caixa postal, relatório de situação fiscal (a cada 30 dias, com a leitura das pendências e da certidão vigente) e
               pagamento das quotas do DARF perto do vencimento (receita 0211). Cada cliente é sincronizado numa tarefa própria.
             </li>
             <li>O SERPRO não informa a situação da declaração (processamento, malha, lote de restituição) nem emite a CND de pessoa física: lance esses dados na aba eCAC do cliente.</li>
-            {o?.nextAutoSync && <li>Próxima sincronização automática: {formatDateTime(o.nextAutoSync)}.</li>}
+            {o?.nextAutoSync ? (
+              <li>Próxima sincronização automática: {formatDateTime(o.nextAutoSync)}.</li>
+            ) : (
+              o?.serpro === 'ready' && <li>Sincronização automática desligada: os clientes são consultados só quando você pede. Cada consulta é cobrada pelo SERPRO.</li>
+            )}
           </ul>
           {o?.lastOfficeSync && <JobAlert job={o.lastOfficeSync} title="Sincronização geral" done={`${String(o.lastOfficeSync.result?.ok ?? 0)} de ${String(o.lastOfficeSync.result?.total ?? 0)} cliente(s) sincronizado(s).`} />}
         </div>

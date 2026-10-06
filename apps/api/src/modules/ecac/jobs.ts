@@ -1,5 +1,5 @@
 import { and, asc, count, desc, eq, gte, isNotNull, isNull, lte, ne, sql } from 'drizzle-orm';
-import { SITFIS_STATUS, addDaysIso as addDays, brazilToday } from '@verifco/shared';
+import { SITFIS_STATUS, addDaysIso as addDays, brazilToday, ecacAutoSyncPeriod, ecacAutoSyncSetting, isEcacAutoSyncDay, nextEcacAutoSyncDay, type EcacAutoSyncSetting } from '@verifco/shared';
 import type { AppContext } from '../../context';
 import type { Db } from '../../db/client';
 import { auditLogs, customers, darfs, ecacRecords, integrations, jobs, procurators } from '../../db/schema';
@@ -24,8 +24,11 @@ import { fanoutOf, summarizeOfficeChildren } from './util';
 
 export const ECAC_SYNC = 'ecac.sync';
 export const ECAC_SYNC_OFFICE = 'ecac.sync_office';
-/** Rodada automática diária (payload `trigger` do `ecac.sync_office`). */
+/** Rodadas automáticas (payload `trigger` do `ecac.sync_office`): diária ou semanal, conforme a integração SERPRO. */
 export const DAILY_TRIGGER = 'daily';
+export const WEEKLY_TRIGGER = 'weekly';
+const AUTO_TRIGGERS = [DAILY_TRIGGER, WEEKLY_TRIGGER];
+const autoTrigger = (job: Pick<JobRow, 'payload'>) => (AUTO_TRIGGERS.includes(String(job.payload.trigger)) ? (job.payload.trigger as 'daily' | 'weekly') : null);
 
 /** A situação fiscal (SITFIS, bilhetada) é renovada pela sincronização a cada 30 dias. */
 export const FISCAL_SITUATION_REFRESH_DAYS = 30;
@@ -311,7 +314,7 @@ async function finishOfficeSync(ctx: AppContext, parentId: string) {
       .returning();
     const fan = row ? fanoutOf(row) : null;
     if (!row?.officeId || !fan) return;
-    const daily = row.payload.trigger === DAILY_TRIGGER;
+    const daily = autoTrigger(row) !== null;
     // a rodada automática só avisa quando algum cliente falhou
     if (daily && !fan.failed) return;
     await notify(tx, {
@@ -354,49 +357,92 @@ async function fanOutOfficeSync(ctx: AppContext, job: JobRow, helpers: JobHelper
 }
 
 // ---------------------------------------------------------------------------
-// Rodada automática diária
+// Rodada automática (diária ou semanal, configurada na integração SERPRO)
 // ---------------------------------------------------------------------------
 
 /** Brasília não tem horário de verão desde 2019: UTC−3. */
 const BRASILIA_OFFSET_MS = 3 * 3600_000;
 const spread = (id: string) => [...id].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 7);
 
-/** Próxima rodada do escritório: todo dia entre 3h e 6h (Brasília), espalhada entre os escritórios. */
-export function nextDailyRun(officeId: string, now = new Date()): Date {
-  const minute = 180 + (spread(officeId) % 180);
-  const local = new Date(now.getTime() - BRASILIA_OFFSET_MS);
-  let at = Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate()) + minute * 60_000 + BRASILIA_OFFSET_MS;
-  if (at <= now.getTime()) at += 86_400_000;
-  return new Date(at);
+/** Horário da rodada do escritório no dia (AAAA-MM-DD de Brasília): entre 3h e 6h, espalhado entre os escritórios. */
+function runAtOn(officeId: string, day: string): Date {
+  const [y, m, d] = day.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d) + (180 + (spread(officeId) % 180)) * 60_000 + BRASILIA_OFFSET_MS);
 }
-
-const dailyQueued = (officeId: string) =>
-  and(eq(jobs.type, ECAC_SYNC_OFFICE), eq(jobs.officeId, officeId), eq(jobs.status, 'queued'), sql`${jobs.payload}->>'trigger' = ${DAILY_TRIGGER}`);
 
 /**
- * Agenda a sincronização diária do escritório com SERPRO ativo, no padrão de `scheduleOmiePoll`:
- * no máximo uma na fila por escritório e chave de idempotência por escritório e dia. Ao encadear,
- * `afterDay` é o dia da rodada em andamento: a próxima fica para um dia depois dele.
+ * Próxima rodada automática do escritório depois de `now` (e num dia depois de `afterDay`), nos
+ * dias da frequência configurada; `null` se desligada.
  */
-export async function scheduleEcacDailySync(ctx: AppContext, officeId: string, opts: { now?: Date; afterDay?: string } = {}) {
-  const queued = await ctx.db.query.jobs.findFirst({ where: dailyQueued(officeId) });
-  if (queued) return queued;
-  let runAt = nextDailyRun(officeId, opts.now);
-  while (opts.afterDay && brazilToday(runAt) <= opts.afterDay) runAt = new Date(runAt.getTime() + 86_400_000);
-  return ctx.jobs.enqueue(ECAC_SYNC_OFFICE, { trigger: DAILY_TRIGGER }, { officeId, runAt, idempotencyKey: `daily:${officeId}:${brazilToday(runAt)}`, maxAttempts: 1 });
+export function nextAutoSyncRun(officeId: string, setting: EcacAutoSyncSetting, opts: { now?: Date; afterDay?: string } = {}): Date | null {
+  const now = opts.now ?? new Date();
+  const today = brazilToday(now);
+  let from = runAtOn(officeId, today) > now ? today : addDays(today, 1);
+  if (opts.afterDay && from <= opts.afterDay) from = addDays(opts.afterDay, 1);
+  const day = nextEcacAutoSyncDay(setting, from);
+  return day ? runAtOn(officeId, day) : null;
 }
 
-/** Dia (Brasília) de uma rodada diária: o da chave de idempotência ou o do horário marcado. */
-const dailyRunDay = (job: JobRow) => /:(\d{4}-\d{2}-\d{2})$/.exec(job.idempotencyKey ?? '')?.[1] ?? brazilToday(job.runAt);
+/** Próxima rodada diária do escritório: todo dia entre 3h e 6h (Brasília). */
+export function nextDailyRun(officeId: string, now = new Date()): Date {
+  return nextAutoSyncRun(officeId, { mode: 'daily', weekday: 0 }, { now })!;
+}
 
-/** SERPRO desativado ou removido: a rodada que ainda não começou sai da fila. */
-export async function cancelEcacDailySync(ctx: AppContext, officeId: string) {
-  await ctx.db.delete(jobs).where(dailyQueued(officeId));
+const autoQueued = (officeId: string) =>
+  and(eq(jobs.type, ECAC_SYNC_OFFICE), eq(jobs.officeId, officeId), eq(jobs.status, 'queued'), sql`${jobs.payload}->>'trigger' in (${DAILY_TRIGGER}, ${WEEKLY_TRIGGER})`);
+
+/** Dia (Brasília) de uma rodada automática: o gravado no payload, o da chave da diária ou o do horário marcado. */
+const autoRunDay = (job: JobRow) =>
+  (typeof job.payload.day === 'string' ? job.payload.day : null) ?? /^daily:.*:(\d{4}-\d{2}-\d{2})$/.exec(job.idempotencyKey ?? '')?.[1] ?? brazilToday(job.runAt);
+
+/** Frequência da rodada automática do escritório; `null` com o SERPRO inativo ou removido. */
+async function autoSyncSettingOf(ctx: AppContext, officeId: string) {
+  const row = await ctx.db.query.integrations.findFirst({ where: and(eq(integrations.officeId, officeId), eq(integrations.provider, 'serpro'), eq(integrations.enabled, true)) });
+  return row ? ecacAutoSyncSetting(row.publicConfig) : null;
+}
+
+/**
+ * Agenda a rodada automática conforme a integração SERPRO (no padrão de `scheduleOmiePoll`): no
+ * máximo uma na fila por escritório, com chave de idempotência por escritório e período (dia na
+ * diária, semana na semanal), o que impede rodadas repetidas no período mesmo com vários workers.
+ * SERPRO inativo ou rodada desligada tira da fila a que não começou; frequência ou dia da semana
+ * trocados substituem a agendada. Ao encadear, `afterDay` é o dia da rodada em andamento.
+ */
+export async function scheduleEcacAutoSync(ctx: AppContext, officeId: string, opts: { now?: Date; afterDay?: string } = {}) {
+  const setting = await autoSyncSettingOf(ctx, officeId);
+  const queued = await ctx.db.query.jobs.findFirst({ where: autoQueued(officeId) });
+  if (!setting || setting.mode === 'off') {
+    await cancelEcacAutoSync(ctx, officeId);
+    return null;
+  }
+  const mode = setting.mode;
+  if (queued && autoTrigger(queued) === mode && isEcacAutoSyncDay(setting, autoRunDay(queued))) return queued;
+  if (queued) await ctx.db.delete(jobs).where(and(eq(jobs.id, queued.id), eq(jobs.status, 'queued')));
+  let afterDay = opts.afterDay;
+  for (let i = 0; i < 3; i++) {
+    const runAt = nextAutoSyncRun(officeId, setting, { now: opts.now, afterDay })!;
+    const day = brazilToday(runAt);
+    const job = await ctx.jobs.enqueue(ECAC_SYNC_OFFICE, { trigger: mode, ...(mode === 'weekly' ? { day } : {}) }, {
+      officeId,
+      runAt,
+      idempotencyKey: `${mode}:${officeId}:${ecacAutoSyncPeriod(mode, day)}`,
+      maxAttempts: 1,
+    });
+    // a rodada deste período já rodou (ou está rodando): fica para o período seguinte
+    if (job.status === 'queued') return job;
+    afterDay = mode === 'weekly' ? addDays(ecacAutoSyncPeriod(mode, day), 6) : day;
+  }
+  return null;
+}
+
+/** SERPRO desativado, removido ou rodada desligada: a rodada que ainda não começou sai da fila. */
+export async function cancelEcacAutoSync(ctx: AppContext, officeId: string) {
+  await ctx.db.delete(jobs).where(autoQueued(officeId));
 }
 
 /** Próxima rodada automática agendada (para a tela do robô). */
 export async function nextScheduledOfficeSync(db: Db, officeId: string) {
-  const row = await db.query.jobs.findFirst({ where: dailyQueued(officeId), orderBy: asc(jobs.runAt) });
+  const row = await db.query.jobs.findFirst({ where: autoQueued(officeId), orderBy: asc(jobs.runAt) });
   return row?.runAt ?? null;
 }
 
@@ -411,17 +457,14 @@ export async function latestOfficeSync(db: Db, officeId: string) {
   return row ?? null;
 }
 
-const serproEnabled = async (ctx: AppContext, officeId: string) =>
-  Boolean(await ctx.db.query.integrations.findFirst({ where: and(eq(integrations.officeId, officeId), eq(integrations.provider, 'serpro'), eq(integrations.enabled, true)) }));
-
-/** Ao subir a API: escritórios com o SERPRO ativo ganham a rodada diária, se ainda não tiverem. */
+/** Ao subir a API: escritórios com o SERPRO ativo e a rodada ligada ganham a rodada automática, se ainda não tiverem. */
 async function ensureDailySchedules(ctx: AppContext) {
   const rows = await ctx.db
     .select({ officeId: integrations.officeId })
     .from(integrations)
     .where(and(eq(integrations.provider, 'serpro'), eq(integrations.enabled, true)));
   // outra instância pode agendar ao mesmo tempo: a chave de idempotência recusa a duplicata
-  for (const r of rows) await scheduleEcacDailySync(ctx, r.officeId).catch(() => undefined);
+  for (const r of rows) await scheduleEcacAutoSync(ctx, r.officeId).catch(() => undefined);
 }
 
 export async function registerJobs(ctx: AppContext) {
@@ -454,18 +497,23 @@ export async function registerJobs(ctx: AppContext) {
 
   /**
    * Sincronização de todos os clientes com procurador do escritório (botão do robô ou rodada
-   * diária). Quem pediu é avisado no sino ao terminar o último cliente, e também quando a
-   * sincronização inteira falha (ex.: SERPRO não configurado); a rodada diária avisa o escritório
-   * só quando há erro.
+   * automática). Quem pediu é avisado no sino ao terminar o último cliente, e também quando a
+   * sincronização inteira falha (ex.: SERPRO não configurado); a rodada automática avisa o
+   * escritório só quando há erro.
    */
   ctx.jobs.register(ECAC_SYNC_OFFICE, async (job, helpers) => {
     const officeId = job.officeId;
     if (!officeId) throw new Error('Job sem escritório.');
-    if (job.payload.trigger === DAILY_TRIGGER) {
-      // SERPRO desativado depois do agendamento: a cadeia para aqui
-      if (!(await serproEnabled(ctx, officeId))) return { skipped: true, reason: 'Integração SERPRO desativada.' };
+    const trigger = autoTrigger(job);
+    if (trigger && !job.payload.fanout) {
+      // a configuração vale na hora de rodar: SERPRO desativado ou rodada desligada param a cadeia
+      const setting = await autoSyncSettingOf(ctx, officeId);
+      if (!setting) return { skipped: true, reason: 'Integração SERPRO desativada.' };
+      if (setting.mode === 'off') return { skipped: true, reason: 'Sincronização automática desligada.' };
       // agenda a próxima antes de começar, para a cadeia não parar se esta falhar
-      await scheduleEcacDailySync(ctx, officeId, { afterDay: dailyRunDay(job) });
+      const day = autoRunDay(job);
+      await scheduleEcacAutoSync(ctx, officeId, { afterDay: day });
+      if (setting.mode !== trigger || !isEcacAutoSyncDay(setting, day)) return { skipped: true, reason: 'A frequência da sincronização automática mudou: vale a próxima rodada agendada.' };
     }
     return fanOutOfficeSync(ctx, job, helpers);
   }, {

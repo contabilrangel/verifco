@@ -58,6 +58,42 @@ describe('migrações (SEG-4)', () => {
     }
   });
 
+  it('SERPRO já ativo continua com a sincronização automática diária; os demais ficam com o padrão (desligada)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'verifco-autosync-'));
+    const client = new PGlite();
+    try {
+      cpSync(MIGRATIONS, dir, { recursive: true });
+      const journal = readJournal(MIGRATIONS);
+      const journalPath = join(dir, 'meta/_journal.json');
+      const index = journal.entries.findIndex((e) => e.tag.endsWith('_ecac_sincronizacao_automatica'));
+      expect(index).toBeGreaterThan(0);
+      writeFileSync(journalPath, JSON.stringify({ ...journal, entries: journal.entries.slice(0, index) }));
+      const db = drizzle(client, { schema });
+      await migrate(db, { migrationsFolder: dir });
+      const offices = await db.insert(schema.offices).values([{ name: 'Ativo' }, { name: 'Desativado' }, { name: 'Sem SERPRO' }]).returning();
+      const [active, disabled, other] = offices;
+      await db.insert(schema.integrations).values([
+        { officeId: active.id, provider: 'serpro', enabled: true, publicConfig: { contractorCnpj: '11222333000181' } },
+        { officeId: disabled.id, provider: 'serpro', enabled: false, publicConfig: { contractorCnpj: '11222333000181' } },
+        { officeId: other.id, provider: 'asaas', enabled: true, publicConfig: { environment: 'sandbox' } },
+      ]);
+      writeFileSync(journalPath, JSON.stringify(journal));
+      await migrate(db, { migrationsFolder: dir });
+      await migrate(db, { migrationsFolder: dir });
+      const rows = await db.select().from(schema.integrations);
+      const configOf = (officeId: string) => rows.find((r) => r.officeId === officeId)!.publicConfig;
+      expect(configOf(active.id)).toEqual({ contractorCnpj: '11222333000181', autoSync: 'daily' });
+      expect(configOf(disabled.id)).toEqual({ contractorCnpj: '11222333000181' });
+      expect(configOf(other.id)).toEqual({ environment: 'sandbox' });
+      const audits = await db.select().from(schema.auditLogs);
+      expect(audits).toHaveLength(1);
+      expect(audits[0]).toMatchObject({ officeId: active.id, action: 'integration.update', data: { provider: 'serpro', autoSync: { from: null, to: 'daily' }, migration: true } });
+    } finally {
+      await client.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('aplicam num PGlite vazio e chegam ao mesmo banco que o schema.ts', async () => {
     const migrated = await openDatabase('pglite:memory', { sync: 'migrate' });
     const pushed = await openDatabase('pglite:memory', { sync: 'push' });

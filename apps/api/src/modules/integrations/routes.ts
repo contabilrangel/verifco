@@ -4,6 +4,7 @@ import { z } from 'zod';
 import {
   INTEGRATION_CATALOG,
   INTEGRATION_PROVIDERS,
+  ecacAutoSyncSetting,
   getIntegrationDef,
   integrationDefaults,
   missingIntegrationFields,
@@ -24,7 +25,7 @@ import { clearSerproTokens } from '../../integrations/serpro';
 import { decryptSecrets, getIntegrationRow, maskSecret, type IntegrationRow } from '../../integrations/store';
 import { testIntegration } from '../../integrations/testers';
 import { requeuePendingBillings } from './jobs';
-import { cancelEcacDailySync, scheduleEcacDailySync } from '../ecac/jobs';
+import { cancelEcacAutoSync, scheduleEcacAutoSync } from '../ecac/jobs';
 
 const PROVIDER_KEYS = Object.keys(INTEGRATION_PROVIDERS) as [IntegrationProvider, ...IntegrationProvider[]];
 const providerParam = z.object({ provider: z.enum(PROVIDER_KEYS) });
@@ -208,11 +209,23 @@ export async function integrationRoutes(app: FastifyInstance) {
       : await db.insert(integrations).values({ officeId: user.officeId, provider, ...values }).returning();
 
     if (provider === 'serpro' && credentialsChanged) clearSerproTokens(`${user.officeId}:`);
-    if (provider === 'serpro') await (enabled ? scheduleEcacDailySync(ctx, user.officeId) : cancelEcacDailySync(ctx, user.officeId));
+    // rodada automática do eCAC conforme a frequência escolhida (a mudança vale para a próxima rodada)
+    if (provider === 'serpro') await scheduleEcacAutoSync(ctx, user.officeId);
     if (provider === 'omie' && enabled) await scheduleOmiePoll(ctx, user.officeId, effective as Partial<OmieConfig>, 60_000);
     // integração de cobrança pronta: emite o que ficou pendente (aprovado antes de configurar, falha de credencial...)
     const requeuedBillings = enabled && status !== 'not_configured' ? await requeuePendingBillings(ctx, user.officeId, provider, user.userId) : 0;
-    await audit(req, 'integration.update', 'integration', saved.id, { provider, enabled, changedConfig, changedSecrets, ...(requeuedBillings ? { requeuedBillings } : {}) });
+    // frequência da sincronização automática do eCAC: cada consulta é cobrada, então a auditoria guarda de/para
+    const autoSync = provider === 'serpro' && changedConfig.some((k) => k.startsWith('autoSync'))
+      ? { from: ecacAutoSyncSetting(row?.publicConfig), to: ecacAutoSyncSetting(nextConfig) }
+      : null;
+    await audit(req, 'integration.update', 'integration', saved.id, {
+      provider,
+      enabled,
+      changedConfig,
+      changedSecrets,
+      ...(requeuedBillings ? { requeuedBillings } : {}),
+      ...(autoSync ? { autoSync } : {}),
+    });
     return view(ctx, def, saved);
   });
 
@@ -276,7 +289,7 @@ export async function integrationRoutes(app: FastifyInstance) {
     if (!deleted.length) throw notFound('Integração');
     if (provider === 'serpro') {
       clearSerproTokens(`${user.officeId}:`);
-      await cancelEcacDailySync(ctx, user.officeId);
+      await cancelEcacAutoSync(ctx, user.officeId);
     }
     await audit(req, 'integration.delete', 'integration', deleted[0].id, { provider });
     return reply.status(204).send();

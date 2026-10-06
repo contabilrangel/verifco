@@ -125,7 +125,7 @@ export async function syncRoutes(app: FastifyInstance) {
             () => 'not_configured' as const,
           )
         : ('missing' as const),
-      // andamento somado dos clientes; a rodada diária agendada para depois aparece à parte
+      // andamento somado dos clientes; a rodada automática agendada para depois aparece à parte
       lastOfficeSync: await fanoutJobView(db, await latestOfficeSync(db, officeId)),
       nextAutoSync: await nextScheduledOfficeSync(db, officeId),
       activity,

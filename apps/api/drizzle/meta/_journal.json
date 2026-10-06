@@ -64,6 +64,13 @@
       "when": 1791305065546,
       "tag": "0008_separar_plataforma",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1791317628383,
+      "tag": "0009_ecac_sincronizacao_automatica",
+      "breakpoints": true
     }
   ]
 }
