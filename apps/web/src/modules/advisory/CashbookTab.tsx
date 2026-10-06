@@ -11,6 +11,7 @@ import {
   CASHBOOK_MODELS,
   carneLeaoTables,
   cashbookModelCsv,
+  currentExerciseYear,
   type CashbookKind,
   type CashbookMonth,
 } from '@verifco/shared';
@@ -116,7 +117,7 @@ export function CashbookTab() {
   const { year: exercise } = useYear();
   const toast = useToast();
   const qc = useQueryClient();
-  const thisYear = new Date().getFullYear();
+  const thisYear = currentExerciseYear();
   const [year, setYear] = useState(exercise - 1);
   const [guide, setGuide] = useState<CashbookKind | 'codes'>('income');
   const [uploading, setUploading] = useState(false);

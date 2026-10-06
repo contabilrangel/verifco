@@ -6,6 +6,7 @@ import {
   COPILOT_ENTRY_KINDS,
   COPILOT_EXPENSE_CATEGORIES,
   COPILOT_INCOME_CATEGORIES,
+  currentExerciseYear,
   type CopilotEntryKind,
   type CopilotIrpfmProjection,
   type CopilotMonth,
@@ -58,7 +59,7 @@ export function CopilotTab() {
   const toast = useToast();
   const qc = useQueryClient();
   const navigate = useNavigate();
-  const thisYear = new Date().getFullYear();
+  const thisYear = currentExerciseYear();
   const [year, setYear] = useState(thisYear);
   const [month, setMonth] = useState(new Date().getMonth() + 1);
   const [view, setView] = useState<View>('overview');

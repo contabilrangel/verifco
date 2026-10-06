@@ -7,6 +7,7 @@ import {
   MAILING_MAX_RECIPIENTS,
   MAILING_TYPES,
   TEMPLATES,
+  currentExerciseYear,
   getMailingType,
   getTemplateDef,
   renderTemplate,
@@ -141,7 +142,7 @@ export async function communicationRoutes(app: FastifyInstance) {
     const subject = cleanSubject(body.subject ?? tpl.subject);
     const html = sanitizeHtml(body.body ?? tpl.body);
     const office = await db.query.offices.findFirst({ where: eq(offices.id, user.officeId) });
-    const sample: Record<string, string | number> = { ...sampleTemplateValues(body.year ?? new Date().getFullYear()), ESCRITORIO: office?.name ?? '', CONTADOR: user.name };
+    const sample: Record<string, string | number> = { ...sampleTemplateValues(body.year ?? currentExerciseYear()), ESCRITORIO: office?.name ?? '', CONTADOR: user.name };
     // só as variáveis do template recebem valor; as desconhecidas ficam visíveis como {{VAR}}
     const values = Object.fromEntries(tpl.def.variables.map((v) => [v.name, sample[v.name] ?? '']));
     return {

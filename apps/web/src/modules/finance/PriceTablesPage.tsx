@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { MoreHorizontal, Pencil, Plus, Star, Table2, Trash2, X } from 'lucide-react';
-import { PRICE_TABLE_TYPE_OPTIONS, PRICING_BASES, type PriceTableConfigShape, type PricingBase } from '@verifco/shared';
+import { PRICE_TABLE_TYPE_OPTIONS, PRICING_BASES, currentExerciseYear, type PriceTableConfigShape, type PricingBase } from '@verifco/shared';
 import { Alert, Button, Card, Checkbox, ConfirmDialog, EmptyState, IconButton, Input, Loading, Menu, MenuItem, Modal, MoneyInput, Select, Switch, Tag } from '../../ds';
 import { PageHeader } from '../../app/Shell';
 import { api } from '../../lib/api';
@@ -31,7 +31,7 @@ type Form = {
   maxCents: number;
 };
 
-const firstOfYear = () => `${new Date().getFullYear()}-01-01`;
+const firstOfYear = () => `${currentExerciseYear()}-01-01`;
 const emptyForm = (): Form => ({
   name: '',
   type: 'fixed',

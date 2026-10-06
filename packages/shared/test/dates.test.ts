@@ -90,6 +90,7 @@ const FORBIDDEN: { re: RegExp; hint: string }[] = [
   { re: /\.toISOString\(\)\s*\.\s*(?:slice|substring|substr)\(\s*0\s*,\s*10\s*\)/, hint: 'use todayIso() (ou todayIso(instante)); para célula de data do Excel, utcDateIso()' },
   { re: /\.toISOString\(\)\s*\.split\(\s*['"]T['"]\s*\)/, hint: 'use todayIso() (ou todayIso(instante))' },
   { re: /new Date\(\)\.toLocale(?:Date)?String\(\s*['"]pt-BR['"]\s*\)/, hint: 'use formatDate(todayIso()) ou formatDateTimeBr() (com o fuso de Brasília)' },
+  { re: /new Date\(\)\.get(?:UTC)?FullYear\(\)/, hint: 'use currentExerciseYear() (o ano no fuso de Brasília; em UTC, das 21h às 24h de 31/12 já seria o ano seguinte)' },
 ];
 
 function sourceFiles(dir: string): string[] {
@@ -104,7 +105,7 @@ function sourceFiles(dir: string): string[] {
 }
 
 describe('datas: padrão proibido no código', () => {
-  it('ninguém calcula "hoje" em UTC nem formata "agora" sem o fuso de Brasília', () => {
+  it('ninguém calcula "hoje" ou o ano atual em UTC nem formata "agora" sem o fuso de Brasília', () => {
     const files = DIRS.flatMap(sourceFiles).filter((f) => !ALLOWED.has(f));
     expect(files.length).toBeGreaterThan(100);
     const problems: string[] = [];
