@@ -34,6 +34,9 @@ jobs:
   containers:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      matrix:
+        database-mode: [bundled, managed]
     env:
       APP_URL: http://localhost
       POSTGRES_PASSWORD: ci-only-postgres-password
@@ -44,24 +47,47 @@ jobs:
       ENCRYPTION_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
     steps:
       - uses: actions/checkout@v4
+      - name: Seleciona configuração de implantação
+        run: |
+          if [ '${{ matrix.database-mode }}' = managed ]; then
+            echo 'COMPOSE_FILE=compose.dokploy-managed.yml' >> "$GITHUB_ENV"
+          else
+            echo 'COMPOSE_FILE=compose.dokploy.yml' >> "$GITHUB_ENV"
+          fi
       - name: Valida configuração do Compose
-        run: docker compose -f compose.dokploy.yml config --quiet
+        run: docker compose config --quiet
       - name: Constrói imagens de produção
-        run: docker compose -f compose.dokploy.yml build
-      - name: Inicia os dois bancos PostgreSQL, API, worker e web
-        run: docker compose -f compose.dokploy.yml up -d --wait --wait-timeout 180
+        run: docker compose build
+      - name: Prepara bancos independentes como serviços do Dokploy
+        if: matrix.database-mode == 'managed'
+        run: |
+          docker network create dokploy-network
+          docker compose -p managed-databases -f compose.dokploy.yml up -d --wait postgres postgres-platform
+          docker network connect --alias postgres dokploy-network "$(docker compose -p managed-databases -f compose.dokploy.yml ps -q postgres)"
+          docker network connect --alias postgres-platform dokploy-network "$(docker compose -p managed-databases -f compose.dokploy.yml ps -q postgres-platform)"
+      - name: Inicia aplicação e aguarda saúde dos serviços
+        run: docker compose up -d --wait --wait-timeout 180
       - name: Confere painéis e encaminhamento da API
         run: |
-          docker compose -f compose.dokploy.yml exec -T web wget -q -O - http://127.0.0.1/ | grep -q '<div id="root">'
-          docker compose -f compose.dokploy.yml exec -T web wget -q -O - http://127.0.0.1/sistema | grep -q '<div id="root">'
-          docker compose -f compose.dokploy.yml exec -T api node -e "fetch('http://web/api/platform/me').then(r=>{if(r.status!==401)throw Error('API não encaminhada: '+r.status)}).catch(e=>{console.error(e);process.exit(1)})"
-          docker compose -f compose.dokploy.yml exec -T api node --input-type=module -e "import http from 'node:http'; http.get('http://web/',{headers:{Host:'painel.verifco.com.br'}},r=>{r.resume();if(r.statusCode!==302||r.headers.location!=='/sistema'){console.error('Entrada do painel incorreta: '+r.statusCode+' '+r.headers.location);process.exitCode=1}}).on('error',e=>{console.error(e);process.exitCode=1})"
+          docker compose exec -T web wget -q -O - http://127.0.0.1/ | grep -q '<div id="root">'
+          docker compose exec -T web wget -q -O - http://127.0.0.1/sistema | grep -q '<div id="root">'
+          docker compose exec -T api node -e "fetch('http://web/api/platform/me').then(r=>{if(r.status!==401)throw Error('API não encaminhada: '+r.status)}).catch(e=>{console.error(e);process.exit(1)})"
+          docker compose exec -T api node --input-type=module -e "import http from 'node:http'; http.get('http://web/',{headers:{Host:'painel.verifco.com.br'}},r=>{r.resume();if(r.statusCode!==302||r.headers.location!=='/sistema'){console.error('Entrada do painel incorreta: '+r.statusCode+' '+r.headers.location);process.exitCode=1}}).on('error',e=>{console.error(e);process.exitCode=1})"
       - name: Confere separação real dos bancos PostgreSQL
         run: |
-          docker compose -f compose.dokploy.yml exec -T api node --import tsx --input-type=module < .github/scripts/check-databases.mjs
+          docker compose exec -T api node --import tsx --input-type=module < .github/scripts/check-databases.mjs
       - name: Diagnóstico de falhas
         if: failure()
-        run: docker compose -f compose.dokploy.yml logs --tail 100
+        run: |
+          docker compose logs --tail 100
+          if [ '${{ matrix.database-mode }}' = managed ]; then
+            docker compose -p managed-databases -f compose.dokploy.yml logs --tail 100
+          fi
       - name: Encerra ambiente de teste
         if: always()
-        run: docker compose -f compose.dokploy.yml down -v
+        run: |
+          docker compose down -v
+          if [ '${{ matrix.database-mode }}' = managed ]; then
+            docker compose -p managed-databases -f compose.dokploy.yml down -v
+            docker network rm dokploy-network
+          fi
