@@ -91,6 +91,9 @@ describe('clientes', () => {
     expect(x.raw.headers['content-type']).toContain('spreadsheetml');
     const l = await api.post('/api/customers/labels', { ids: [c.body.id] });
     expect(l.raw.rawPayload.subarray(0, 4).toString()).toBe('%PDF');
+    // o rodapé não pode abrir uma página extra
+    const pages = l.raw.rawPayload.toString('latin1').match(/\/Type \/Page[^s]/g) ?? [];
+    expect(pages).toHaveLength(1);
   });
 
   it('gera acesso ao portal e envia e-mail pela fila', async () => {

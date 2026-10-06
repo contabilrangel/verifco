@@ -170,6 +170,8 @@ export class PdfBuilder {
     const range = this.doc.bufferedPageRange();
     for (let i = range.start; i < range.start + range.count; i++) {
       this.doc.switchToPage(i);
+      // o rodapé fica dentro da margem inferior; sem zerar a margem o pdfkit abriria uma página nova
+      this.doc.page.margins.bottom = 0;
       const bottom = this.doc.page.height - this.margin + 16;
       this.doc
         .fillColor('#97a1ac')

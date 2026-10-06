@@ -109,7 +109,7 @@ export function Shell() {
               navigate(`/clientes?busca=${encodeURIComponent(search.trim())}`);
             }}
           >
-            <div className="vf-input-group">
+            <div className="vf-input-group vf-input-group--icon">
               <Search />
               <input className="vf-input" placeholder="Busque por nome, CPF ou e-mail e tecle Enter" value={search} onChange={(e) => setSearch(e.target.value)} aria-label="Buscar clientes" />
             </div>

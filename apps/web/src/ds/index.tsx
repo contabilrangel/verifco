@@ -128,7 +128,7 @@ export function Input({ label, help, error, icon, suffix, id, required, style, c
   const input = <input id={inputId} className={cx('vf-input', className)} aria-invalid={error ? true : undefined} required={required} {...rest} />;
   const control =
     icon || suffix ? (
-      <div className="vf-input-group">
+      <div className={cx('vf-input-group', icon ? 'vf-input-group--icon' : null, suffix ? 'vf-input-group--suffix' : null)}>
         {icon}
         {input}
         {suffix && <span className="vf-input-group__suffix">{suffix}</span>}
