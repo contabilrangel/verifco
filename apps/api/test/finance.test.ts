@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import ExcelJS from 'exceljs';
 import { addMonthsIso, todayIso } from '@verifco/shared';
-import { billings, budgets, declarations, importBatches, installments, jobs } from '../src/db/schema';
+import { auditLogs, billings, budgets, declarations, importBatches, installments, jobs } from '../src/db/schema';
 import { signCustomerToken } from '../src/plugins/auth';
 import { buildWorkbook } from '../src/services/xlsx';
 import { VALID_CPFS, client, createEmployee, createTestEnv, registerOffice, type Api, type TestEnv } from './helpers';
@@ -260,7 +260,177 @@ describe('orçamentos', () => {
     const list = await api.get(`/api/finance/customers/${customerId}/budgets?year=2026`);
     expect(list.body.data[0].billing.installments[0].externalUrl).toBe('https://pagar.exemplo/1');
     const inst = list.body.data[0].billing.installments[0];
+    // com a integração ativa, o valor da cobrança emitida só muda no provedor
+    await api.put('/api/integrations/asaas', { enabled: true, config: { environment: 'sandbox' }, secrets: { apiKey: '$aact_hmlg_abc123456789' } });
     expect((await api.put(`/api/finance/installments/${inst.id}`, { amountCents: 1 })).status).toBe(409);
+  });
+});
+
+/** fetch simulado do Asaas: cria cliente e cobranças (uma por chamada) com links de pagamento. */
+function fakeAsaas() {
+  let pay = 0;
+  const calls: { url: string; method: string }[] = [];
+  const fn = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = input instanceof Request ? input.url : String(input);
+    const method = init?.method ?? 'GET';
+    calls.push({ url, method });
+    const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {};
+    let json: unknown = { data: [] };
+    if (url.endsWith('/customers') && method === 'POST') json = { id: 'cus_1', name: body.name, cpfCnpj: body.cpfCnpj };
+    else if (url.endsWith('/payments') && method === 'POST') {
+      pay += 1;
+      json = { id: `pay_${pay}`, status: 'PENDING', invoiceUrl: `https://sandbox.asaas.com/i/${pay}`, ...body };
+    }
+    return new Response(JSON.stringify(json), { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as typeof fetch;
+  return { fn, calls };
+}
+
+const asaasOn = (api: Api) => api.put('/api/integrations/asaas', { enabled: true, config: { environment: 'sandbox', billingType: 'BOLETO' }, secrets: { apiKey: '$aact_hmlg_abc123456789' } });
+
+/** Faz o job de emissão desistir: roda todas as tentativas sem esperar o intervalo da fila. */
+async function exhaustSyncJobs() {
+  for (let i = 0; i < 5; i++) {
+    await env.ctx.db.update(jobs).set({ runAt: new Date(Date.now() - 1000) }).where(and(eq(jobs.type, 'billing.sync_external'), eq(jobs.status, 'queued')));
+    await env.ctx.jobs.drain();
+  }
+}
+
+describe('cobrança integrada (INT-9/DAD-4, INT-10)', () => {
+  it('falha na emissão fica visível no faturamento e no relatório; "Emitir de novo" reenfileira com chave nova', async () => {
+    const realFetch = env.providers.fetch;
+    const { api, customerId } = await setup('Escritório Integrado');
+    const asaas = await api.post('/api/finance/payment-methods', { type: 'asaas', name: 'Boleto Asaas', maxInstallments: 6 });
+    const b = await createBudget(api, customerId, { type: 'integration', paymentMethodId: asaas.body.id, installments: 2 });
+    // aprovado antes de configurar a integração: a emissão falha
+    const ok = await api.post(`/api/finance/budgets/${b.body.id}/approve`);
+    const billingId = ok.body.billing.id as string;
+    expect(ok.body.billing.externalSync.state).toBe('pending');
+
+    await env.ctx.jobs.drain();
+    let list = await api.get(`/api/finance/customers/${customerId}/budgets?year=2026`);
+    let sync = list.body.data[0].billing.externalSync;
+    expect(sync.state).toBe('retrying');
+    expect(sync.error).toContain('não está configurada');
+    expect(sync.attempts).toBe(1);
+
+    await exhaustSyncJobs();
+    list = await api.get(`/api/finance/customers/${customerId}/budgets?year=2026`);
+    sync = list.body.data[0].billing.externalSync;
+    expect(sync.state).toBe('failed');
+    expect(sync.pendingInstallments).toBe(2);
+    expect(sync.error).toContain('Administração › Integrações');
+    const report = await api.get('/api/finance/reports/billing?year=2026');
+    expect(report.body.data.find((r: { budgetId: string }) => r.budgetId === b.body.id).externalSyncFailed).toBe(true);
+
+    // sem billing.edit não reemite; outro escritório não enxerga o faturamento
+    const viewer = await createEmployee(env, api, ['budget.list']);
+    expect((await viewer.api.post(`/api/finance/billings/${billingId}/sync`)).status).toBe(403);
+    const other = await setup('Outro Escritório Integrado');
+    expect((await other.api.post(`/api/finance/billings/${billingId}/sync`)).status).toBe(404);
+
+    // corrigida a causa, "Emitir de novo" cria as cobranças (a chave antiga devolveria o job que falhou)
+    await asaasOn(api);
+    const fake = fakeAsaas();
+    env.providers.fetch = fake.fn;
+    try {
+      const retry = await api.post(`/api/finance/billings/${billingId}/sync`);
+      expect(retry.status).toBe(202);
+      expect(retry.body.alreadyQueued).toBe(false);
+      expect(retry.body.budget.billing.externalSync.state).toBe('pending');
+      // pedir de novo com a emissão na fila não duplica
+      expect((await api.post(`/api/finance/billings/${billingId}/sync`)).body.alreadyQueued).toBe(true);
+      const retryJobs = await env.ctx.db.select().from(jobs).where(and(eq(jobs.type, 'billing.sync_external'), sql`${jobs.payload}->>'billingId' = ${billingId}`));
+      expect(retryJobs).toHaveLength(2);
+      expect(retryJobs.some((j) => j.idempotencyKey?.startsWith(`${billingId}:retry:`))).toBe(true);
+      await env.ctx.jobs.drain();
+    } finally {
+      env.providers.fetch = realFetch;
+    }
+    list = await api.get(`/api/finance/customers/${customerId}/budgets?year=2026`);
+    expect(list.body.data[0].billing.externalSync.state).toBe('ok');
+    expect(list.body.data[0].billing.installments.map((i: { externalId: string }) => i.externalId)).toEqual(['pay_1', 'pay_2']);
+    expect(fake.calls.filter((c) => c.url.endsWith('/payments') && c.method === 'POST')).toHaveLength(2);
+    // tudo emitido: não há o que reemitir
+    expect((await api.post(`/api/finance/billings/${billingId}/sync`)).status).toBe(409);
+    const audits = await env.ctx.db.select().from(auditLogs).where(and(eq(auditLogs.action, 'billing_sync'), eq(auditLogs.entityId, billingId)));
+    expect(audits).toHaveLength(1);
+  });
+
+  it('parcela com cobrança no provedor: vencimento, valor, baixa e estorno só pelo provedor enquanto a integração está ativa', async () => {
+    const { api, customerId, pix } = await setup('Escritório Parcelas Asaas');
+    await asaasOn(api);
+    const asaas = await api.post('/api/finance/payment-methods', { type: 'asaas', name: 'Boleto Asaas', maxInstallments: 6 });
+    const b = await createBudget(api, customerId, { type: 'integration', paymentMethodId: asaas.body.id, installments: 2 });
+    const ok = await api.post(`/api/finance/budgets/${b.body.id}/approve`);
+    const [i1, i2] = ok.body.billing.installments as { id: string; dueDate: string }[];
+    await env.ctx.db.update(installments).set({ externalId: 'pay_9', externalUrl: 'https://pagar.exemplo/9' }).where(eq(installments.billingId, ok.body.billing.id));
+
+    const due = await api.put(`/api/finance/installments/${i1.id}`, { dueDate: '2031-01-10' });
+    expect(due.status).toBe(409);
+    expect(due.body.error).toContain('Asaas');
+    expect(due.body.error).toContain('cobrado em dobro');
+    expect((await api.put(`/api/finance/installments/${i1.id}`, { amountCents: 100 })).status).toBe(409);
+    // mesmo vencimento e valor: nada muda, nada a bloquear
+    expect((await api.put(`/api/finance/installments/${i1.id}`, { dueDate: i1.dueDate })).status).toBe(200);
+    const recv = await api.post(`/api/finance/installments/${i1.id}/receive`, {});
+    expect(recv.status).toBe(409);
+    expect(recv.body.error).toContain('Confirmar recebimento em dinheiro');
+    // paga pelo aviso do Asaas: desfazer só no Asaas
+    await env.ctx.db.update(installments).set({ status: 'paid', paidAt: todayIso(), paidAmountCents: 30_000 }).where(eq(installments.id, i2.id));
+    expect((await api.post(`/api/finance/installments/${i2.id}/reopen`)).status).toBe(409);
+    expect((await env.ctx.db.query.installments.findFirst({ where: eq(installments.id, i2.id) }))!.status).toBe('paid');
+
+    // integração desativada: o Verifco deixa de acompanhar a cobrança e o controle volta a ser manual
+    await api.put('/api/integrations/asaas', { enabled: false });
+    expect((await api.post(`/api/finance/installments/${i2.id}/reopen`)).status).toBe(200);
+    expect((await api.post(`/api/finance/installments/${i1.id}/receive`, {})).status).toBe(200);
+
+    // parcela sem cobrança no provedor (Pix manual) segue livre
+    const manual = await createBudget(api, customerId, { paymentMethodId: pix.id, status: 'approved', category: 'consulting' });
+    await asaasOn(api);
+    const m1 = manual.body.billing.installments[0];
+    expect((await api.put(`/api/finance/installments/${m1.id}`, { dueDate: '2031-02-10' })).status).toBe(200);
+    expect((await api.post(`/api/finance/installments/${m1.id}/receive`, {})).status).toBe(200);
+  });
+});
+
+describe('orçamento × status da declaração (INT-13)', () => {
+  const declOf = async (customerId: string) => env.ctx.db.query.declarations.findFirst({ where: and(eq(declarations.customerId, customerId), eq(declarations.exerciseYear, 2026)) });
+
+  it('só orçamentos IRPF movem a declaração; recusa, cancelamento e exclusão do único orçamento voltam para "Não iniciado"', async () => {
+    const { api, customerId } = await setup('Escritório Status');
+    // consultoria/holding enviados não mexem na declaração IRPF
+    const consulting = await createBudget(api, customerId, { category: 'consulting' });
+    await sendAndGetToken(api, consulting.body.id);
+    const holding = await createBudget(api, customerId, { category: 'holding', status: 'approved' });
+    expect(holding.status).toBe(201);
+    expect((await declOf(customerId))?.substatus).toBe('not_started');
+
+    // IRPF enviado → "Orçamento enviado"; recusado pelo link → volta
+    const irpf = await createBudget(api, customerId);
+    const { token } = await sendAndGetToken(api, irpf.body.id);
+    expect((await declOf(customerId))?.substatus).toBe('budget_sent');
+    expect((await pub('POST', `/api/public/budgets/${token}/reject`, {})).status).toBe(200);
+    expect((await declOf(customerId))?.substatus).toBe('not_started');
+
+    // dois orçamentos IRPF enviados: cancelar um mantém; cancelar o outro volta
+    await sendAndGetToken(api, irpf.body.id);
+    const retif = await createBudget(api, customerId, { category: 'irpf_rectification' });
+    await sendAndGetToken(api, retif.body.id);
+    const cancel = await api.put(`/api/finance/budgets/${irpf.body.id}`, { category: 'irpf', amountCents: 60_000, status: 'canceled' });
+    expect(cancel.body.status).toBe('canceled');
+    expect((await declOf(customerId))?.substatus).toBe('budget_sent');
+    expect((await api.del(`/api/finance/budgets/${retif.body.id}`)).status).toBe(200);
+    expect((await declOf(customerId))?.substatus).toBe('not_started');
+
+    // se a declaração andou por outro motivo (preenchimento), a recusa não a puxa de volta
+    const again = await createBudget(api, customerId);
+    await sendAndGetToken(api, again.body.id);
+    const decl = await declOf(customerId);
+    expect((await api.patch(`/api/declarations/${decl!.id}/substatus`, { substatus: 'elaboration' })).status).toBe(200);
+    expect((await api.post(`/api/finance/budgets/${again.body.id}/reject`)).status).toBe(200);
+    expect((await declOf(customerId))?.substatus).toBe('elaboration');
   });
 });
 

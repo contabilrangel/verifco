@@ -1,4 +1,4 @@
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
@@ -9,28 +9,27 @@ import {
   INCOME_NATURES,
   ITEM_KIND_LIST,
   PAYMENT_NATURES,
+  SYNC_FILE_CATEGORY,
   isValidCpf,
   isValidCpfCnpj,
   onlyDigits,
-  stageOfSubstatus,
   type DeclarationSubstatus,
   type EcacDeclarationStatus,
   type ItemKind,
 } from '@verifco/shared';
-import { declarationItems, declarations } from '../../db/schema';
-import { badRequest, conflict, forbidden, notFound } from '../../lib/errors';
+import { declarationItems, declarations, documents, files } from '../../db/schema';
+import { badRequest, conflict, notFound } from '../../lib/errors';
 import { audit, can, dateStr, guard, optionalText, parse, requireUser, uuidParam, yearSchema } from '../../lib/http';
 import { getCustomerForUser } from '../../services/customers';
-import { advanceDeclaration, getOrCreateDeclaration, setDeclarationSubstatus } from '../../services/declarations';
 import {
-  ECAC_TO_SUBSTATUS,
-  SUBSTATUS_TO_ECAC,
+  assertCanSetSubstatus,
+  changeDeclarationStatus,
   computeCashAnalysis,
-  emptyDeclaration,
-  getDeclarationForUser,
-  presentDeclaration,
+  getOrCreateDeclaration,
   refreshDeclaration,
-} from './access';
+  syncStatusWithEcac,
+} from '../../services/declarations';
+import { emptyDeclaration, getDeclarationForUser, presentDeclaration } from './access';
 import { backlogRoutes } from './backlogs';
 import { darfRoutes } from './darfs';
 import { kanbanRoutes } from './kanban';
@@ -111,6 +110,9 @@ const itemSchema = z
     if (v.kind === 'payment' && (v.extra.reimbursedCents ?? 0) > v.valueCents) issue('extra.reimbursedCents', 'O reembolso não pode passar do valor pago');
   });
 
+/** Dados da linha gravados na auditoria (sem CPF/CNPJ). */
+const itemAudit = (i: typeof declarationItems.$inferSelect) => ({ itemId: i.id, kind: i.kind, code: i.code, valueCents: i.valueCents, source: i.source });
+
 const normalizeItem = (v: z.infer<typeof itemSchema>) => ({
   ...v,
   ownerCpf: v.ownerCpf ? onlyDigits(v.ownerCpf) : null,
@@ -126,12 +128,32 @@ export async function declarationRoutes(app: FastifyInstance) {
   const { db } = app.ctx;
 
   // ------------------------------------------------------------ declaração por cliente e ano
-  app.get('/customers/:id/declarations/:year', { preHandler: guard('declaration.view') }, async (req) => {
+  /** Recibo de entrega (.REC) mais recente recebido do sincronizador para a declaração. */
+  const receiptFileOf = async (declarationId: string) => {
+    const [r] = await db
+      .select({ documentId: documents.id, fileId: documents.fileId, filename: files.filename, receivedAt: documents.createdAt })
+      .from(documents)
+      .innerJoin(files, eq(files.id, documents.fileId))
+      .where(and(eq(documents.declarationId, declarationId), eq(documents.category, SYNC_FILE_CATEGORY.rec)))
+      .orderBy(desc(documents.createdAt))
+      .limit(1);
+    return r ?? null;
+  };
+
+  /**
+   * Declaração do cliente no exercício. Quem só cuida de DARF (`darf.view`, sem
+   * `declaration.view`) recebe só o necessário para a etapa DARF (id e imposto a pagar).
+   */
+  app.get('/customers/:id/declarations/:year', { preHandler: guard('declaration.view', 'darf.view') }, async (req) => {
     const user = requireUser(req);
     const { id, year } = parse(customerYearParams, req.params);
     const customer = await getCustomerForUser(app.ctx, user, id);
     const d = await db.query.declarations.findFirst({ where: and(eq(declarations.customerId, customer.id), eq(declarations.exerciseYear, year)) });
-    return d ? presentDeclaration(d) : emptyDeclaration(customer.id, year);
+    if (!can(user, 'declaration.view')) {
+      const base = d ?? emptyDeclaration(customer.id, year);
+      return { id: d?.id ?? null, exists: Boolean(d), customerId: customer.id, exerciseYear: year, stage: base.stage, substatus: base.substatus, taxDueCents: base.taxDueCents, limited: true };
+    }
+    return d ? { ...presentDeclaration(d), receiptFile: await receiptFileOf(d.id) } : { ...emptyDeclaration(customer.id, year), receiptFile: null };
   });
 
   /**
@@ -160,14 +182,7 @@ export async function declarationRoutes(app: FastifyInstance) {
       })
       .where(eq(declarations.id, current.id))
       .returning();
-    let row = updated;
-    const ecacSubstatus = ECAC_TO_SUBSTATUS[(row.ecacStatus as EcacDeclarationStatus) ?? 'unknown'] ?? 'ecac_unknown';
-    const stage = stageOfSubstatus(row.substatus as DeclarationSubstatus);
-    if ((row.transmittedAt || row.receiptNumber) && (stage === 'not_started' || stage === 'negotiation' || stage === 'filling')) {
-      row = await advanceDeclaration(db, row, ecacSubstatus);
-    } else if (body.ecacStatus && body.ecacStatus !== current.ecacStatus && stage === 'transmitted') {
-      row = await setDeclarationSubstatus(db, row.id, ecacSubstatus);
-    }
+    let row = await syncStatusWithEcac(db, current, updated);
     if (otherExpenses || body.taxation !== undefined) row = await refreshDeclaration(app.ctx, row.id);
     await audit(req, 'update', 'declaration', row.id, { fields: Object.keys(body) });
     return presentDeclaration(row);
@@ -178,10 +193,9 @@ export async function declarationRoutes(app: FastifyInstance) {
     const user = requireUser(req);
     const { id } = parse(uuidParam, req.params);
     const { substatus } = parse(z.object({ substatus: substatusEnum }), req.body);
-    if (substatus === 'finished' && !can(user, 'declaration.finish')) throw forbidden('Você não tem permissão para finalizar declarações.');
+    assertCanSetSubstatus(user, substatus);
     const { declaration } = await getDeclarationForUser(app.ctx, user, id);
-    const ecac = SUBSTATUS_TO_ECAC[substatus];
-    const row = await setDeclarationSubstatus(db, declaration.id, substatus, ecac ? { ecacStatus: ecac } : {});
+    const row = await changeDeclarationStatus(db, declaration, substatus, { by: user });
     await audit(req, 'substatus', 'declaration', declaration.id, { from: declaration.substatus, to: substatus });
     return presentDeclaration(row);
   });
@@ -191,8 +205,8 @@ export async function declarationRoutes(app: FastifyInstance) {
     const { id } = parse(uuidParam, req.params);
     const { declaration } = await getDeclarationForUser(app.ctx, user, id);
     if (declaration.stage === 'finished') throw conflict('Esta declaração já está finalizada.');
-    const row = await setDeclarationSubstatus(db, declaration.id, 'finished');
-    await audit(req, 'finish', 'declaration', declaration.id);
+    const row = await changeDeclarationStatus(db, declaration, 'finished', { by: user });
+    await audit(req, 'finish', 'declaration', declaration.id, { from: declaration.substatus });
     return presentDeclaration(row);
   });
 
@@ -214,6 +228,7 @@ export async function declarationRoutes(app: FastifyInstance) {
       .values({ ...body, officeId: user.officeId, declarationId: declaration.id, source: 'manual' })
       .returning();
     const updated = await refreshDeclaration(app.ctx, declaration.id);
+    await audit(req, 'create_item', 'declaration', declaration.id, itemAudit(item));
     reply.status(201);
     return { item, declaration: presentDeclaration(updated) };
   });
@@ -229,9 +244,10 @@ export async function declarationRoutes(app: FastifyInstance) {
     const { id, itemId } = parse(itemParams, req.params);
     const body = normalizeItem(parse(itemSchema, req.body));
     const { declaration } = await getDeclarationForUser(app.ctx, user, id);
-    await loadItem(declaration.id, itemId);
+    const before = await loadItem(declaration.id, itemId);
     const [item] = await db.update(declarationItems).set(body).where(eq(declarationItems.id, itemId)).returning();
     const updated = await refreshDeclaration(app.ctx, declaration.id);
+    await audit(req, 'update_item', 'declaration', declaration.id, { ...itemAudit(item), fromValueCents: before.valueCents });
     return { item, declaration: presentDeclaration(updated) };
   });
 
@@ -239,9 +255,10 @@ export async function declarationRoutes(app: FastifyInstance) {
     const user = requireUser(req);
     const { id, itemId } = parse(itemParams, req.params);
     const { declaration } = await getDeclarationForUser(app.ctx, user, id);
-    await loadItem(declaration.id, itemId);
+    const item = await loadItem(declaration.id, itemId);
     await db.delete(declarationItems).where(eq(declarationItems.id, itemId));
     const updated = await refreshDeclaration(app.ctx, declaration.id);
+    await audit(req, 'delete_item', 'declaration', declaration.id, itemAudit(item));
     return { ok: true, declaration: presentDeclaration(updated) };
   });
 

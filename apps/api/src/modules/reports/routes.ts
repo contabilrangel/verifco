@@ -17,7 +17,7 @@ import { backlogs, customers, declarations } from '../../db/schema';
 import { badRequest, forbidden } from '../../lib/errors';
 import { audit, can, centsSchema, guard, parse, requireUser, uuidParam, yearSchema } from '../../lib/http';
 import { customerScope, getCustomerForUser } from '../../services/customers';
-import { getOrCreateDeclaration } from '../../services/declarations';
+import { getOrCreateDeclaration, refreshDeclaration } from '../../services/declarations';
 import { queueDelivery } from '../../services/delivery';
 import { PdfBuilder, loadBranding } from '../../services/pdf';
 import { buildWorkbook } from '../../services/xlsx';
@@ -143,9 +143,11 @@ export async function reportRoutes(app: FastifyInstance) {
     const body = parse(otherExpensesSchema, req.body);
     const { declaration } = await getDeclarationForUser(ctx, user, id);
     const clean = Object.fromEntries(Object.entries(body).filter(([, v]) => v !== null && v !== undefined && v > 0)) as typeof declaration.otherExpenses;
-    const [row] = await db.update(declarations).set({ otherExpenses: clean, updatedAt: new Date() }).where(eq(declarations.id, declaration.id)).returning();
+    await db.update(declarations).set({ otherExpenses: clean, updatedAt: new Date() }).where(eq(declarations.id, declaration.id));
+    // os outros gastos entram na análise de caixa: regrava o saldo usado no alerta do dashboard
+    const row = await refreshDeclaration(ctx, declaration.id);
     await audit(req, 'update_other_expenses', 'declaration', declaration.id, clean);
-    return { otherExpenses: row.otherExpenses };
+    return { otherExpenses: row.otherExpenses, cashBalanceCents: row.cashBalanceCents };
   });
 
   app.post('/declarations/:id/reports/generate', { preHandler: guard(...INDIVIDUAL_PERMS) }, async (req, reply) => {

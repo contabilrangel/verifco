@@ -1,4 +1,4 @@
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import JSZip from 'jszip';
 import { z } from 'zod';
 import {
@@ -14,13 +14,17 @@ import type { AppContext } from '../../context';
 import type { Db } from '../../db/client';
 import { declarations, documents, files } from '../../db/schema';
 import type { CustomerRow } from '../../services/customers';
-import type { DeclarationRow } from '../../services/declarations';
+import type { DbExecutor, DeclarationRow } from '../../services/declarations';
 import { listItems } from '../../services/declarations';
 import { safeZipName } from '../../services/uploads';
 
 /** Tipos de arquivo que a IA consegue ler (PDF e imagens). Os do programa IRPF não entram. */
-const EXTRACTABLE = new Set(['application/pdf', 'image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+const EXTRACTABLE_TYPES = ['application/pdf', 'image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+const EXTRACTABLE = new Set(EXTRACTABLE_TYPES);
 export const isExtractable = (mimeType: string) => EXTRACTABLE.has(mimeType);
+
+/** Categorias dos arquivos do programa IRPF recebidos do sincronizador (.DEC, .REC, .DBK). */
+const PROGRAM_FILE_CATEGORIES = ['irpf_declaration', 'irpf_receipt', 'irpf_backup'];
 
 export type LineMatch = 'new' | 'duplicate' | 'conflict';
 export type LineDecision = 'accept' | 'reject';
@@ -64,8 +68,12 @@ export function getExtraction(extracted: Record<string, unknown> | null | undefi
   return e && Array.isArray(e.lines) ? e : null;
 }
 
-/** Documentos (com dados do arquivo) das declarações informadas. */
-export async function loadDocStats(db: Db, declarationIds: string[]): Promise<Map<string, DocStat[]>> {
+/**
+ * Documentos (com dados do arquivo e o JSON `extracted`) das declarações informadas. Use para UMA
+ * declaração (drawer, validação, exportação); a listagem da central usa `docStatsSubquery`, que
+ * conta no banco sem trazer o JSON.
+ */
+export async function loadDocStats(db: DbExecutor, declarationIds: string[]): Promise<Map<string, DocStat[]>> {
   const map = new Map<string, DocStat[]>();
   if (!declarationIds.length) return map;
   const rows = await db
@@ -86,8 +94,67 @@ export async function loadDocStats(db: Db, declarationIds: string[]): Promise<Ma
     .innerJoin(files, eq(files.id, documents.fileId))
     .where(inArray(documents.declarationId, declarationIds))
     .orderBy(documents.createdAt);
-  for (const r of rows) map.set(r.declarationId!, [...(map.get(r.declarationId!) ?? []), r]);
+  for (const r of rows) {
+    const list = map.get(r.declarationId!);
+    if (list) list.push(r);
+    else map.set(r.declarationId!, [r]);
+  }
   return map;
+}
+
+/**
+ * Contagens dos documentos por declaração do escritório no exercício, calculadas no banco (sem
+ * trazer `documents.extracted` para a API): as mesmas regras de `docCounts` e
+ * `computeElaborationStatus`, para filtrar e paginar a central de elaboração em SQL.
+ */
+export function docStatsSubquery(db: Db, officeId: string, year: number) {
+  const eligible = sql`${files.mimeType} in (${sql.join(EXTRACTABLE_TYPES.map((t) => sql`${t}`), sql`, `)})`;
+  const lines = sql`(case when jsonb_typeof(${documents.extracted}->'elaboration'->'lines') = 'array' then ${documents.extracted}->'elaboration'->'lines' else '[]'::jsonb end)`;
+  const countLines = (where: SQL) => sql`(select count(*) from jsonb_array_elements(${lines}) as l(line) where ${where})`;
+  return db
+    .select({
+      declarationId: documents.declarationId,
+      total: sql<number>`count(*)::int`.as('total'),
+      eligible: sql<number>`(count(*) filter (where ${eligible}))::int`.as('eligible'),
+      processed: sql<number>`(count(*) filter (where ${eligible} and ${documents.processingStatus} = 'processed'))::int`.as('processed'),
+      errors: sql<number>`(count(*) filter (where ${eligible} and ${documents.processingStatus} = 'error'))::int`.as('errors'),
+      programFiles: sql<number>`(count(*) filter (where ${documents.category} in (${sql.join(PROGRAM_FILE_CATEGORIES.map((c) => sql`${c}`), sql`, `)})))::int`.as('program_files'),
+      lines: sql<number>`(coalesce(sum(jsonb_array_length(${lines})) filter (where ${eligible}), 0))::int`.as('lines'),
+      conflicts: sql<number>`(coalesce(sum(${countLines(sql`line->>'match' = 'conflict' and line->>'decision' is null and line->>'appliedAt' is null`)}) filter (where ${eligible}), 0))::int`.as('conflicts'),
+      pendingLines: sql<number>`(coalesce(sum(${countLines(sql`line->>'appliedAt' is null and coalesce(line->>'decision', '') <> 'reject' and coalesce(line->>'match', '') <> 'duplicate'`)}) filter (where ${eligible}), 0))::int`.as('pending_lines'),
+    })
+    .from(documents)
+    .innerJoin(files, eq(files.id, documents.fileId))
+    .innerJoin(declarations, and(eq(declarations.id, documents.declarationId), eq(declarations.officeId, officeId), eq(declarations.exerciseYear, year)))
+    .groupBy(documents.declarationId)
+    .as('doc_stats');
+}
+
+export type DocStatsSubquery = ReturnType<typeof docStatsSubquery>;
+
+/** `computeElaborationStatus` em SQL (literais sem parâmetros: a expressão também vai no GROUP BY). */
+export function elaborationStatusSql(ds: DocStatsSubquery) {
+  return sql<ElaborationStatus>`(case
+    when coalesce(${ds.total}, 0) = 0 then 'no_files'
+    when ${ds.processed} < ${ds.eligible} then 'not_processed'
+    when ${ds.conflicts} > 0 then 'conflict'
+    when ${ds.pendingLines} > 0 then 'awaiting_validation'
+    when ${declarations.elaborationStatus} = 'exported' then 'exported'
+    else 'ok' end)`;
+}
+
+/** Contagens de `docCounts` a partir da linha da subconsulta (declaração sem documentos = zeros). */
+export function countsFromStats(r: { total: number | null; eligible: number | null; processed: number | null; errors: number | null; programFiles: number | null; lines: number | null; conflicts: number | null; pendingLines: number | null }) {
+  return {
+    total: r.total ?? 0,
+    eligible: r.eligible ?? 0,
+    processed: r.processed ?? 0,
+    errors: r.errors ?? 0,
+    programFiles: r.programFiles ?? 0,
+    lines: r.lines ?? 0,
+    conflicts: r.conflicts ?? 0,
+    pendingLines: r.pendingLines ?? 0,
+  };
 }
 
 /**
@@ -114,7 +181,7 @@ export function docCounts(docs: DocStat[]) {
     eligible: eligible.length,
     processed: eligible.filter((d) => d.processingStatus === 'processed').length,
     errors: eligible.filter((d) => d.processingStatus === 'error').length,
-    programFiles: docs.filter((d) => ['irpf_declaration', 'irpf_receipt', 'irpf_backup'].includes(d.category)).length,
+    programFiles: docs.filter((d) => PROGRAM_FILE_CATEGORIES.includes(d.category)).length,
     lines: lines.length,
     conflicts: lines.filter((l) => l.match === 'conflict' && !l.decision && !l.appliedAt).length,
     pendingLines: lines.filter((l) => !l.appliedAt && l.decision !== 'reject' && l.match !== 'duplicate').length,
@@ -122,7 +189,7 @@ export function docCounts(docs: DocStat[]) {
 }
 
 /** Recalcula e grava a situação da elaboração da declaração. */
-export async function refreshElaborationStatus(db: Db, declarationId: string): Promise<ElaborationStatus> {
+export async function refreshElaborationStatus(db: DbExecutor, declarationId: string): Promise<ElaborationStatus> {
   const decl = await db.query.declarations.findFirst({ where: eq(declarations.id, declarationId) });
   if (!decl) return 'no_files';
   const docs = (await loadDocStats(db, [declarationId])).get(declarationId) ?? [];
@@ -304,7 +371,7 @@ export async function extractDocument(
   return extraction;
 }
 
-export async function saveExtraction(db: Db, doc: Pick<DocStat, 'id' | 'extracted'>, status: string, extraction: ElaborationExtraction) {
+export async function saveExtraction(db: DbExecutor, doc: Pick<DocStat, 'id' | 'extracted'>, status: string, extraction: ElaborationExtraction) {
   const extracted = { ...(doc.extracted ?? {}), elaboration: extraction };
   await db.update(documents).set({ processingStatus: status, extracted }).where(eq(documents.id, doc.id));
   doc.extracted = extracted;

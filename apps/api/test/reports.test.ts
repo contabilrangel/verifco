@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { eq } from 'drizzle-orm';
 import ExcelJS from 'exceljs';
 import { backlogs, declarationItems, declarations } from '../src/db/schema';
 import { VALID_CPFS, createEmployee, createTestEnv, registerOffice, type Api, type TestEnv } from './helpers';
@@ -62,6 +63,13 @@ describe('relatórios individuais', () => {
     const saved = await api.put(`/api/declarations/${id}/other-expenses`, { annualPaymentCents: 120_000, interestCents: 30_000, creditCardCents: 0 });
     expect(saved.status).toBe(200);
     expect(saved.body.otherExpenses).toEqual({ annualPaymentCents: 120_000, interestCents: 30_000 });
+    // INT-11: os outros gastos entram na análise de caixa; o saldo gravado (alerta do dashboard) acompanha
+    const balanceOf = async () => (await env.ctx.db.query.declarations.findFirst({ where: eq(declarations.id, id) }))!.cashBalanceCents;
+    expect(saved.body.cashBalanceCents).toBe(await balanceOf());
+    const more = await api.put(`/api/declarations/${id}/other-expenses`, { annualPaymentCents: 120_000, interestCents: 30_000, creditCardCents: 500_000 });
+    expect(await balanceOf()).toBe(saved.body.cashBalanceCents - 500_000);
+    expect(more.body.cashBalanceCents).toBe((await api.get(`/api/declarations/${id}/cash-analysis`)).body.balanceCents);
+    await api.put(`/api/declarations/${id}/other-expenses`, { annualPaymentCents: 120_000, interestCents: 30_000 });
     expect((await api.get(`/api/declarations/${id}/reports`)).body.declaration.otherExpenses.interestCents).toBe(30_000);
 
     const all = ['cash_analysis', 'cash_details', 'patrimony_history', 'cash_history', 'fine_mesh', 'tax_planning', 'assets'];

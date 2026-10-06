@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { and, eq } from 'drizzle-orm';
+import { auditLogs } from '../src/db/schema';
 import { VALID_CPFS, createEmployee, createTestEnv, registerOffice, type Api, type TestEnv } from './helpers';
 
 let env: TestEnv;
@@ -75,6 +77,53 @@ describe('declaração do exercício', () => {
     expect(fin.body.finishedAt).toBeTruthy();
     expect((await office.api.post(`/api/declarations/${d.id}/finish`)).status).toBe(409);
   });
+
+  // INT-1: a ação em massa dos clientes passa pela mesma regra do Kanban
+  it('status em massa exige declaration.finish para finalizar e mantém a situação eCAC coerente', async () => {
+    const office = await registerOffice(env);
+    const ids = [await newCustomer(office.api, VALID_CPFS[0], 'Ana'), await newCustomer(office.api, VALID_CPFS[1], 'Bia')];
+    const editor = await createEmployee(env, office.api, ['customer.list', 'declaration.view', 'declaration.edit']);
+    const denied = await editor.api.post('/api/customers/bulk', { ids, action: 'substatus', value: 'finished', year: YEAR });
+    expect(denied.status).toBe(403);
+    expect(denied.body.error).toContain('finalizar');
+    // nada foi finalizado pela metade
+    for (const id of ids) expect((await office.api.get(`/api/customers/${id}/declarations/${YEAR}`)).body.stage).not.toBe('finished');
+
+    const mesh = await editor.api.post('/api/customers/bulk', { ids, action: 'substatus', value: 'ecac_fine_mesh', year: YEAR });
+    expect(mesh.status).toBe(200);
+    for (const id of ids) {
+      expect((await office.api.get(`/api/customers/${id}/declarations/${YEAR}`)).body).toMatchObject({ stage: 'transmitted', substatus: 'ecac_fine_mesh', ecacStatus: 'fine_mesh' });
+    }
+    const processed = await editor.api.post('/api/customers/bulk', { ids: [ids[0]], action: 'substatus', value: 'ecac_processed', year: YEAR });
+    expect(processed.status).toBe(200);
+    expect((await office.api.get(`/api/customers/${ids[0]}/declarations/${YEAR}`)).body.ecacStatus).toBe('processed');
+
+    // com a permissão de finalizar, o lote finaliza e registra de/para por declaração
+    const finisher = await createEmployee(env, office.api, ['customer.list', 'declaration.view', 'declaration.edit', 'declaration.finish']);
+    expect((await finisher.api.post('/api/customers/bulk', { ids, action: 'substatus', value: 'finished', year: YEAR })).status).toBe(200);
+    const fin = (await office.api.get(`/api/customers/${ids[1]}/declarations/${YEAR}`)).body;
+    expect(fin).toMatchObject({ stage: 'finished', substatus: 'finished' });
+    expect(fin.finishedAt).toBeTruthy();
+    const audits = await env.ctx.db.select().from(auditLogs).where(and(eq(auditLogs.action, 'substatus'), eq(auditLogs.entityId, fin.id)));
+    expect(audits.map((a) => a.data)).toContainEqual({ from: 'ecac_fine_mesh', to: 'finished', bulk: true });
+  });
+
+  // INT-17: a etapa DARF funciona para quem só tem darf.view (visão reduzida da declaração)
+  it('quem só cuida de DARF lê o id e o imposto a pagar, sem o resto da declaração', async () => {
+    const office = await registerOffice(env);
+    const cid = await newCustomer(office.api);
+    const darfOnly = await createEmployee(env, office.api, ['customer.list', 'darf.view', 'darf.edit']);
+    expect((await darfOnly.api.get(`/api/customers/${cid}/declarations/${YEAR}`)).body).toMatchObject({ id: null, exists: false, limited: true });
+    const d = await ensureDeclaration(office.api, cid, { taxDueCents: 123_45, receiptNumber: '1234' });
+    const limited = await darfOnly.api.get(`/api/customers/${cid}/declarations/${YEAR}`);
+    expect(limited.status).toBe(200);
+    expect(limited.body).toEqual({ id: d.id, exists: true, customerId: cid, exerciseYear: YEAR, stage: 'transmitted', substatus: 'ecac_unknown', taxDueCents: 123_45, limited: true });
+    expect((await darfOnly.api.get(`/api/declarations/${d.id}/darfs`)).status).toBe(200);
+    // sem declaration.edit não cria nem edita a declaração
+    expect((await darfOnly.api.put(`/api/customers/${cid}/declarations/${YEAR}`, {})).status).toBe(403);
+    const none = await createEmployee(env, office.api, ['customer.list']);
+    expect((await none.api.get(`/api/customers/${cid}/declarations/${YEAR}`)).status).toBe(403);
+  });
 });
 
 describe('linhas da DIRPF e análise de caixa', () => {
@@ -129,6 +178,14 @@ describe('linhas da DIRPF e análise de caixa', () => {
     expect((await api.del(`${base}/${dep.body.item.id}`)).status).toBe(200);
     expect((await api.get(base)).body).toHaveLength(4);
     expect((await api.del(`${base}/${dep.body.item.id}`)).status).toBe(404);
+
+    // CON-11: inclusão, edição e exclusão de linhas ficam na auditoria (sem CPF/CNPJ)
+    const audits = await env.ctx.db.select().from(auditLogs).where(and(eq(auditLogs.entity, 'declaration'), eq(auditLogs.entityId, d.id)));
+    const actions = audits.map((a) => a.action);
+    expect(actions.filter((a) => a === 'create_item')).toHaveLength(5);
+    expect(actions).toContain('update_item');
+    expect(audits.find((a) => a.action === 'delete_item')?.data).toMatchObject({ itemId: dep.body.item.id, kind: 'dependent' });
+    expect(JSON.stringify(audits.map((a) => a.data))).not.toContain(VALID_CPFS[1]);
   });
 
   it('usa outros gastos e a preferência da tributação simplificada', async () => {

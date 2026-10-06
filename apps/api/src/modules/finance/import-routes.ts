@@ -71,9 +71,17 @@ export async function importRoutes(app: FastifyInstance) {
           .orderBy(asc(budgets.createdAt))
       : [];
     const methods = await db.select().from(paymentMethods).where(eq(paymentMethods.officeId, user.officeId)).orderBy(asc(paymentMethods.name));
+    // agrupados por cliente antes do laço (nada de filter/find por cliente: carteiras grandes)
+    const byCustomer = new Map<string, BudgetRow[]>();
+    for (const b of existing) {
+      const mine = byCustomer.get(b.customerId);
+      if (mine) mine.push(b);
+      else byCustomer.set(b.customerId, [b]);
+    }
+    const methodName = new Map(methods.map((m) => [m.id, m.name]));
     const rows: Record<string, unknown>[] = [];
     for (const c of list) {
-      const mine = existing.filter((b) => b.customerId === c.id);
+      const mine = byCustomer.get(c.id) ?? [];
       if (!mine.length) {
         rows.push({ doc: formatCpfCnpj(c.cpfCnpj), name: c.name });
         continue;
@@ -86,7 +94,7 @@ export async function importRoutes(app: FastifyInstance) {
           description: b.description ?? '',
           amount: b.amountCents,
           discount: Number(b.discountPercent),
-          method: methods.find((m) => m.id === b.paymentMethodId)?.name ?? '',
+          method: (b.paymentMethodId && methodName.get(b.paymentMethodId)) || '',
           installments: b.installments,
           start: brDate(b.billingStartDate),
           status: budgetStatusLabel(b.status),

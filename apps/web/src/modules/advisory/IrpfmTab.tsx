@@ -112,7 +112,7 @@ export function IrpfmTab() {
               </div>
               {!data.hasDeclaration || !data.itemsCount ? (
                 <Alert tone="primary" title="Sem linhas da declaração neste exercício">
-                  Lance ou importe a declaração de {year} para que os rendimentos entrem no cálculo.
+                  Lance as linhas da declaração de {year} (etapa Declaração ou extração com IA na Central de elaboração) para que os rendimentos entrem no cálculo.
                 </Alert>
               ) : null}
               <div className="vf-adv-kpis">

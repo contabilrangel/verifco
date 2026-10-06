@@ -1,5 +1,7 @@
 import JSZip from 'jszip';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { and, eq } from 'drizzle-orm';
+import { auditLogs } from '../src/db/schema';
 import { VALID_CPFS, createEmployee, createTestEnv, registerOffice, type TestEnv } from './helpers';
 import { FAKE_PDF, upload } from './upload-helpers';
 
@@ -46,6 +48,9 @@ describe('documentos do cliente', () => {
 
     const patched = await api.patch(`/api/documents/${doc.id}`, { category: 'bank_statement' });
     expect(patched.body.category).toBe('bank_statement');
+    // CON-11: a troca de categoria fica na auditoria, como o upload e a exclusão
+    const audit = await env.ctx.db.query.auditLogs.findFirst({ where: and(eq(auditLogs.action, 'update'), eq(auditLogs.entity, 'document'), eq(auditLogs.entityId, doc.id)) });
+    expect(audit?.data).toMatchObject({ category: 'bank_statement' });
     expect((await api.del(`/api/documents/${doc.id}`)).status).toBe(200);
     expect((await api.get(`/api/customers/${c.id}/documents?year=2026`)).body).toHaveLength(1);
     expect((await api.get(`/api/documents/${doc.id}/file`)).status).toBe(404);

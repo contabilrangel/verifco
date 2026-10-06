@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { eq } from 'drizzle-orm';
+import { auditLogs } from '../src/db/schema';
 import { VALID_CPFS, createEmployee, createTestEnv, registerOffice, type TestEnv } from './helpers';
 
 let env: TestEnv;
@@ -94,6 +96,28 @@ describe('clientes', () => {
     // o rodapé não pode abrir uma página extra
     const pages = l.raw.rawPayload.toString('latin1').match(/\/Type \/Page[^s]/g) ?? [];
     expect(pages).toHaveLength(1);
+  });
+
+  // CON-11: ações relevantes ficam na trilha de auditoria, como as ações irmãs
+  it('audita exportação, endereço, procuradores e grupos', async () => {
+    const { api, officeId } = await registerOffice(env);
+    const c = await api.post('/api/customers', { name: 'Auditado', cpfCnpj: VALID_CPFS[5] });
+    await api.put(`/api/customers/${c.body.id}/address`, { address: { street: 'Rua B', city: 'Natal', state: 'RN' } });
+    expect((await api.post('/api/customers/export', { filters: { status: 'active' } })).status).toBe(200);
+    const p = await api.post('/api/procurators', { name: 'Procurador Um', cpfCnpj: VALID_CPFS[6] });
+    await api.put(`/api/procurators/${p.body.id}`, { name: 'Procurador Um Editado', cpfCnpj: VALID_CPFS[6] });
+    await api.del(`/api/procurators/${p.body.id}`);
+    const g = await api.post('/api/customer-groups', { name: 'Grupo' });
+    await api.put(`/api/customer-groups/${g.body.id}`, { name: 'Grupo renomeado' });
+
+    const rows = await env.ctx.db.select().from(auditLogs).where(eq(auditLogs.officeId, officeId));
+    const has = (action: string, entity: string) => rows.find((r) => r.action === action && r.entity === entity);
+    expect(has('export', 'customer')?.data).toMatchObject({ count: 1, filters: { status: 'active' }, ids: 0 });
+    expect(has('update_address', 'customer')?.entityId).toBe(c.body.id);
+    expect(has('create', 'procurator')?.entityId).toBe(p.body.id);
+    expect(has('update', 'procurator')?.entityId).toBe(p.body.id);
+    expect(has('delete', 'procurator')?.data).toMatchObject({ name: 'Procurador Um Editado' });
+    expect(has('update', 'customer_group')?.data).toMatchObject({ name: 'Grupo renomeado' });
   });
 
   it('gera acesso ao portal e envia e-mail pela fila', async () => {

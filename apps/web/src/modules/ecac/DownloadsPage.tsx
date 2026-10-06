@@ -49,7 +49,7 @@ export function DownloadsPage() {
         <Card title={<span className="vf-inline"><FolderSync size={20} /> Sincronizador Verifco</span>}>
           <div className="vf-stack">
             <span className="vf-muted">
-              Roda no computador onde o programa IRPF é usado. Envia ao Verifco os arquivos das declarações (.DEC, .REC, .DBK) e das pré-preenchidas, vinculando cada um ao cliente pelo CPF do nome do arquivo.
+              Roda no computador onde o programa IRPF é usado. Arquiva no Verifco os arquivos das declarações (.DEC, .REC, .DBK) e das pré-preenchidas, vinculando cada um ao cliente pelo CPF do nome do arquivo. O .REC marca a declaração como transmitida; o conteúdo dos arquivos do programa não é lido (leiaute não público).
             </span>
             <Tabs<Os>
               value={os}

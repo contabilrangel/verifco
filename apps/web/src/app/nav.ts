@@ -30,14 +30,41 @@ export interface NavGroup {
   children?: NavLink[];
 }
 
+/**
+ * Permissões que abrem cada destino. Os grupos com abas (Administração, Relatórios) usam a união
+ * das permissões das abas registradas pelos módulos (`nav.test.ts` confere), e as páginas usam as
+ * mesmas permissões que a API aceita na listagem.
+ */
+export const ELABORATION_PERMS = ['elaboration.export', 'elaboration.process', 'pre_declaration.view'];
+export const ADMIN_PERMS = [
+  'office.edit',
+  'settings.view',
+  'settings.edit',
+  'employee.list',
+  'role.list',
+  'customer_group.list',
+  'customer_group.create',
+  'customer_group.edit',
+  'customer_group.delete',
+  'procuration.list',
+  'procuration.edit',
+  'procuration.certificate',
+  'contracts.view',
+  'integrations.manage',
+  'ecac.robot',
+  'ecac.sync',
+  'copilot.manage',
+];
+export const REPORT_PERMS = ['report.billing', 'report.results', 'report.backlogs', 'report.refund'];
+
 export const NAV: NavGroup[] = [
   {
     id: 'inicio',
     label: 'Início',
     icon: Home,
     children: [
-      { to: '/', label: 'Dashboard', end: true },
-      { to: '/kanban', label: 'Kanban' },
+      { to: '/', label: 'Dashboard', end: true, perms: ['declaration.view', 'customer.list'] },
+      { to: '/kanban', label: 'Kanban', perms: ['declaration.view'] },
       { to: '/radar', label: 'Radar de oportunidades', perms: ['radar.view'] },
     ],
   },
@@ -75,10 +102,10 @@ export const NAV: NavGroup[] = [
       { to: '/comunicacao/envios', label: 'E-mails enviados', perms: ['mailing.list'] },
     ],
   },
-  { id: 'relatorios', label: 'Relatórios', icon: BarChart3, to: '/relatorios', perms: ['report.billing', 'report.results', 'report.backlogs', 'report.refund'] },
-  { id: 'elaboracao', label: 'Elaboração', icon: Wand2, to: '/elaboracao', perms: ['elaboration.export', 'pre_declaration.view'] },
+  { id: 'relatorios', label: 'Relatórios', icon: BarChart3, to: '/relatorios', perms: REPORT_PERMS },
+  { id: 'elaboracao', label: 'Elaboração', icon: Wand2, to: '/elaboracao', perms: ELABORATION_PERMS },
   { id: 'pre-preenchidas', label: 'Pré-preenchidas', icon: FileStack, to: '/pre-preenchidas', perms: ['prefilled.download'] },
-  { id: 'admin', label: 'Administração', icon: Building2, to: '/admin', perms: ['office.edit', 'settings.view', 'employee.list', 'role.list', 'customer_group.list', 'integrations.manage', 'contracts.view', 'procuration.list', 'procuration.edit', 'procuration.certificate', 'copilot.manage'] },
+  { id: 'admin', label: 'Administração', icon: Building2, to: '/admin', perms: ADMIN_PERMS },
   { id: 'backup', label: 'Backup', icon: HardDriveDownload, to: '/backup', perms: ['backup.download'] },
   { id: 'downloads', label: 'Central de downloads', icon: Download, to: '/downloads' },
 ];

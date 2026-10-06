@@ -161,7 +161,14 @@ export function BillingReportPage() {
                         <BudgetStatusTag status={r.status} />
                       </td>
                       <td>
-                        <Tag tone={paymentStatusTone(r.paymentStatus)}>{PAYMENT_STATUS[r.paymentStatus]}</Tag>
+                        <div className="vf-stack" style={{ '--gap': '4px' } as React.CSSProperties}>
+                          <Tag tone={paymentStatusTone(r.paymentStatus)}>{PAYMENT_STATUS[r.paymentStatus]}</Tag>
+                          {r.externalSyncFailed && (
+                            <span title="A cobrança integrada (Asaas/Omie) não foi emitida. Abra o orçamento do cliente e use “Emitir de novo”.">
+                              <Tag tone="danger">Cobrança não emitida</Tag>
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="num">{formatMoney(r.budgetedCents)}</td>
                       <td className="num">{formatMoney(r.billedCents)}</td>

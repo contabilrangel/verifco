@@ -43,13 +43,15 @@ export interface UploadResult {
 /** Envia um arquivo (multipart) para /api/sync/files ou /api/sync/prefilled. */
 export function upload(
   cfg: SyncConfig,
-  input: { destination: 'files' | 'prefilled'; data: Buffer; name: string; path: string; cpf?: string | null; year?: number | null; type?: string },
+  input: { destination: 'files' | 'prefilled'; data: Buffer; name: string; path: string; cpf?: string | null; year?: number | null; type?: string; modifiedAt?: Date | null },
 ) {
   const form = new FormData();
   if (input.cpf) form.set('cpf', input.cpf);
   if (input.year) form.set('ano', String(input.year));
   if (input.type && input.destination === 'files') form.set('tipo', input.type);
   form.set('caminho', input.path);
+  // data do arquivo: no recibo (.REC) vira a data da transmissão da declaração
+  if (input.modifiedAt) form.set('modificadoEm', input.modifiedAt.toISOString());
   form.set('file', new Blob([new Uint8Array(input.data)]), input.name);
   return call<UploadResult>(cfg, `/sync/${input.destination}`, { method: 'POST', body: form });
 }

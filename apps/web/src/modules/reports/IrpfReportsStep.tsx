@@ -92,7 +92,7 @@ function ReportsStepContent({ ctx }: { ctx: ReportsContext }) {
     <div className="vf-stack" style={{ '--gap': '16px' } as React.CSSProperties}>
       {!hasItems && (
         <Alert tone="warning" title={`A declaração ${d.exerciseYear} ainda não tem linhas cadastradas`}>
-          Os relatórios usam os rendimentos, pagamentos, bens e dívidas da declaração. Cadastre ou importe a declaração do exercício (de preferência pelo XML/arquivo do programa da Receita) antes de gerar.
+          Os relatórios usam os rendimentos, pagamentos, bens e dívidas da declaração. Lance as linhas na etapa Declaração ou traga-as dos documentos (inclusive o PDF da declaração) pela extração com IA da Central de elaboração antes de gerar. Os arquivos do programa da Receita (.DEC/.REC) recebidos pelo sincronizador ficam arquivados, mas o conteúdo deles não é lido (o leiaute não é público).
         </Alert>
       )}
       {!ctx.hasLogo && hasItems && (

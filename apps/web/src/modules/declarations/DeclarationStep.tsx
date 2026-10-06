@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Pencil, Plus, ReceiptText, Save, Trash2 } from 'lucide-react';
+import { FileCheck2, Pencil, Plus, ReceiptText, Save, Trash2 } from 'lucide-react';
 import { DECLARATION_SUBSTATUS, ECAC_DECLARATION_STATUS, ITEM_KINDS, stageOfSubstatus, type ItemKind } from '@verifco/shared';
 import { Alert, Button, Card, Checkbox, ConfirmDialog, IconButton, Input, Loading, Modal, MoneyInput, Select, Tag, Textarea } from '../../ds';
 import { api } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { fieldErrors, useAction, useApi } from '../../lib/hooks';
-import { formatMoney, stageLabel, stageTone } from '../../lib/format';
+import { formatDate, formatMoney, stageLabel, stageTone } from '../../lib/format';
 import { useYear } from '../../lib/year';
 import { useCustomer } from '../customers/customerContext';
 import { dateOnly, declarationKey, useDeclaration, type Declaration, type ItemRow } from './data';
@@ -36,7 +36,8 @@ export function DeclarationStep() {
 
   /** Atualiza o cache depois de qualquer mudança (painel, Kanban e dashboard dependem dela). */
   const afterChange = (d?: Declaration) => {
-    if (d) qc.setQueryData(declarationKey(customer.id, year), d);
+    // as respostas de gravação não trazem o recibo (.REC) do sincronizador: mantém o que já veio no GET
+    if (d) qc.setQueryData<Declaration>(declarationKey(customer.id, year), (old) => ({ ...old, ...d, receiptFile: d.receiptFile ?? old?.receiptFile ?? null }));
     void qc.invalidateQueries({ queryKey: ['declaration-items'] });
     void qc.invalidateQueries({ queryKey: ['cash'] });
     void qc.invalidateQueries({ queryKey: ['customer-dashboard', customer.id] });
@@ -167,8 +168,21 @@ function SummaryCard({ declaration, canEdit, ensure, onSaved }: { declaration: D
         </div>
       </fieldset>
       <p className="vf-rule" style={{ marginTop: 12 }}>
-        Ao informar a data de transmissão ou o recibo, a declaração passa para “Transmitida” no Kanban, com o status da situação no eCAC.
+        Ao informar a data de transmissão ou o recibo, a declaração passa para “Transmitida” no Kanban, com o status da situação no eCAC. O mesmo vale para o
+        recibo (.REC) recebido do sincronizador e para a situação vinda do eCAC.
       </p>
+      {declaration.receiptFile && (
+        <div className="vf-dec-receipt">
+          <FileCheck2 aria-hidden />
+          <span>
+            Recibo de entrega (.REC) recebido do sincronizador em {formatDate(declaration.receiptFile.receivedAt)}.{' '}
+            <button type="button" className="vf-dec-receipt__link" onClick={() => void api.download(`/files/${declaration.receiptFile!.fileId}`, declaration.receiptFile!.filename)}>
+              Baixar {declaration.receiptFile.filename}
+            </button>
+            <span className="vf-muted"> · o conteúdo do arquivo não é lido (leiaute não público): o número do recibo é informado acima.</span>
+          </span>
+        </div>
+      )}
     </Card>
   );
 }
@@ -294,7 +308,7 @@ function FichasCard({ declaration, canEdit, ensure, onChanged }: { declaration: 
   );
 }
 
-type FormValues = Record<string, string | number>;
+type FormValues = Record<string, string | number | boolean>;
 
 const readPath = (item: ItemRow | null, name: string): unknown => {
   if (!item) return undefined;
@@ -323,7 +337,7 @@ function ItemModal({
     Object.fromEntries(
       fields.map((f) => {
         const v = readPath(item, f.name);
-        return [f.name, f.kind === 'money' ? (typeof v === 'number' ? v : 0) : typeof v === 'string' ? v : ''];
+        return [f.name, f.kind === 'checkbox' ? v === true : f.kind === 'money' ? (typeof v === 'number' ? v : 0) : typeof v === 'string' ? v : ''];
       }),
     ),
   );
@@ -333,7 +347,9 @@ function ItemModal({
       const payload: Record<string, unknown> = { kind, extra: { ...((item?.extra as Record<string, unknown>) ?? {}) } };
       for (const f of fields) {
         const v = values[f.name];
-        const value = f.kind === 'money' ? Number(v) || 0 : typeof v === 'string' && v.trim() ? v.trim() : null;
+        const applies = !f.onlyKinds || f.onlyKinds.includes(kind);
+        // caixa de seleção: grava `true` ou remove a marca (também quando não vale para o tipo)
+        const value = f.kind === 'checkbox' ? (applies && v === true ? true : null) : f.kind === 'money' ? Number(v) || 0 : typeof v === 'string' && v.trim() ? v.trim() : null;
         if (f.name.startsWith('extra.')) {
           const key = f.name.slice(6);
           if (value === null) delete (payload.extra as Record<string, unknown>)[key];
@@ -348,13 +364,21 @@ function ItemModal({
   );
   const errors = fieldErrors(save.error);
   const missing = fields.some((f) => f.required && (f.kind === 'money' ? false : !String(values[f.name] ?? '').trim()));
-  const set = (name: string, v: string | number) => setValues((s) => ({ ...s, [name]: v }));
+  const set = (name: string, v: string | number | boolean) => setValues((s) => ({ ...s, [name]: v }));
 
   const render = (f: FieldDef) => {
+    if (f.onlyKinds && !f.onlyKinds.includes(kind)) return null;
     const common = { label: f.label, required: f.required, help: f.help, error: errors[f.name] };
     const style = f.wide ? ({ gridColumn: '1 / -1' } as CSSProperties) : undefined;
     const value = values[f.name];
     switch (f.kind) {
+      case 'checkbox':
+        return (
+          <div key={f.name} className="vf-span-full vf-stack" style={{ '--gap': '2px' } as CSSProperties}>
+            <Checkbox label={f.label} checked={value === true} onChange={(e) => set(f.name, e.target.checked)} />
+            {f.help && <span className="vf-text-xs vf-muted">{f.help}</span>}
+          </div>
+        );
       case 'money':
         return <MoneyInput key={f.name} {...common} style={style} value={Number(value) || 0} onChange={(c) => set(f.name, c)} />;
       case 'select':

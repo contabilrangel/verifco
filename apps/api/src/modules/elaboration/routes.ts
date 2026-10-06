@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, ilike, inArray, isNull, or, type SQL } from 'drizzle-orm';
+import { and, asc, count, desc, eq, ilike, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import JSZip from 'jszip';
 import { z } from 'zod';
@@ -7,12 +7,16 @@ import { customers, declarationItems, declarations, documents, files, jobs } fro
 import { badRequest, notFound } from '../../lib/errors';
 import { audit, guard, parse, requireUser, uuidParam, yearSchema } from '../../lib/http';
 import { customerScope, getCustomerForUser } from '../../services/customers';
-import { listItems, recomputeTotals } from '../../services/declarations';
+import { listItems, refreshDeclaration, type DbExecutor } from '../../services/declarations';
 import { jobView } from '../ecac/util';
+import { getOfficeSettings } from '../../services/settings';
 import { safeZipName, sendStoredFile } from '../../services/uploads';
 import {
   computeElaborationStatus,
+  countsFromStats,
   docCounts,
+  docStatsSubquery,
+  elaborationStatusSql,
   getExtraction,
   isExtractable,
   loadDocStats,
@@ -44,58 +48,79 @@ const selectionSchema = z.object({
 export async function elaborationRoutes(app: FastifyInstance) {
   const { db } = app.ctx;
 
-  /** Clientes do escopo com a declaração do ano (pode não existir) e a situação calculada. */
-  async function loadRows(req: Parameters<typeof requireUser>[0], year: number, extra: SQL[] = []) {
-    const user = requireUser(req);
-    const conds: SQL[] = [await customerScope(app.ctx, user), eq(customers.status, 'active'), ...extra];
-    const rows = await db
-      .select({
-        id: customers.id,
-        name: customers.name,
-        cpfCnpj: customers.cpfCnpj,
-        decl: declarations,
-        exportedAt: files.createdAt,
-      })
-      .from(customers)
-      .leftJoin(declarations, and(eq(declarations.customerId, customers.id), eq(declarations.exerciseYear, year)))
-      .leftJoin(files, eq(files.id, declarations.exportedFileId))
-      .where(and(...conds))
-      .orderBy(asc(customers.name));
-    const docs = await loadDocStats(db, rows.flatMap((r) => (r.decl ? [r.decl.id] : [])));
-    return rows.map((r) => {
-      const list = r.decl ? (docs.get(r.decl.id) ?? []) : [];
-      return {
-        customerId: r.id,
-        name: r.name,
-        cpfCnpj: r.cpfCnpj,
-        declarationId: r.decl?.id ?? null,
-        status: computeElaborationStatus(r.decl?.elaborationStatus ?? 'no_files', list),
-        counts: docCounts(list),
-        sourceFileId: r.decl?.sourceFileId ?? null,
-        exported: r.decl?.exportedFileId ? { fileId: r.decl.exportedFileId, at: r.exportedAt } : null,
-      };
-    });
-  }
-
+  /**
+   * Clientes ativos do escopo com a declaração do ano (pode não existir), a situação e as contagens
+   * dos documentos. Tudo é filtrado, contado e paginado no banco: a lista não traz o JSON
+   * `extracted` dos documentos nem relê a carteira inteira a cada página.
+   */
   app.get('/elaboration', { preHandler: guard(...LIST_PERMS) }, async (req) => {
+    const user = requireUser(req);
     const q = parse(listQuery, req.query);
-    const extra: SQL[] = [];
+    const conds: SQL[] = [await customerScope(app.ctx, user), eq(customers.status, 'active')];
     if (q.search) {
       const digits = onlyDigits(q.search);
       const or1: SQL[] = [ilike(customers.name, `%${q.search}%`)];
       if (digits.length >= 3) or1.push(ilike(customers.cpfCnpj, `%${digits}%`));
-      extra.push(or(...or1)!);
+      conds.push(or(...or1)!);
     }
-    const all = await loadRows(req, q.year, extra);
-    const statusCounts = Object.fromEntries(STATUS_KEYS.map((s) => [s, all.filter((r) => r.status === s).length]));
-    const filtered = q.status ? all.filter((r) => r.status === q.status) : all;
-    const start = (q.page - 1) * q.pageSize;
+    const ds = docStatsSubquery(db, user.officeId, q.year);
+    const status = elaborationStatusSql(ds);
+    const declJoin = and(eq(declarations.customerId, customers.id), eq(declarations.exerciseYear, q.year));
+
+    const counted = await db
+      .select({ status, n: count() })
+      .from(customers)
+      .leftJoin(declarations, declJoin)
+      .leftJoin(ds, eq(ds.declarationId, declarations.id))
+      .where(and(...conds))
+      .groupBy(sql`1`);
+    const statusCounts = Object.fromEntries(STATUS_KEYS.map((s) => [s, 0])) as Record<ElaborationStatus, number>;
+    for (const r of counted) if (r.status in statusCounts) statusCounts[r.status] = Number(r.n);
+    const total = q.status ? statusCounts[q.status] : Object.values(statusCounts).reduce((a, n) => a + n, 0);
+
+    const rows = await db
+      .select({
+        customerId: customers.id,
+        name: customers.name,
+        cpfCnpj: customers.cpfCnpj,
+        declarationId: declarations.id,
+        sourceFileId: declarations.sourceFileId,
+        exportedFileId: declarations.exportedFileId,
+        exportedAt: files.createdAt,
+        status,
+        total: ds.total,
+        eligible: ds.eligible,
+        processed: ds.processed,
+        errors: ds.errors,
+        programFiles: ds.programFiles,
+        lines: ds.lines,
+        conflicts: ds.conflicts,
+        pendingLines: ds.pendingLines,
+      })
+      .from(customers)
+      .leftJoin(declarations, declJoin)
+      .leftJoin(files, eq(files.id, declarations.exportedFileId))
+      .leftJoin(ds, eq(ds.declarationId, declarations.id))
+      .where(and(...conds, ...(q.status ? [sql`${status} = ${q.status}`] : [])))
+      .orderBy(asc(customers.name), asc(customers.id))
+      .limit(q.pageSize)
+      .offset((q.page - 1) * q.pageSize);
+
     return {
-      data: filtered.slice(start, start + q.pageSize),
-      total: filtered.length,
+      data: rows.map((r) => ({
+        customerId: r.customerId,
+        name: r.name,
+        cpfCnpj: r.cpfCnpj,
+        declarationId: r.declarationId ?? null,
+        status: r.status,
+        counts: countsFromStats(r),
+        sourceFileId: r.sourceFileId ?? null,
+        exported: r.exportedFileId ? { fileId: r.exportedFileId, at: r.exportedAt } : null,
+      })),
+      total,
       page: q.page,
       pageSize: q.pageSize,
-      pages: Math.max(1, Math.ceil(filtered.length / q.pageSize)),
+      pages: Math.max(1, Math.ceil(total / q.pageSize)),
       statusCounts,
     };
   });
@@ -186,30 +211,40 @@ export async function elaborationRoutes(app: FastifyInstance) {
    * Validar: aplica nas linhas da declaração as linhas extraídas aceitas.
    * Novas → incluídas; conflito aceito → substitui os valores da linha existente;
    * conflito sem decisão → fica pendente; recusadas e repetidas → ignoradas.
+   * Cada declaração é validada numa transação com trava na declaração: duas validações ao mesmo
+   * tempo (botão do drawer, validação em lote de um colega, clique duplo) não duplicam linhas, e
+   * uma falha no meio desfaz tudo daquela declaração. Depois recalcula totais e saldo de caixa.
    */
   app.post('/elaboration/validate', { preHandler: guard('elaboration.process', 'pre_declaration.create') }, async (req) => {
     const user = requireUser(req);
     const body = parse(selectionSchema, req.body);
     const ids = await scopedIds(req, body.customerIds);
     const decls = await db
-      .select({ d: declarations, name: customers.name })
+      .select({ id: declarations.id, customerId: declarations.customerId, name: customers.name })
       .from(declarations)
       .innerJoin(customers, eq(customers.id, declarations.customerId))
       .where(and(eq(declarations.officeId, user.officeId), eq(declarations.exerciseYear, body.year), inArray(declarations.customerId, ids), isNull(customers.deletedAt)));
-    const docsByDecl = await loadDocStats(db, decls.map((x) => x.d.id));
+    // dentro da transação tudo passa por `tx` (no PGlite, uma consulta por `db` esperaria a transação)
+    const settings = await getOfficeSettings(db, user.officeId);
     const results = [];
-    for (const { d, name } of decls) {
-      const r = await applyLines(user.officeId, d.id, docsByDecl.get(d.id) ?? []);
-      if (r.inserted || r.updated) await recomputeTotals(db, d.id);
-      const status = await refreshElaborationStatus(db, d.id);
-      results.push({ customerId: d.customerId, name, ...r, status });
+    for (const d of decls) {
+      const r = await db.transaction(async (tx) => {
+        // trava a declaração e relê linhas e extrações já dentro da transação
+        await tx.select({ id: declarations.id }).from(declarations).where(eq(declarations.id, d.id)).for('update');
+        const docs = (await loadDocStats(tx, [d.id])).get(d.id) ?? [];
+        const applied = await applyLines(tx, user.officeId, d.id, docs);
+        if (applied.inserted || applied.updated) await refreshDeclaration(app.ctx, d.id, { db: tx, settings });
+        const status = await refreshElaborationStatus(tx, d.id);
+        return { ...applied, status };
+      });
+      results.push({ customerId: d.customerId, name: d.name, ...r });
     }
     await audit(req, 'elaboration_validate', 'declaration', null, { year: body.year, count: results.length });
     return { results };
   });
 
-  async function applyLines(officeId: string, declarationId: string, docs: DocStat[]) {
-    const items = await listItems(db, declarationId);
+  async function applyLines(exec: DbExecutor, officeId: string, declarationId: string, docs: DocStat[]) {
+    const items = await listItems(exec, declarationId);
     const now = new Date().toISOString();
     let inserted = 0;
     let updated = 0;
@@ -235,11 +270,11 @@ export async function elaborationRoutes(app: FastifyInstance) {
               ...(item.description ? { description: item.description } : {}),
               ...(item.counterpartyName ? { counterpartyName: item.counterpartyName } : {}),
             };
-            await db.update(declarationItems).set(set).where(eq(declarationItems.id, target.id));
+            await exec.update(declarationItems).set(set).where(eq(declarationItems.id, target.id));
             Object.assign(target, set);
             updated++;
           } else {
-            items.push(await insertItem(officeId, declarationId, item, doc));
+            items.push(await insertItem(exec, officeId, declarationId, item, doc));
             inserted++;
           }
         } else {
@@ -260,19 +295,19 @@ export async function elaborationRoutes(app: FastifyInstance) {
             changed = true;
             continue;
           }
-          items.push(await insertItem(officeId, declarationId, item, doc));
+          items.push(await insertItem(exec, officeId, declarationId, item, doc));
           inserted++;
         }
         line.appliedAt = now;
         changed = true;
       }
-      if (changed) await saveExtraction(db, doc, doc.processingStatus, ex);
+      if (changed) await saveExtraction(exec, doc, doc.processingStatus, ex);
     }
     return { inserted, updated, pendingConflicts };
   }
 
-  async function insertItem(officeId: string, declarationId: string, item: DeclarationItem, doc: DocStat): Promise<DeclarationItem> {
-    const [row] = await db
+  async function insertItem(exec: DbExecutor, officeId: string, declarationId: string, item: DeclarationItem, doc: DocStat): Promise<DeclarationItem> {
+    const [row] = await exec
       .insert(declarationItems)
       .values({
         officeId,

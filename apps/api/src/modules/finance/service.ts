@@ -1,7 +1,8 @@
 /**
  * Regras do financeiro: orçamento → envio → aprovação → faturamento (parcelas) → recibos.
  */
-import { and, asc, desc, eq, inArray, ne, sql } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
+import { and, asc, desc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import {
   BUDGET_CATEGORIES,
   applyDiscount,
@@ -13,12 +14,14 @@ import {
   type PriceTableLike,
 } from '@verifco/shared';
 import type { AppContext, AuthUser } from '../../context';
-import { billings, budgets, customers, declarations, installments, paymentMethods, priceTables, users } from '../../db/schema';
+import { billings, budgets, customers, declarations, installments, jobs, paymentMethods, priceTables, users } from '../../db/schema';
 import { randomToken, sha256 } from '../../lib/crypto';
 import { badRequest, conflict, notFound } from '../../lib/errors';
 import { getCustomerForUser } from '../../services/customers';
-import { advanceDeclaration, getOrCreateDeclaration } from '../../services/declarations';
+import { advanceDeclaration, changeDeclarationStatus, getOrCreateDeclaration } from '../../services/declarations';
 import { queueDelivery } from '../../services/delivery';
+// job do módulo de integrações que emite a cobrança no Asaas/Omie (contrato com o financeiro)
+import { BILLING_SYNC_JOB } from '../../integrations/billing-sync';
 import { categoryLabel } from './text';
 
 export type BudgetRow = typeof budgets.$inferSelect;
@@ -29,6 +32,13 @@ export type PriceTableRow = typeof priceTables.$inferSelect;
 
 /** Métodos de pagamento que geram cobrança em provedor externo (módulo de integrações). */
 export const EXTERNAL_PROVIDERS = ['asaas', 'omie'] as const;
+
+/**
+ * Categorias de orçamento que acompanham a declaração IRPF no Kanban. Holding, consultoria,
+ * Carnê-Leão etc. são serviços à parte e não mexem no status da declaração.
+ */
+export const DECLARATION_BUDGET_CATEGORIES = ['irpf', 'irpf_rectification'] as const;
+export const movesDeclaration = (b: Pick<BudgetRow, 'category'>) => (DECLARATION_BUDGET_CATEGORIES as readonly string[]).includes(b.category);
 
 /** Validade do link público de aprovação. */
 export const APPROVAL_LINK_DAYS = 30;
@@ -116,24 +126,93 @@ export function paymentStatusOf(list: SerializedInstallment[] | null): 'not_bill
   return 'open';
 }
 
+/** Situação da emissão da cobrança integrada (último job `billing.sync_external` do faturamento). */
+export interface ExternalSyncView {
+  status: 'queued' | 'running' | 'done' | 'failed';
+  error: string | null;
+  attempts: number;
+  maxAttempts: number;
+  at: Date;
+}
+
+/** Último job de emissão de cada faturamento (um só SELECT para a lista toda). */
+async function latestSyncJobs(ctx: AppContext, bills: BillingRow[]): Promise<Map<string, ExternalSyncView>> {
+  const map = new Map<string, ExternalSyncView>();
+  if (!bills.length) return map;
+  const billingIds = bills.map((b) => b.id);
+  const officeIds = [...new Set(bills.map((b) => b.officeId))];
+  const billingIdExpr = sql<string>`${jobs.payload}->>'billingId'`;
+  const rows = await ctx.db
+    .select({
+      billingId: billingIdExpr,
+      status: jobs.status,
+      error: jobs.error,
+      attempts: jobs.attempts,
+      maxAttempts: jobs.maxAttempts,
+      createdAt: jobs.createdAt,
+      finishedAt: jobs.finishedAt,
+    })
+    .from(jobs)
+    .where(and(eq(jobs.type, BILLING_SYNC_JOB), inArray(jobs.officeId, officeIds), inArray(billingIdExpr, billingIds)))
+    .orderBy(desc(jobs.createdAt));
+  for (const r of rows) {
+    if (map.has(r.billingId)) continue;
+    map.set(r.billingId, {
+      status: r.status as ExternalSyncView['status'],
+      error: r.error,
+      attempts: r.attempts,
+      maxAttempts: r.maxAttempts,
+      at: r.finishedAt ?? r.createdAt,
+    });
+  }
+  return map;
+}
+
+/**
+ * Situação da cobrança integrada para a tela: `failed` (a fila desistiu; precisa "Emitir de
+ * novo"), `retrying` (falhou e a fila tenta de novo), `pending` (na fila ou emitindo), `missing`
+ * (há parcela em aberto sem cobrança e nenhuma emissão pendente) ou `ok`.
+ */
+export function externalSyncState(provider: string | null, list: SerializedInstallment[], job: ExternalSyncView | null) {
+  if (!provider) return null;
+  const pending = list.filter((i) => !i.externalId && (i.status === 'open' || i.status === 'overdue')).length;
+  let state: 'ok' | 'pending' | 'retrying' | 'failed' | 'missing';
+  if (!pending) state = 'ok';
+  else if (job?.status === 'failed') state = 'failed';
+  else if (job?.status === 'queued' && job.error) state = 'retrying';
+  else if (job?.status === 'queued' || job?.status === 'running') state = 'pending';
+  else state = 'missing';
+  const error = state === 'failed' || state === 'retrying' || state === 'missing' ? (job?.error ?? null) : null;
+  return { state, pendingInstallments: pending, error, attempts: job?.attempts ?? 0, maxAttempts: job?.maxAttempts ?? 0, at: job?.at ?? null };
+}
+
 /** Monta a resposta dos orçamentos com método, tabela, faturamento e parcelas. */
 export async function serializeBudgets(ctx: AppContext, rows: BudgetRow[]) {
   const { db } = ctx;
   if (!rows.length) return [];
   const methodIds = [...new Set(rows.map((r) => r.paymentMethodId).filter((x): x is string => Boolean(x)))];
   const tableIds = [...new Set(rows.map((r) => r.priceTableId).filter((x): x is string => Boolean(x)))];
-  const methods = methodIds.length ? await db.select().from(paymentMethods).where(inArray(paymentMethods.id, methodIds)) : [];
-  const tables = tableIds.length ? await db.select().from(priceTables).where(inArray(priceTables.id, tableIds)) : [];
+  // mapas por id: o relatório geral passa todos os orçamentos do ano (nada de find/filter em laço)
+  const methods = new Map((methodIds.length ? await db.select().from(paymentMethods).where(inArray(paymentMethods.id, methodIds)) : []).map((m) => [m.id, m]));
+  const tables = new Map((tableIds.length ? await db.select().from(priceTables).where(inArray(priceTables.id, tableIds)) : []).map((t) => [t.id, t]));
   const bills = await db.select().from(billings).where(inArray(billings.budgetId, rows.map((r) => r.id)));
+  const billByBudget = new Map(bills.map((b) => [b.budgetId, b]));
   const insts = bills.length
     ? await db.select().from(installments).where(inArray(installments.billingId, bills.map((b) => b.id))).orderBy(asc(installments.number))
     : [];
+  const instsByBilling = new Map<string, InstallmentRow[]>();
+  for (const i of insts) {
+    const list = instsByBilling.get(i.billingId);
+    if (list) list.push(i);
+    else instsByBilling.set(i.billingId, [i]);
+  }
+  const syncJobs = await latestSyncJobs(ctx, bills.filter((b) => b.provider));
   const today = todayIso();
   return rows.map((b) => {
-    const m = methods.find((x) => x.id === b.paymentMethodId);
-    const t = tables.find((x) => x.id === b.priceTableId);
-    const bill = bills.find((x) => x.budgetId === b.id);
-    const list = bill ? insts.filter((i) => i.billingId === bill.id).map((i) => serializeInstallment(i, today)) : null;
+    const m = b.paymentMethodId ? methods.get(b.paymentMethodId) : undefined;
+    const t = b.priceTableId ? tables.get(b.priceTableId) : undefined;
+    const bill = billByBudget.get(b.id);
+    const list = bill ? (instsByBilling.get(bill.id) ?? []).map((i) => serializeInstallment(i, today)) : null;
     return {
       id: b.id,
       customerId: b.customerId,
@@ -165,7 +244,15 @@ export async function serializeBudgets(ctx: AppContext, rows: BudgetRow[]) {
       updatedAt: b.updatedAt,
       paymentStatus: paymentStatusOf(list),
       billing: bill
-        ? { id: bill.id, totalCents: bill.totalCents, provider: bill.provider, createdAt: bill.createdAt, ...billingTotals(list!), installments: list! }
+        ? {
+            id: bill.id,
+            totalCents: bill.totalCents,
+            provider: bill.provider,
+            createdAt: bill.createdAt,
+            ...billingTotals(list!),
+            installments: list!,
+            externalSync: externalSyncState(bill.provider, list!, syncJobs.get(bill.id) ?? null),
+          }
         : null,
     };
   });
@@ -283,7 +370,7 @@ export async function issueApprovalLink(ctx: AppContext, budget: BudgetRow) {
     .set({ approvalTokenHash: sha256(token), sentAt: now, status: 'sent', rejectedAt: null, updatedAt: now })
     .where(eq(budgets.id, budget.id))
     .returning();
-  await advanceDeclaration(ctx.db, await declarationOf(ctx, row), 'budget_sent');
+  if (movesDeclaration(row)) await advanceDeclaration(ctx.db, await declarationOf(ctx, row), 'budget_sent');
   return { budget: row, token, link: approvalLink(ctx, token) };
 }
 
@@ -355,11 +442,69 @@ export async function approveBudget(ctx: AppContext, budget: BudgetRow, approved
   if (result.created) {
     if (result.billing.provider) {
       // contrato com o módulo de integrações: ele emite a cobrança e grava externalId/externalUrl nas parcelas
-      await ctx.jobs.enqueue('billing.sync_external', { billingId: result.billing.id }, { officeId: result.budget.officeId, idempotencyKey: result.billing.id });
+      await ctx.jobs.enqueue(BILLING_SYNC_JOB, { billingId: result.billing.id }, { officeId: result.budget.officeId, idempotencyKey: result.billing.id });
     }
-    await advanceDeclaration(db, await declarationOf(ctx, result.budget), 'budget_approved');
+    if (movesDeclaration(result.budget)) await advanceDeclaration(db, await declarationOf(ctx, result.budget), 'budget_approved');
   }
   return result;
+}
+
+/**
+ * "Emitir de novo": enfileira outra vez a emissão da cobrança integrada com uma chave nova (a
+ * fila devolve o job antigo para a mesma chave, inclusive quando ele falhou). Seguro repetir:
+ * o executor só trata parcelas em aberto sem `externalId` e usa o id da parcela como referência
+ * no provedor. Não duplica quando já há uma emissão na fila.
+ */
+export async function retryExternalBilling(ctx: AppContext, billing: BillingRow, userId: string | null) {
+  if (!billing.provider) throw badRequest('Este faturamento não tem cobrança integrada.');
+  const pending = await ctx.db
+    .select({ id: installments.id })
+    .from(installments)
+    .where(and(eq(installments.billingId, billing.id), isNull(installments.externalId), inArray(installments.status, ['open', 'overdue'])))
+    .limit(1);
+  if (!pending.length) throw conflict('Todas as parcelas em aberto já têm cobrança emitida.');
+  const running = await ctx.db.query.jobs.findFirst({
+    where: and(
+      eq(jobs.type, BILLING_SYNC_JOB),
+      eq(jobs.officeId, billing.officeId),
+      sql`${jobs.payload}->>'billingId' = ${billing.id}`,
+      inArray(jobs.status, ['queued', 'running']),
+    ),
+  });
+  if (running) return { job: running, alreadyQueued: true };
+  const job = await ctx.jobs.enqueue(BILLING_SYNC_JOB, { billingId: billing.id }, { officeId: billing.officeId, userId, idempotencyKey: `${billing.id}:retry:${randomUUID()}` });
+  return { job, alreadyQueued: false };
+}
+
+/**
+ * Orçamento IRPF recusado, cancelado, de volta a rascunho ou excluído: se a declaração só tinha
+ * andado por causa dele ("Orçamento enviado") e não há outro orçamento IRPF enviado ou aprovado
+ * no exercício, ela volta para "Não iniciado". Qualquer outro andamento é mantido.
+ */
+export async function rewindDeclarationAfterBudget(ctx: AppContext, budget: BudgetRow) {
+  if (!movesDeclaration(budget)) return;
+  const decl = await ctx.db.query.declarations.findFirst({
+    where: budget.declarationId
+      ? eq(declarations.id, budget.declarationId)
+      : and(eq(declarations.customerId, budget.customerId), eq(declarations.exerciseYear, budget.exerciseYear)),
+  });
+  if (!decl || decl.substatus !== 'budget_sent') return;
+  const others = await ctx.db
+    .select({ id: budgets.id })
+    .from(budgets)
+    .where(
+      and(
+        eq(budgets.officeId, budget.officeId),
+        eq(budgets.customerId, budget.customerId),
+        eq(budgets.exerciseYear, budget.exerciseYear),
+        ne(budgets.id, budget.id),
+        inArray(budgets.category, [...DECLARATION_BUDGET_CATEGORIES]),
+        inArray(budgets.status, ['sent', 'approved']),
+      ),
+    )
+    .limit(1);
+  if (others.length) return;
+  await changeDeclarationStatus(ctx.db, decl, 'not_started', { by: 'system' });
 }
 
 export async function rejectBudget(ctx: AppContext, budget: BudgetRow) {
@@ -368,6 +513,7 @@ export async function rejectBudget(ctx: AppContext, budget: BudgetRow) {
   if (budget.status === 'rejected') return budget;
   const now = new Date();
   const [row] = await ctx.db.update(budgets).set({ status: 'rejected', rejectedAt: now, updatedAt: now }).where(eq(budgets.id, budget.id)).returning();
+  await rewindDeclarationAfterBudget(ctx, row);
   return row;
 }
 
@@ -385,6 +531,7 @@ export async function applyStatus(ctx: AppContext, budget: BudgetRow, status: st
     case 'canceled': {
       if (budget.status === 'approved') throw conflict('Orçamento aprovado não pode voltar de status.');
       const [row] = await ctx.db.update(budgets).set({ status, updatedAt: new Date() }).where(eq(budgets.id, budget.id)).returning();
+      await rewindDeclarationAfterBudget(ctx, row);
       return row;
     }
     default:

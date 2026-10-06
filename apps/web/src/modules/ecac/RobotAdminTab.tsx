@@ -58,7 +58,7 @@ export function RobotAdminTab() {
         <div className="vf-stack">
           <span className="vf-muted">
             O robô reúne os dados do eCAC por três caminhos: a integração oficial <strong>SERPRO Integra Contador</strong> (procuração e caixa postal, sem depender do seu computador), a{' '}
-            <strong>extensão do navegador</strong> (envia o que você abre no eCAC) e o <strong>sincronizador</strong> (envia os arquivos .DEC, .REC e .DBK do programa IRPF). Nada é simulado: sem uma dessas fontes, os painéis ficam vazios.
+            <strong>extensão do navegador</strong> (envia o que você abre no eCAC) e o <strong>sincronizador</strong> (arquiva os arquivos .DEC, .REC e .DBK do programa IRPF; o .REC marca a declaração como transmitida, e o conteúdo não é lido). Nada é simulado: sem uma dessas fontes, os painéis ficam vazios.
           </span>
           {o?.lastOfficeSync && <JobAlert job={o.lastOfficeSync} title="Sincronização geral" done={`${String(o.lastOfficeSync.result?.ok ?? 0)} de ${String(o.lastOfficeSync.result?.total ?? 0)} cliente(s) sincronizado(s).`} />}
         </div>

@@ -64,7 +64,7 @@ Não há registro central para editar: criar a pasta basta.
 | Serviço | Uso |
 | --- | --- |
 | `customers.ts` | `customerScope`, `getCustomerForUser`, `publicCustomer` |
-| `declarations.ts` | `getOrCreateDeclaration`, `setDeclarationSubstatus`, `advanceDeclaration`, `recomputeTotals`, `listItems` |
+| `declarations.ts` | `getOrCreateDeclaration`; status: `changeDeclarationStatus` (porta única: finalizar exige `declaration.finish`, situação eCAC coerente), `advanceDeclaration` (só avança), `syncStatusWithEcac` (recibo/situação eCAC → etapa; finalizada não regride); `refreshDeclaration` (totais + saldo de caixa: chame depois de mexer em linhas ou outros gastos), `recomputeTotals`, `listItems`, `computeCashAnalysis` |
 | `delivery.ts` | `queueDelivery` (e-mail/WhatsApp por template ou texto, com idempotência e anexos) |
 | `pdf.ts` | `PdfBuilder` + `loadBranding` (logo e cores do escritório) |
 | `xlsx.ts` | `buildWorkbook`, `readSheet`, `parseMoneyToCents`, `parseDate` |

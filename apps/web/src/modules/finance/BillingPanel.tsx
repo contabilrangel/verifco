@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react';
-import { CheckCircle2, ExternalLink, FileText, Mail, MessageCircle, MoreHorizontal, Pencil, Undo2 } from 'lucide-react';
+import { CheckCircle2, ExternalLink, FileText, Mail, MessageCircle, MoreHorizontal, Pencil, RefreshCw, Undo2 } from 'lucide-react';
 import { todayIso } from '@verifco/shared';
 import { Alert, Button, ConfirmDialog, IconButton, Input, Menu, MenuItem, Modal, MoneyInput, Stat } from '../../ds';
 import { ApiError, api } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { useAction } from '../../lib/hooks';
 import { formatDate, formatDateTime, formatMoney } from '../../lib/format';
-import type { Billing, Installment } from './types';
+import type { Billing, ExternalSync, Installment } from './types';
 import { InstallmentStatusTag } from './ui';
 
 type Dialog =
@@ -17,6 +17,53 @@ type Dialog =
   | null;
 
 const PROVIDERS: Record<string, string> = { asaas: 'Asaas', omie: 'Omie' };
+const providerName = (p: string | null) => (p ? (PROVIDERS[p] ?? p) : 'provedor');
+
+/**
+ * Situação da emissão da cobrança integrada: em andamento, falhando (a fila ainda tenta) ou
+ * falhou (precisa "Emitir de novo" depois de corrigir a causa).
+ */
+export function ExternalSyncAlert({ billing, sync, invalidate }: { billing: Billing; sync: ExternalSync | null; invalidate: string[][] }) {
+  const { can } = useAuth();
+  const retry = useAction(() => api.post(`/finance/billings/${billing.id}/sync`), {
+    success: 'Emissão da cobrança enviada para a fila.',
+    invalidate,
+  });
+  if (!sync || sync.state === 'ok') return null;
+  const name = providerName(billing.provider);
+  const n = sync.pendingInstallments;
+  if (sync.state === 'pending') {
+    return <Alert tone="primary">A cobrança está sendo emitida no {name}. Os links de pagamento aparecem aqui assim que ficarem prontos.</Alert>;
+  }
+  if (sync.state === 'retrying') {
+    return (
+      <Alert tone="warning" title={`A emissão no ${name} falhou (tentativa ${sync.attempts} de ${sync.maxAttempts})`}>
+        {sync.error ?? 'Erro desconhecido.'} O Verifco tenta de novo em instantes.
+      </Alert>
+    );
+  }
+  return (
+    <Alert tone="danger" title={sync.state === 'failed' ? `Não foi possível emitir a cobrança no ${name}` : `${n} parcela(s) em aberto sem cobrança no ${name}`}>
+      <div className="vf-stack" style={{ '--gap': '8px' } as React.CSSProperties}>
+        {sync.error && <span>{sync.error}</span>}
+        <span>
+          {n} parcela(s) em aberto ainda sem boleto/Pix.{' '}
+          {sync.error
+            ? 'Corrija a causa e emita de novo'
+            : 'Confira a integração em Administração › Integrações e os dados do cliente (CPF, e-mail e endereço) e emita de novo'}
+          : as parcelas que já têm cobrança não são duplicadas.
+        </span>
+        {can('billing.edit') && (
+          <span>
+            <Button size="sm" kind="secondary" icon={<RefreshCw />} loading={retry.isPending} onClick={() => retry.mutate(undefined)}>
+              Emitir de novo
+            </Button>
+          </span>
+        )}
+      </div>
+    </Alert>
+  );
+}
 
 export function BillingPanel({ billing, customerId, contact }: { billing: Billing; customerId: string; contact: { email: boolean; mobile: boolean } }) {
   const { can } = useAuth();
@@ -52,9 +99,7 @@ export function BillingPanel({ billing, customerId, contact }: { billing: Billin
         <Stat label="Em aberto" value={formatMoney(billing.openCents)} />
         <Stat label="Vencido" value={formatMoney(billing.overdueCents)} tone={billing.overdueCents > 0 ? 'danger' : undefined} />
       </div>
-      {billing.provider && billing.installments.every((i) => !i.externalUrl) && (
-        <Alert tone="primary">A cobrança está sendo emitida no {PROVIDERS[billing.provider] ?? billing.provider}. Os links de pagamento aparecem aqui assim que ficarem prontos.</Alert>
-      )}
+      <ExternalSyncAlert billing={billing} sync={billing.externalSync ?? null} invalidate={invalidate} />
       <div className="vf-table-wrap vf-fin-subtable">
         <table className="vf-table">
           <thead>
@@ -134,8 +179,8 @@ export function BillingPanel({ billing, customerId, contact }: { billing: Billin
         </table>
       </div>
 
-      <ReceiveModal inst={dialog?.kind === 'receive' ? dialog.inst : null} onClose={close} invalidate={invalidate} />
-      <EditInstallmentModal inst={dialog?.kind === 'edit' ? dialog.inst : null} onClose={close} invalidate={invalidate} />
+      <ReceiveModal inst={dialog?.kind === 'receive' ? dialog.inst : null} provider={billing.provider} onClose={close} invalidate={invalidate} />
+      <EditInstallmentModal inst={dialog?.kind === 'edit' ? dialog.inst : null} provider={billing.provider} onClose={close} invalidate={invalidate} />
       <ConfirmDialog
         open={dialog?.kind === 'send'}
         title="Enviar recibo"
@@ -152,7 +197,11 @@ export function BillingPanel({ billing, customerId, contact }: { billing: Billin
       <ConfirmDialog
         open={dialog?.kind === 'reopen'}
         title="Desfazer recebimento"
-        message="A parcela volta a ficar em aberto. Use quando o recebimento foi lançado por engano."
+        message={
+          dialog?.kind === 'reopen' && dialog.inst.externalId
+            ? `A parcela tem cobrança emitida no ${providerName(billing.provider)}: com a integração ativa, o recebimento só pode ser desfeito por lá (o Verifco acompanha a cobrança).`
+            : 'A parcela volta a ficar em aberto. Use quando o recebimento foi lançado por engano.'
+        }
         confirmLabel="Desfazer"
         danger
         loading={reopen.isPending}
@@ -209,7 +258,19 @@ function InstallmentMenu({ inst, onPick, contact }: { inst: Installment; onPick:
   );
 }
 
-function ReceiveModal({ inst, onClose, invalidate }: { inst: Installment | null; onClose: () => void; invalidate: string[][] }) {
+/** Aviso das parcelas com cobrança no provedor: com a integração ativa, a mudança é feita por lá. */
+function ExternalNotice({ inst, provider, action }: { inst: Installment | null; provider: string | null; action: string }) {
+  if (!inst?.externalId) return null;
+  const name = providerName(provider);
+  return (
+    <Alert tone="warning">
+      Esta parcela tem cobrança emitida no {name}. Com a integração ativa, {action} pelo {name}, para o cliente não ser cobrado em dobro; o Verifco
+      atualiza a parcela pelo {provider === 'omie' ? 'acompanhamento periódico do Omie' : 'aviso do Asaas'}.
+    </Alert>
+  );
+}
+
+function ReceiveModal({ inst, provider, onClose, invalidate }: { inst: Installment | null; provider: string | null; onClose: () => void; invalidate: string[][] }) {
   const [paidAt, setPaidAt] = useState(todayIso());
   const [amount, setAmount] = useState(0);
   useEffect(() => {
@@ -242,6 +303,7 @@ function ReceiveModal({ inst, onClose, invalidate }: { inst: Installment | null;
       }
     >
       <div className="vf-stack">
+        <ExternalNotice inst={inst} provider={provider} action={provider === 'omie' ? 'baixe a conta a receber' : 'use “Confirmar recebimento em dinheiro”'} />
         <span className="vf-muted">
           Vencimento em {inst ? formatDate(inst.dueDate) : ''} · valor de {inst ? formatMoney(inst.amountCents) : ''}.
         </span>
@@ -254,7 +316,7 @@ function ReceiveModal({ inst, onClose, invalidate }: { inst: Installment | null;
   );
 }
 
-function EditInstallmentModal({ inst, onClose, invalidate }: { inst: Installment | null; onClose: () => void; invalidate: string[][] }) {
+function EditInstallmentModal({ inst, provider, onClose, invalidate }: { inst: Installment | null; provider: string | null; onClose: () => void; invalidate: string[][] }) {
   const [dueDate, setDueDate] = useState('');
   const [amount, setAmount] = useState(0);
   useEffect(() => {
@@ -287,10 +349,10 @@ function EditInstallmentModal({ inst, onClose, invalidate }: { inst: Installment
       }
     >
       <div className="vf-stack">
-        {inst?.externalId && <Alert tone="warning">Esta parcela já tem cobrança emitida no provedor. O valor só pode ser alterado por lá.</Alert>}
+        <ExternalNotice inst={inst} provider={provider} action="altere o vencimento e o valor" />
         <div className="vf-grid" style={{ '--cols': 2 } as React.CSSProperties}>
           <Input label="Vencimento" type="date" required value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
-          <MoneyInput label="Valor" required value={amount} onChange={setAmount} disabled={Boolean(inst?.externalId)} />
+          <MoneyInput label="Valor" required value={amount} onChange={setAmount} />
         </div>
         <span className="vf-text-xs vf-muted">O total do faturamento é recalculado com a soma das parcelas.</span>
         {err && <span className="vf-field__error">{err}</span>}

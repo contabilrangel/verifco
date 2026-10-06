@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import JSZip from 'jszip';
+import { declarationTotals, type ItemKind } from '@verifco/shared';
 import { declarationItems, declarations } from '../src/db/schema';
 import { getOrCreateDeclaration } from '../src/services/declarations';
 import { VALID_CPFS, createEmployee, createTestEnv, registerOffice, type TestEnv } from './helpers';
@@ -58,6 +59,10 @@ describe('elaboração', () => {
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({ source: 'document', valueCents: 5_000_000, withheldCents: 400_000 });
     expect(decl!.totalIncomeCents).toBeGreaterThan(0);
+    // INT-11: validar também regrava o saldo de caixa (alerta do dashboard)
+    expect(decl!.cashBalanceCents).not.toBeNull();
+    const cash = await o.api.get(`/api/declarations/${decl!.id}/cash-analysis`);
+    expect(decl!.cashBalanceCents).toBe(cash.body.balanceCents);
     // validar de novo não duplica
     await o.api.post('/api/elaboration/validate', { year: 2026, customerIds: [o.customerId] });
     expect(await env.ctx.db.select().from(declarationItems).where(eq(declarationItems.declarationId, decl!.id))).toHaveLength(1);
@@ -151,6 +156,77 @@ describe('elaboração', () => {
     detail = await o.api.get(`/api/elaboration/customers/${o.customerId}?year=2026`);
     expect(detail.body.documents[0].error).toContain('JSON');
     expect((await o.api.get('/api/elaboration/jobs')).body[0].result).toMatchObject({ processed: 0, failed: 1 });
+  });
+
+  // DAD-6: a central filtra, conta e pagina no banco, com as mesmas regras do detalhe
+  it('lista paginada e filtrada no banco com as mesmas situações e contagens do detalhe', async () => {
+    const office = await registerOffice(env);
+    const tok = (await office.api.post('/api/robot/tokens', { name: 'Sync', scope: 'sync' })).body.token as string;
+    const names = ['Ana', 'Bruno', 'Carla', 'Davi', 'Eva'];
+    const ids: string[] = [];
+    for (const [i, name] of names.entries()) ids.push((await office.api.post('/api/customers', { name, cpfCnpj: VALID_CPFS[i] })).body.id);
+    const up = (i: number, name: string, content: Buffer, type = 'application/pdf') =>
+      send(env, tok, 'POST', '/api/sync/files', { multipart: multipart({ cpf: VALID_CPFS[i], ano: '2026' }, { name, content, type }) });
+    const process = async (i: number, reply: string) => {
+      env.providers.aiReplies.push(reply);
+      await office.api.post('/api/elaboration/process', { year: 2026, customerIds: [ids[i]] });
+      await env.ctx.jobs.drain();
+    };
+    // Ana: sem arquivos · Bruno: PDF não processado · Carla: aguardando validação (2 linhas)
+    // Davi: conflito com linha lançada · Eva: só o .DEC do programa (não vai para a IA)
+    await up(1, 'informe.pdf', fakePdf('bruno'));
+    await up(2, 'informe.pdf', fakePdf('carla'));
+    await process(2, JSON.stringify({ items: [{ kind: 'income_pj', counterpartyDoc: '11222333000181', valueCents: 100 }, { kind: 'payment', description: 'Clínica', valueCents: 50, extra: { nature: 'health' } }] }));
+    const davi = await getOrCreateDeclaration(env.ctx.db, office.officeId, ids[3], 2026);
+    await env.ctx.db.insert(declarationItems).values({ officeId: office.officeId, declarationId: davi.id, kind: 'income_pj', counterpartyDoc: '11222333000181', valueCents: 4_000_000 });
+    await up(3, 'informe.pdf', fakePdf('davi'));
+    await process(3, informe(5_000_000, 400_000));
+    await up(4, `${VALID_CPFS[4]}-IRPF-A-2026-2025-ORIGI.DEC`, Buffer.from('dec'), 'application/octet-stream');
+
+    const expected = { Ana: 'no_files', Bruno: 'not_processed', Carla: 'awaiting_validation', Davi: 'conflict', Eva: 'ok' };
+    const all = await office.api.get('/api/elaboration?year=2026&pageSize=200');
+    expect(all.body.total).toBe(5);
+    expect(Object.fromEntries(all.body.data.map((r: { name: string; status: string }) => [r.name, r.status]))).toEqual(expected);
+    expect(all.body.statusCounts).toMatchObject({ no_files: 1, not_processed: 1, awaiting_validation: 1, conflict: 1, ok: 1, exported: 0 });
+    // contagens calculadas no banco = contagens do detalhe (que lê as extrações)
+    for (const row of all.body.data) {
+      const detail = await office.api.get(`/api/elaboration/customers/${row.customerId}?year=2026`);
+      expect(row.counts).toEqual(detail.body.counts);
+      expect(row.status).toBe(detail.body.status);
+    }
+    expect(all.body.data.find((r: { name: string }) => r.name === 'Carla').counts).toMatchObject({ total: 1, eligible: 1, processed: 1, lines: 2, pendingLines: 2, conflicts: 0 });
+    expect(all.body.data.find((r: { name: string }) => r.name === 'Eva').counts).toMatchObject({ total: 1, eligible: 0, programFiles: 1 });
+
+    // paginação em ordem alfabética e filtro por situação com o total do filtro
+    const p2 = await office.api.get('/api/elaboration?year=2026&pageSize=2&page=2');
+    expect(p2.body).toMatchObject({ total: 5, page: 2, pages: 3 });
+    expect(p2.body.data.map((r: { name: string }) => r.name)).toEqual(['Carla', 'Davi']);
+    const conflicts = await office.api.get('/api/elaboration?year=2026&status=conflict');
+    expect(conflicts.body).toMatchObject({ total: 1, pages: 1 });
+    expect(conflicts.body.data.map((r: { name: string }) => r.name)).toEqual(['Davi']);
+    expect(conflicts.body.statusCounts.no_files).toBe(1);
+    const byCpf = await office.api.get(`/api/elaboration?year=2026&search=${VALID_CPFS[2].slice(0, 6)}`);
+    expect(byCpf.body.data.map((r: { name: string }) => r.name)).toEqual(['Carla']);
+  });
+
+  // DAD-8: validações simultâneas da mesma declaração não duplicam linhas nem inflam totais
+  it('validações simultâneas aplicam cada linha uma vez só', async () => {
+    const o = await setup(5);
+    await o.upload('a.pdf', fakePdf('a'));
+    await o.upload('b.pdf', fakePdf('b'));
+    env.providers.aiReplies.push(informe(1_000_000, 0), JSON.stringify({ items: [{ kind: 'income_exempt', description: 'Poupança', valueCents: 20_000, extra: { nature: 'financial_exempt' } }] }));
+    await o.api.post('/api/elaboration/process', { year: 2026, customerIds: [o.customerId] });
+    await env.ctx.jobs.drain();
+    const body = { year: 2026, customerIds: [o.customerId] };
+    const results = await Promise.all([o.api.post('/api/elaboration/validate', body), o.api.post('/api/elaboration/validate', body), o.api.post('/api/elaboration/validate', body)]);
+    expect(results.map((r) => r.status)).toEqual([200, 200, 200]);
+    expect(results.reduce((a, r) => a + r.body.results[0].inserted, 0)).toBe(2);
+    const decl = await env.ctx.db.query.declarations.findFirst({ where: eq(declarations.customerId, o.customerId) });
+    const items = await env.ctx.db.select().from(declarationItems).where(eq(declarationItems.declarationId, decl!.id));
+    expect(items).toHaveLength(2);
+    // totais gravados batem com as linhas (nada contado em dobro)
+    expect(decl!.totalIncomeCents).toBe(declarationTotals(items.map((i) => ({ ...i, kind: i.kind as ItemKind }))).totalIncomeCents);
+    expect(decl!.totalIncomeCents).toBeGreaterThanOrEqual(1_000_000);
   });
 
   it('permissões e isolamento entre escritórios', async () => {

@@ -13,7 +13,7 @@ import {
 } from '@verifco/shared';
 import type { AppContext } from '../../context';
 import { customers, darfs, declarations, ecacRecords, procurators } from '../../db/schema';
-import { getOrCreateDeclaration } from '../../services/declarations';
+import { getOrCreateDeclaration, syncStatusWithEcac } from '../../services/declarations';
 import { getOfficeSettings } from '../../services/settings';
 import type { CustomerRow } from '../../services/customers';
 import type { UploadedFile } from '../../services/uploads';
@@ -44,7 +44,8 @@ const int = (v: unknown): number | null => {
  * - `procuration`: situação, validade e nível gov.br do cliente;
  * - `cnd`: situação da CND do cliente;
  * - `mailbox_message`: recalcula as mensagens não lidas da caixa postal;
- * - `declaration`: situação no eCAC, tributação, retificadora e recibo da declaração do ano;
+ * - `declaration`: situação no eCAC, tributação, retificadora e recibo da declaração do ano, e a
+ *   etapa/subestado do Kanban (transmitida → subestado da situação eCAC; finalizada não regride);
  * - `darf`: cria a guia em "Acompanhamento de DARF" (origem `ecac`).
  * Campos fora do formato esperado são guardados em `data`, mas não alteram o cadastro.
  */
@@ -123,15 +124,20 @@ export async function saveEcacRecord(
   } else if (kind === 'declaration' && year) {
     const status = keyOf(ECAC_DECLARATION_STATUS, data.status);
     const taxation = keyOf(TAXATION_TYPES, data.taxation);
+    const receiptNumber = typeof data.receiptNumber === 'string' && data.receiptNumber.trim() ? data.receiptNumber.trim().slice(0, 60) : null;
     const set: Partial<typeof declarations.$inferSelect> = {};
     if (status) set.ecacStatus = status;
     if (taxation) set.taxation = taxation;
     if (typeof data.isRectification === 'boolean') set.isRectification = data.isRectification;
-    if (typeof data.receiptNumber === 'string' && data.receiptNumber.trim()) set.receiptNumber = data.receiptNumber.trim().slice(0, 60);
+    if (receiptNumber) set.receiptNumber = receiptNumber;
     if (Object.keys(set).length) {
       const decl = await getOrCreateDeclaration(db, officeId, customer.id, year);
-      await db.update(declarations).set({ ...set, updatedAt: now }).where(eq(declarations.id, decl.id));
+      const [updated] = await db.update(declarations).set({ ...set, updatedAt: now }).where(eq(declarations.id, decl.id)).returning();
+      // a declaração aparece no eCAC (recibo ou situação conhecida): foi transmitida. A etapa do
+      // Kanban segue a situação eCAC pelas mesmas regras do resumo da declaração.
+      const row = await syncStatusWithEcac(db, decl, updated, { transmitted: Boolean(receiptNumber || (status && status !== 'unknown')) });
       effects.push('declaration');
+      if (row.substatus !== decl.substatus) effects.push('declaration_status');
     }
   } else if (kind === 'darf') {
     const valueCents = int(data.valueCents);

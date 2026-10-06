@@ -18,7 +18,7 @@ import { randomCode, sha256 } from '../../lib/crypto';
 import { badRequest, conflict, forbidden, notFound } from '../../lib/errors';
 import { audit, can, dateStr, guard, optionalText, paginate, parse, requirePermission, requireUser, uuidParam, yearSchema } from '../../lib/http';
 import { customerScope, getCustomerForUser, publicCustomer } from '../../services/customers';
-import { getOrCreateDeclaration, setDeclarationSubstatus } from '../../services/declarations';
+import { assertCanSetSubstatus, changeDeclarationStatus, getOrCreateDeclaration } from '../../services/declarations';
 import { queueDelivery } from '../../services/delivery';
 import { PdfBuilder, loadBranding } from '../../services/pdf';
 import { CERTIFICATE_TYPES, readUploads } from '../../services/uploads';
@@ -311,6 +311,7 @@ export async function customerRoutes(app: FastifyInstance) {
       .set({ address: clean(body.address), secondaryAddress: clean(body.secondaryAddress), updatedAt: new Date() })
       .where(eq(customers.id, c.id))
       .returning();
+    await audit(req, 'update_address', 'customer', c.id);
     return publicCustomer(row);
   });
 
@@ -448,9 +449,12 @@ export async function customerRoutes(app: FastifyInstance) {
       case 'substatus': {
         const v = parse(z.enum(Object.keys(DECLARATION_SUBSTATUS) as [DeclarationSubstatus, ...DeclarationSubstatus[]]), body.value);
         if (!body.year) throw badRequest('Informe o ano-exercício.');
+        // mesma regra do Kanban: conferida antes do laço para não finalizar o lote pela metade
+        assertCanSetSubstatus(user, v);
         for (const cid of ids) {
           const d = await getOrCreateDeclaration(db, user.officeId, cid, body.year);
-          await setDeclarationSubstatus(db, d.id, v);
+          const row = await changeDeclarationStatus(db, d, v, { by: user });
+          if (row.substatus !== d.substatus) await audit(req, 'substatus', 'declaration', d.id, { from: d.substatus, to: v, bulk: true });
         }
         break;
       }
@@ -475,6 +479,8 @@ export async function customerRoutes(app: FastifyInstance) {
       .where(body.ids?.length ? and(where, inArray(customers.id, body.ids)) : where)
       .orderBy(asc(customers.name));
     const { groups, decls } = await loadExtras(rows.map((r) => r.c.id), q.year);
+    // exportação em massa de dados pessoais (CPF, e-mail, telefone): fica na trilha de auditoria
+    await audit(req, 'export', 'customer', null, { count: rows.length, filters: body.filters ?? null, ids: body.ids?.length ?? 0 });
     const xlsx = await buildWorkbook([
       {
         name: 'Clientes',
@@ -585,6 +591,7 @@ export async function customerRoutes(app: FastifyInstance) {
     if (dup) throw conflict('Já existe um procurador com este CPF/CNPJ.');
     if (body.userId && !(await db.query.users.findFirst({ where: and(eq(users.id, body.userId), eq(users.officeId, user.officeId)) }))) throw badRequest('Colaborador inválido.');
     const [row] = await db.insert(procurators).values({ ...body, authType: body.authType ?? 'govbr', cpfCnpj: doc, officeId: user.officeId }).returning();
+    await audit(req, 'create', 'procurator', row.id, { name: row.name, authType: row.authType });
     reply.status(201);
     return publicProcurator(row);
   });
@@ -604,6 +611,7 @@ export async function customerRoutes(app: FastifyInstance) {
       .where(and(eq(procurators.id, id), eq(procurators.officeId, user.officeId)))
       .returning();
     if (!row) throw notFound('Procurador');
+    await audit(req, 'update', 'procurator', row.id, { fields: Object.keys(body) });
     return publicProcurator(row);
   });
 
@@ -613,6 +621,7 @@ export async function customerRoutes(app: FastifyInstance) {
     const rows = await db.delete(procurators).where(and(eq(procurators.id, id), eq(procurators.officeId, user.officeId))).returning();
     if (!rows.length) throw notFound('Procurador');
     await db.update(customers).set({ procurationStatus: 'none' }).where(and(eq(customers.officeId, user.officeId), isNull(customers.procuratorId), ne(customers.procurationStatus, 'none')));
+    await audit(req, 'delete', 'procurator', rows[0].id, { name: rows[0].name });
     return { ok: true };
   });
 

@@ -71,6 +71,7 @@ export async function reportRoutes(app: FastifyInstance) {
           openCents: s.billing?.openCents ?? 0,
           overdueCents: s.billing?.overdueCents ?? 0,
           paymentStatus: s.paymentStatus,
+          externalSyncFailed: s.billing?.externalSync?.state === 'failed' || s.billing?.externalSync?.state === 'missing',
           installments: s.billing?.installments ?? [],
         };
       })

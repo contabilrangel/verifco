@@ -12,7 +12,7 @@ import type { AppContext } from '../../context';
 import { auditLogs, customers, declarations, documents, files } from '../../db/schema';
 import { HttpError, badRequest, notFound } from '../../lib/errors';
 import { sha256 } from '../../lib/crypto';
-import { getOrCreateDeclaration } from '../../services/declarations';
+import { getOrCreateDeclaration, syncStatusWithEcac, type DeclarationRow } from '../../services/declarations';
 import type { CustomerRow } from '../../services/customers';
 import { isExtractable, refreshElaborationStatus } from '../elaboration/service';
 import type { MachineAuth } from './tokens';
@@ -63,10 +63,16 @@ export function resolveFileTarget(file: UploadedFile, fields: Record<string, str
  * e, para a declaração (.DEC) ou a cópia de segurança (.DBK, se ainda não houver arquivo de
  * origem), atualiza `declarations.sourceFileId`. O mesmo conteúdo não é gravado duas vezes.
  *
- * PONTO DE EXTENSÃO: o conteúdo de .DEC/.REC/.DBK não é lido porque o layout desses arquivos
- * não é público. Um leitor validado com arquivos oficiais entraria logo depois de gravar o
- * documento (ex.: preencher `declarations.receiptNumber` a partir do .REC ou as linhas de
- * `declaration_items` a partir do .DEC, com `source = 'irpf_file'`).
+ * Recibo de entrega (.REC): o programa IRPF grava o .REC ao transmitir, então a chegada dele
+ * marca a declaração como transmitida (`markTransmittedByReceipt`): a data de transmissão vem da
+ * data do arquivo informada pelo sincronizador (`modificadoEm`) e o .REC fica guardado como
+ * documento "Recibo de entrega" da declaração (o GET da declaração devolve o arquivo).
+ *
+ * LIMITE (sem leiaute público): o CONTEÚDO de .DEC/.REC/.DBK não é lido. O número do recibo, as
+ * linhas da DIRPF (`declaration_items` com `source = 'irpf_file'`) e os totais só poderiam vir de
+ * um leitor validado com arquivos oficiais de cada exercício, que entraria logo depois de gravar o
+ * documento. Até lá, o número do recibo é digitado no resumo da declaração ou chega pela extensão
+ * (registro eCAC `declaration`), e as linhas vêm da digitação ou da extração por IA de PDFs.
  */
 export async function ingestSyncFile(ctx: AppContext, auth: MachineAuth, file: UploadedFile, fields: Record<string, string>) {
   const { db } = ctx;
@@ -81,7 +87,12 @@ export async function ingestSyncFile(ctx: AppContext, auth: MachineAuth, file: U
     .where(and(eq(documents.customerId, customer.id), eq(documents.declarationId, decl.id), eq(files.sha256, hash)))
     .limit(1);
   const base = { customer: { id: customer.id, name: customer.name }, year, type, cpf, pattern: info.pattern };
-  if (dup) return { ...base, duplicate: true, documentId: dup.id, fileId: dup.fileId };
+  const receipt = () => (type === 'rec' ? markTransmittedByReceipt(ctx, decl, { fileDate: fileDateOf(fields), rectification: info.rectification }) : undefined);
+  if (dup) {
+    // idempotente: um .REC reenviado ainda marca a transmissão, se faltar
+    const transmission = await receipt();
+    return { ...base, duplicate: true, documentId: dup.id, fileId: dup.fileId, ...(transmission ? { declaration: transmission } : {}) };
+  }
 
   const { mimeType } = file;
   const saved = await ctx.files.save({ officeId: auth.officeId, data: file.data, filename: file.filename, mimeType });
@@ -109,9 +120,41 @@ export async function ingestSyncFile(ctx: AppContext, auth: MachineAuth, file: U
   if (type === 'dec' || (type === 'dbk' && !decl.sourceFileId)) {
     await db.update(declarations).set({ sourceFileId: saved.id, updatedAt: new Date() }).where(eq(declarations.id, decl.id));
   }
+  const transmission = await receipt();
   const elaborationStatus = await refreshElaborationStatus(db, decl.id);
   await machineAudit(ctx, auth, 'sync_file', 'document', doc.id, { customerId: customer.id, year, type, filename: file.filename });
-  return { ...base, duplicate: false, documentId: doc.id, fileId: saved.id, elaborationStatus };
+  return { ...base, duplicate: false, documentId: doc.id, fileId: saved.id, elaborationStatus, ...(transmission ? { declaration: transmission } : {}) };
+}
+
+/**
+ * Data do arquivo enviada pelo sincronizador (`modificadoEm`, ISO 8601). Datas inválidas, antes
+ * de 2000 ou no futuro são ignoradas (vale a data do recebimento).
+ */
+export function fileDateOf(fields: Record<string, string>): Date | null {
+  const raw = fields.modificadoEm?.trim();
+  if (!raw) return null;
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime()) || d.getFullYear() < 2000 || d.getTime() > Date.now() + 86400_000) return null;
+  return d;
+}
+
+/**
+ * .REC recebido: a declaração foi transmitida. Grava a data de transmissão (se ainda não houver)
+ * e leva a declaração para "Transmitida" no subestado da situação eCAC atual, pelas mesmas
+ * regras do resumo e dos registros do eCAC (finalizada não regride). Recibo de retificadora
+ * (nome "...-RETIF.REC") marca a declaração como retificadora.
+ */
+export async function markTransmittedByReceipt(ctx: AppContext, decl: DeclarationRow, opts: { fileDate: Date | null; rectification: boolean | null }) {
+  const { db } = ctx;
+  const set: Partial<DeclarationRow> = {};
+  if (!decl.transmittedAt) set.transmittedAt = opts.fileDate ?? new Date();
+  if (opts.rectification === true && !decl.isRectification) set.isRectification = true;
+  let row = decl;
+  if (Object.keys(set).length) {
+    [row] = await db.update(declarations).set({ ...set, updatedAt: new Date() }).where(eq(declarations.id, decl.id)).returning();
+  }
+  row = await syncStatusWithEcac(db, decl, row, { transmitted: true });
+  return { stage: row.stage, substatus: row.substatus, transmittedAt: row.transmittedAt };
 }
 
 /** Auditoria de ações feitas por token de máquina (sem usuário). */

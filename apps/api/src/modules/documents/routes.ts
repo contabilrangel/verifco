@@ -100,6 +100,7 @@ export async function documentRoutes(app: FastifyInstance) {
     const { category } = parse(z.object({ category: categoryEnum }), req.body);
     const doc = await getDocumentForUser(app.ctx, user, id);
     const [row] = await db.update(documents).set({ category }).where(eq(documents.id, doc.id)).returning();
+    await audit(req, 'update', 'document', doc.id, { category, from: doc.category });
     return row;
   });
 

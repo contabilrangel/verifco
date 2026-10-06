@@ -1,4 +1,4 @@
-import { and, asc, count, eq, inArray, isNotNull, isNull, lt, ne, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, isNotNull, isNull, lt, ne, or, sql, type SQL } from 'drizzle-orm';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -15,11 +15,12 @@ import {
   currentExerciseYear,
   type DeclarationItem,
 } from '@verifco/shared';
-import { backlogs, budgets, customers, darfs, declarationItems, declarations, procurators } from '../../db/schema';
+import { backlogs, budgets, customers, darfs, declarationItems, declarations, integrations, jobs, procurators } from '../../db/schema';
+import type { Db } from '../../db/client';
 import { guard, parse, requireUser, uuidParam, yearSchema } from '../../lib/http';
 import { customerScope, getCustomerForUser } from '../../services/customers';
-import { listItems } from '../../services/declarations';
-import { computeCashAnalysis, emptyDeclaration, presentDeclaration } from '../declarations/access';
+import { computeCashAnalysis, listItems } from '../../services/declarations';
+import { emptyDeclaration, presentDeclaration } from '../declarations/access';
 
 const yearQuery = z.object({ year: yearSchema.optional() });
 const ALERT_LIMIT = 50;
@@ -40,6 +41,70 @@ function slices(labels: Record<string, string>, rows: { k: string | null; n: num
 }
 
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+
+/**
+ * Situação do acesso de cada procurador, derivada só de dados que o Verifco tem: forma de acesso,
+ * certificado enviado e validade informada, e o último uso do certificado no SERPRO (teste da
+ * integração ou sincronização do eCAC). O login gov.br acontece no navegador, fora do Verifco.
+ */
+export const PROCURATOR_ACCESS = {
+  serpro_ok: 'Autenticado no SERPRO',
+  valid: 'Certificado no prazo',
+  expiring: 'Certificado vence em até 30 dias',
+  expired: 'Certificado vencido',
+  missing: 'Certificado não enviado',
+  serpro_error: 'Falha no SERPRO',
+  unverified: 'Sem verificação',
+} as const;
+export type ProcuratorAccess = keyof typeof PROCURATOR_ACCESS;
+
+export function procuratorAccess(
+  p: { id: string; authType: string; hasCert: boolean; certExpiresAt: string | null },
+  ctx: { today: string; in30: string; serproProcuratorId: string | null; serproState: 'ok' | 'error' | null },
+): ProcuratorAccess {
+  if (p.authType === 'govbr') return 'unverified';
+  if (p.certExpiresAt && p.certExpiresAt < ctx.today) return 'expired';
+  if (p.authType === 'certificate_cloud' && !p.hasCert) return 'missing';
+  if (p.id === ctx.serproProcuratorId && ctx.serproState) return ctx.serproState === 'ok' ? 'serpro_ok' : 'serpro_error';
+  if (p.certExpiresAt) return p.certExpiresAt <= ctx.in30 ? 'expiring' : 'valid';
+  return 'unverified';
+}
+
+/**
+ * Último uso do certificado do escritório no SERPRO: o mais recente entre o teste da integração
+ * (Administração › Integrações) e as sincronizações do eCAC terminadas. Sincronização de um
+ * cliente que falhou não conta (o erro pode ser do cliente, como procuração ausente).
+ */
+async function serproUsage(db: Db, officeId: string) {
+  const row = await db.query.integrations.findFirst({ where: and(eq(integrations.officeId, officeId), eq(integrations.provider, 'serpro')) });
+  const procuratorId = row?.enabled && typeof row.publicConfig?.procuratorId === 'string' ? row.publicConfig.procuratorId : null;
+  if (!row || !procuratorId) return { procuratorId: null, state: null, at: null, error: null };
+  const events: { at: Date; ok: boolean; error: string | null }[] = [];
+  const testAt = typeof row.publicConfig?.lastTestAt === 'string' ? new Date(row.publicConfig.lastTestAt) : null;
+  if (testAt && !Number.isNaN(testAt.getTime()) && (row.status === 'connected' || row.status === 'error')) {
+    events.push({ at: testAt, ok: row.status === 'connected', error: row.status === 'error' ? row.lastError : null });
+  }
+  const [job] = await db
+    .select({ type: jobs.type, status: jobs.status, error: jobs.error, result: jobs.result, finishedAt: jobs.finishedAt })
+    .from(jobs)
+    .where(
+      and(
+        eq(jobs.officeId, officeId),
+        isNotNull(jobs.finishedAt),
+        or(and(eq(jobs.type, 'ecac.sync'), eq(jobs.status, 'done')), and(eq(jobs.type, 'ecac.sync_office'), inArray(jobs.status, ['done', 'failed']))),
+      ),
+    )
+    .orderBy(desc(jobs.finishedAt))
+    .limit(1);
+  if (job?.finishedAt) {
+    const result = (job.result ?? {}) as { ok?: unknown; failed?: unknown };
+    const allFailed = job.type === 'ecac.sync_office' && num(result.ok) === 0 && num(result.failed) > 0;
+    const ok = job.status === 'done' && !allFailed;
+    events.push({ at: job.finishedAt, ok, error: ok ? null : (job.error ?? 'Nenhum cliente sincronizado na última sincronização do eCAC.') });
+  }
+  const last = events.sort((a, b) => b.at.getTime() - a.at.getTime())[0];
+  return { procuratorId, state: last ? (last.ok ? ('ok' as const) : ('error' as const)) : null, at: last?.at ?? null, error: last?.error ?? null };
+}
 
 export async function dashboardRoutes(app: FastifyInstance) {
   const { db } = app.ctx;
@@ -104,17 +169,33 @@ export async function dashboardRoutes(app: FastifyInstance) {
     const cndRows = await db.select({ k: customers.cndStatus, n: count() }).from(customers).where(and(scope, eq(customers.status, 'active'))).groupBy(customers.cndStatus);
 
     const procRows = await db
-      .select({ authType: procurators.authType, loginStatus: procurators.loginStatus, hasCert: isNotNull(procurators.certificateFileId), certExpiresAt: procurators.certificateExpiresAt })
+      .select({
+        id: procurators.id,
+        authType: procurators.authType,
+        hasCert: sql<boolean>`(${procurators.certificateFileId} is not null and ${procurators.certificatePasswordEnc} is not null)`,
+        certExpiresAt: procurators.certificateExpiresAt,
+      })
       .from(procurators)
       .where(eq(procurators.officeId, user.officeId));
+    const serpro = await serproUsage(db, user.officeId);
+    const in30 = new Date(new Date(`${today}T12:00:00Z`).getTime() + 30 * 86400_000).toISOString().slice(0, 10);
     const byAuth = new Map<string, number>();
-    for (const p of procRows) byAuth.set(p.authType, (byAuth.get(p.authType) ?? 0) + 1);
+    const byAccess = new Map<string, number>();
+    for (const p of procRows) {
+      byAuth.set(p.authType, (byAuth.get(p.authType) ?? 0) + 1);
+      const access = procuratorAccess(p, { today, in30, serproProcuratorId: serpro.procuratorId, serproState: serpro.state });
+      byAccess.set(access, (byAccess.get(access) ?? 0) + 1);
+    }
+    const accessCount = (...keys: ProcuratorAccess[]) => keys.reduce((a, k) => a + (byAccess.get(k) ?? 0), 0);
     const procuratorLogin = {
       total: procRows.length,
       byAuthType: slices(AUTH_TYPES, [...byAuth].map(([k, n]) => ({ k, n }))),
-      loginOk: procRows.filter((p) => p.loginStatus === 'ok' || p.loginStatus === 'valid').length,
-      loginError: procRows.filter((p) => ['error', 'invalid', 'expired'].includes(p.loginStatus)).length,
-      certificatesExpired: procRows.filter((p) => p.authType !== 'govbr' && p.certExpiresAt && p.certExpiresAt < today).length,
+      byAccess: slices(PROCURATOR_ACCESS, [...byAccess].map(([k, n]) => ({ k, n }))),
+      loginOk: accessCount('serpro_ok', 'valid', 'expiring'),
+      loginError: accessCount('serpro_error', 'expired', 'missing'),
+      certificatesExpired: accessCount('expired'),
+      unverified: accessCount('unverified'),
+      serpro: { state: serpro.state, at: serpro.at, error: serpro.error },
     };
 
     const ecacRows = await db

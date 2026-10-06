@@ -40,6 +40,16 @@ export interface Installment {
   externalUrl: string | null;
 }
 
+/** Emissão da cobrança integrada (Asaas/Omie) do faturamento. */
+export interface ExternalSync {
+  state: 'ok' | 'pending' | 'retrying' | 'failed' | 'missing';
+  pendingInstallments: number;
+  error: string | null;
+  attempts: number;
+  maxAttempts: number;
+  at: string | null;
+}
+
 export interface Billing {
   id: string;
   totalCents: number;
@@ -49,6 +59,7 @@ export interface Billing {
   openCents: number;
   overdueCents: number;
   installments: Installment[];
+  externalSync?: ExternalSync | null;
 }
 
 export type BudgetStatus = 'draft' | 'sent' | 'approved' | 'rejected' | 'canceled';
@@ -136,6 +147,8 @@ export interface BillingReportRow {
   openCents: number;
   overdueCents: number;
   paymentStatus: PaymentStatus;
+  /** Falha na emissão da cobrança integrada (precisa "Emitir de novo" no faturamento do cliente). */
+  externalSyncFailed?: boolean;
 }
 
 export interface BillingReport {

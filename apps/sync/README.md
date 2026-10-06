@@ -9,7 +9,10 @@ computador onde o **programa IRPF** é usado. Ele observa as pastas do programa 
 
 Cada arquivo é vinculado ao **cliente pelo CPF** e ao **exercício**, ambos lidos do nome do arquivo
 (e, se preciso, da pasta `IRPF<ano>`). No Verifco, o arquivo vira um documento do cliente
-(origem “sincronizador”); o `.DEC` passa a ser o arquivo de origem da declaração do ano.
+(origem “sincronizador”); o `.DEC` passa a ser o arquivo de origem da declaração do ano. Um `.REC`
+(o programa grava o recibo ao transmitir) marca a declaração como **transmitida**, com a data do
+arquivo como data da transmissão; o número do recibo continua sendo informado no resumo da
+declaração ou pela extensão.
 
 > O conteúdo dos arquivos do programa IRPF **não é lido**: o layout deles não é público. O
 > sincronizador só usa o nome, a pasta e o hash do conteúdo.

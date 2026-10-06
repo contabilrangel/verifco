@@ -243,6 +243,7 @@ export async function copilotRoutes(app: FastifyInstance) {
     await getCustomerForUser(app.ctx, user, row.customerId);
     await requireActiveEnrollment(app.ctx, user.officeId, row.customerId);
     await db.delete(copilotEntries).where(eq(copilotEntries.id, id));
+    await audit(req, 'delete_entry', 'copilot', row.customerId, { entryId: id, kind: row.kind });
     return { ok: true };
   });
 
@@ -261,6 +262,7 @@ export async function copilotRoutes(app: FastifyInstance) {
       created.push(doc.id);
     }
     if (!created.length) throw badRequest('Selecione ao menos um arquivo.');
+    await audit(req, 'upload_documents', 'copilot', customer.id, { count: created.length });
     reply.status(201);
     return { ids: created };
   });
@@ -276,6 +278,7 @@ export async function copilotRoutes(app: FastifyInstance) {
       .returning();
     if (!rows.length) throw notFound('Documento');
     await app.ctx.files.remove(user.officeId, rows[0].fileId);
+    await audit(req, 'delete_document', 'copilot', customer.id, { documentId: docId });
     return { ok: true };
   });
 }

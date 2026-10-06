@@ -142,6 +142,90 @@ describe('arquivos do sincronizador', () => {
   });
 });
 
+describe('recibo (.REC) do sincronizador (COB-3)', () => {
+  it('marca a declaração como transmitida na data do arquivo e guarda o recibo, sem regredir finalizada', async () => {
+    const { api, token } = await officeWithToken('sync');
+    const c = await api.post('/api/customers', { name: 'Rita', cpfCnpj: VALID_CPFS[4] });
+    const decl0 = await api.put(`/api/customers/${c.body.id}/declarations/2026`, { ecacStatus: 'waiting' });
+    await api.patch(`/api/declarations/${decl0.body.id}/substatus`, { substatus: 'review' });
+    const name = `${VALID_CPFS[4]}-IRPF-A-2026-2025-RETIF.REC`;
+    const up = await send(env, token, 'POST', '/api/sync/files', {
+      multipart: multipart({ modificadoEm: '2026-04-28T15:30:00.000Z' }, { name, content: 'conteudo-rec' }),
+    });
+    expect(up.status).toBe(201);
+    expect(up.body.declaration).toMatchObject({ stage: 'transmitted', substatus: 'ecac_waiting' });
+    const decl = await env.ctx.db.query.declarations.findFirst({ where: eq(declarations.customerId, c.body.id) });
+    expect(decl).toMatchObject({ stage: 'transmitted', substatus: 'ecac_waiting', isRectification: true });
+    expect(decl!.transmittedAt!.toISOString()).toBe('2026-04-28T15:30:00.000Z');
+    // o .REC fica como recibo de entrega da declaração (o conteúdo não é lido: sem leiaute público)
+    const got = await api.get(`/api/customers/${c.body.id}/declarations/2026`);
+    expect(got.body.receiptFile).toMatchObject({ documentId: up.body.documentId, fileId: up.body.fileId, filename: name });
+    expect(got.body.receiptNumber).toBeNull();
+
+    // finalizada não regride; data de transmissão já gravada não muda
+    await api.post(`/api/declarations/${decl!.id}/finish`);
+    const again = await send(env, token, 'POST', '/api/sync/files', {
+      multipart: multipart({ modificadoEm: '2026-05-02T10:00:00.000Z' }, { name: `${VALID_CPFS[4]}-IRPF-A-2026-2025-ORIGI.REC`, content: 'outro-rec' }),
+    });
+    expect(again.status).toBe(201);
+    const after = await env.ctx.db.query.declarations.findFirst({ where: eq(declarations.customerId, c.body.id) });
+    expect(after).toMatchObject({ stage: 'finished', substatus: 'finished', isRectification: true });
+    expect(after!.transmittedAt!.toISOString()).toBe('2026-04-28T15:30:00.000Z');
+
+    // sem a data do arquivo (ou com data inválida), vale a data do recebimento
+    const c2 = await api.post('/api/customers', { name: 'Sérgio', cpfCnpj: VALID_CPFS[5] });
+    const before = Date.now();
+    const noDate = await send(env, token, 'POST', '/api/sync/files', {
+      multipart: multipart({ modificadoEm: 'ontem' }, { name: `${VALID_CPFS[5]}-IRPF-A-2026-2025-ORIGI.REC`, content: 'rec-3' }),
+    });
+    expect(noDate.status).toBe(201);
+    const d2 = await env.ctx.db.query.declarations.findFirst({ where: eq(declarations.customerId, c2.body.id) });
+    expect(d2).toMatchObject({ stage: 'transmitted', substatus: 'ecac_unknown', isRectification: false });
+    expect(d2!.transmittedAt!.getTime()).toBeGreaterThanOrEqual(before - 1000);
+  });
+});
+
+describe('registros do eCAC × status da declaração (INT-6/COB-5)', () => {
+  it('lançamento manual move a etapa pelas regras do resumo e preserva "pendências" e finalizada', async () => {
+    const { api } = await registerOffice(env);
+    const a = await api.post('/api/customers', { name: 'Cliente A', cpfCnpj: VALID_CPFS[0] });
+    const b = await api.post('/api/customers', { name: 'Cliente B', cpfCnpj: VALID_CPFS[1] });
+    const f = await api.post('/api/customers', { name: 'Cliente F', cpfCnpj: VALID_CPFS[2] });
+    const dA = await api.put(`/api/customers/${a.body.id}/declarations/2026`, {});
+    await api.patch(`/api/declarations/${dA.body.id}/substatus`, { substatus: 'started' });
+    const dB = await api.put(`/api/customers/${b.body.id}/declarations/2026`, {});
+    await api.patch(`/api/declarations/${dB.body.id}/substatus`, { substatus: 'ecac_processing' });
+    const dF = await api.put(`/api/customers/${f.body.id}/declarations/2026`, {});
+    await api.post(`/api/declarations/${dF.body.id}/finish`);
+    const record = (customerId: string, data: Record<string, unknown>) => api.post(`/api/customers/${customerId}/ecac/records`, { kind: 'declaration', year: 2026, data });
+
+    // em preenchimento + recibo e malha fina → Transmitida · Malha fina
+    expect((await record(a.body.id, { status: 'fine_mesh', receiptNumber: '1234567890' })).status).toBe(201);
+    let rowA = await env.ctx.db.query.declarations.findFirst({ where: eq(declarations.id, dA.body.id) });
+    expect(rowA).toMatchObject({ stage: 'transmitted', substatus: 'ecac_fine_mesh', ecacStatus: 'fine_mesh', receiptNumber: '1234567890' });
+    // "com pendências" também cai em Malha fina, sem virar fine_mesh
+    await record(a.body.id, { status: 'pending_issues' });
+    rowA = await env.ctx.db.query.declarations.findFirst({ where: eq(declarations.id, dA.body.id) });
+    expect(rowA).toMatchObject({ substatus: 'ecac_fine_mesh', ecacStatus: 'pending_issues' });
+
+    // já transmitida: a situação nova atualiza o subestado
+    await record(b.body.id, { status: 'refund_lot' });
+    const rowB = await env.ctx.db.query.declarations.findFirst({ where: eq(declarations.id, dB.body.id) });
+    expect(rowB).toMatchObject({ stage: 'transmitted', substatus: 'ecac_refund', ecacStatus: 'refund_lot' });
+
+    // finalizada não regride
+    await record(f.body.id, { status: 'processing', receiptNumber: '999' });
+    const rowF = await env.ctx.db.query.declarations.findFirst({ where: eq(declarations.id, dF.body.id) });
+    expect(rowF).toMatchObject({ stage: 'finished', substatus: 'finished', ecacStatus: 'processing' });
+
+    // o Kanban mostra cada cartão na coluna certa
+    const kanban = (await api.get('/api/kanban?year=2026')).body;
+    const column = (stage: string) => kanban.columns.find((col: { stage: string }) => col.stage === stage).cards.map((card: { name: string }) => card.name);
+    expect(column('transmitted')).toEqual(['Cliente A', 'Cliente B']);
+    expect(column('finished')).toEqual(['Cliente F']);
+  });
+});
+
 describe('registros do eCAC enviados pela extensão', () => {
   it('grava os registros e aplica no cadastro (procuração, CND, caixa postal, declaração, DARF)', async () => {
     const { api, token } = await officeWithToken('extension');
@@ -179,7 +263,9 @@ describe('registros do eCAC enviados pela extensão', () => {
     expect(panel.darfs[0]).toMatchObject({ valueCents: 15000, dueDate: '2026-05-29', source: 'ecac', year: 2026 });
     expect(panel.incomeStatements[0]).toMatchObject({ year: 2026, issuedAt: '2026-03-10' });
     const decl = await env.ctx.db.query.declarations.findFirst({ where: eq(declarations.customerId, c.body.id) });
-    expect(decl).toMatchObject({ ecacStatus: 'processed', taxation: 'simplified', receiptNumber: '1234567890' });
+    // INT-6: a declaração que aparece no eCAC vai para "Transmitida" no subestado da situação
+    expect(decl).toMatchObject({ ecacStatus: 'processed', taxation: 'simplified', receiptNumber: '1234567890', stage: 'transmitted', substatus: 'ecac_processed' });
+    expect(res.body.results[4].effects).toEqual(['declaration', 'declaration_status']);
     const darfRows = await env.ctx.db.select().from(darfs).where(eq(darfs.customerId, c.body.id));
     expect(darfRows).toHaveLength(1);
 

@@ -34,6 +34,10 @@ export interface Declaration {
   cashBalanceCents: number | null;
   otherExpenses: Record<string, number | undefined>;
   finishedAt: string | null;
+  /** Recibo de entrega (.REC) mais recente recebido do sincronizador (só no GET). */
+  receiptFile?: { documentId: string; fileId: string; filename: string; receivedAt: string } | null;
+  /** Visão reduzida para quem só tem `darf.view` (sem `declaration.view`). */
+  limited?: boolean;
 }
 
 export type ItemRow = DeclarationItem & { id: string; kind: ItemKind; createdAt: string; source: string };

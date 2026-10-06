@@ -73,7 +73,10 @@ export function DarfStep() {
   const [uploading, setUploading] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const uploadTarget = useRef<DarfRow | null>(null);
-  const canEdit = can('darf.edit');
+  // criar a declaração do ano (antes da 1ª quota) é edição da declaração; quem só cuida de DARF
+  // trabalha nas quotas de uma declaração já iniciada
+  const notStarted = !declaration?.id;
+  const canEdit = can('darf.edit') && (!notStarted || can('declaration.edit'));
   const canSend = can('darf.send');
 
   const refresh = () => {
@@ -119,6 +122,12 @@ export function DarfStep() {
 
   return (
     <div className="vf-stack" style={{ '--gap': '16px' } as CSSProperties}>
+      {notStarted && can('darf.edit') && !can('declaration.edit') && (
+        <Alert tone="primary">
+          A declaração de {year} deste cliente ainda não foi iniciada. Para cadastrar as quotas, quem edita declarações precisa iniciá-la e informar o imposto a pagar no
+          resumo.
+        </Alert>
+      )}
       <Card
         flush
         title="Quotas do DARF"

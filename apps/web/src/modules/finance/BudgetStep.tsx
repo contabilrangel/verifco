@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { Check, ChevronDown, Copy, FileSignature, History, Link2, Lock, MoreHorizontal, Pencil, Plus, Send, Trash2, X } from 'lucide-react';
 import { todayIso } from '@verifco/shared';
 import { Alert, Button, Card, Checkbox, ConfirmDialog, EmptyState, IconButton, Input, Loading, Menu, MenuItem, Modal, Tag, useToast } from '../../ds';
@@ -22,7 +23,11 @@ export function BudgetStep() {
   const { can } = useAuth();
   const toast = useToast();
   const key = ['finance', 'budgets', customer.id, year];
-  const q = useApi<BudgetList>(key, `/finance/customers/${customer.id}/budgets?year=${year}`);
+  // enquanto a cobrança integrada está sendo emitida (ou a fila tenta de novo), atualiza sozinho
+  // para mostrar os links ou a falha sem recarregar a página
+  const cached = useQueryClient().getQueryData<BudgetList>(key);
+  const emitting = cached?.data.some((b) => b.billing?.externalSync?.state === 'pending' || b.billing?.externalSync?.state === 'retrying');
+  const q = useApi<BudgetList>(key, `/finance/customers/${customer.id}/budgets?year=${year}`, { refetchInterval: emitting ? 5000 : undefined });
   const [form, setForm] = useState<{ budget: Budget | null } | null>(null);
   const [action, setAction] = useState<Action>(null);
   const [link, setLink] = useState<string | null>(null);
