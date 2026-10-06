@@ -19,6 +19,12 @@ type Dialog =
 
 const PROVIDERS: Record<string, string> = { asaas: 'Asaas', omie: 'Omie' };
 
+/**
+ * Parcela com cobrança emitida no Asaas/Omie e a integração ativa: vencimento, valor, baixa e
+ * estorno são feitos no provedor (a API recusa aqui, para o cliente não ser cobrado em dobro).
+ */
+export const issuedAtProvider = (billing: Billing, inst: Installment) => Boolean(inst.externalId && billing.provider && billing.externalSync?.integrationReady);
+
 export function BillingPanel({ billing, customerId, contact }: { billing: Billing; customerId: string; contact: { email: boolean; mobile: boolean } }) {
   const { can } = useAuth();
   const qc = useQueryClient();
@@ -62,6 +68,7 @@ export function BillingPanel({ billing, customerId, contact }: { billing: Billin
   };
 
   const total = billing.installments.length;
+  const locked = (i: Installment) => issuedAtProvider(billing, i);
   return (
     <div className="vf-stack" style={{ '--gap': '16px' } as React.CSSProperties}>
       <div className="vf-fin-stats">
@@ -71,6 +78,7 @@ export function BillingPanel({ billing, customerId, contact }: { billing: Billin
         <Stat label="Vencido" value={formatMoney(billing.overdueCents)} tone={billing.overdueCents > 0 ? 'danger' : undefined} />
       </div>
       <ExternalSyncNotice billing={billing} canEmit={can('billing.edit')} onEmit={() => setEmitOpen(true)} />
+      {billing.installments.some((i) => locked(i) && i.status !== 'canceled') && <ProviderManagedNotice provider={billing.provider} />}
       <div className="vf-table-wrap vf-fin-subtable">
         <table className="vf-table">
           <thead>
@@ -131,7 +139,14 @@ export function BillingPanel({ billing, customerId, contact }: { billing: Billin
                   <td className="actions">
                     <div className="vf-inline" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
                       {open && can('billing.receive') && (
-                        <Button size="sm" kind="secondary" icon={<CheckCircle2 />} onClick={() => setDialog({ kind: 'receive', inst: i })}>
+                        <Button
+                          size="sm"
+                          kind="secondary"
+                          icon={<CheckCircle2 />}
+                          disabled={locked(i)}
+                          title={locked(i) ? `Cobrança emitida no ${provider}: registre o recebimento por lá.` : undefined}
+                          onClick={() => setDialog({ kind: 'receive', inst: i })}
+                        >
                           Receber
                         </Button>
                       )}
@@ -140,7 +155,7 @@ export function BillingPanel({ billing, customerId, contact }: { billing: Billin
                           {i.receiptNumber ? 'Recibo' : 'Gerar recibo'}
                         </Button>
                       )}
-                      <InstallmentMenu inst={i} onPick={setDialog} contact={contact} />
+                      <InstallmentMenu inst={i} locked={locked(i)} onPick={setDialog} contact={contact} />
                     </div>
                   </td>
                 </tr>
@@ -150,8 +165,8 @@ export function BillingPanel({ billing, customerId, contact }: { billing: Billin
         </table>
       </div>
 
-      <ReceiveModal inst={dialog?.kind === 'receive' ? dialog.inst : null} onClose={close} invalidate={invalidate} />
-      <EditInstallmentModal inst={dialog?.kind === 'edit' ? dialog.inst : null} onClose={close} invalidate={invalidate} />
+      <ReceiveModal inst={dialog?.kind === 'receive' ? dialog.inst : null} provider={provider} onClose={close} invalidate={invalidate} />
+      <EditInstallmentModal inst={dialog?.kind === 'edit' ? dialog.inst : null} provider={provider} onClose={close} invalidate={invalidate} />
       <ConfirmDialog
         open={dialog?.kind === 'send'}
         title="Enviar recibo"
@@ -177,7 +192,9 @@ export function BillingPanel({ billing, customerId, contact }: { billing: Billin
       <ConfirmDialog
         open={dialog?.kind === 'reopen'}
         title="Desfazer recebimento"
-        message="A parcela volta a ficar em aberto. Use quando o recebimento foi lançado por engano."
+        message={`A parcela volta a ficar em aberto. Use quando o recebimento foi lançado por engano.${
+          dialog?.kind === 'reopen' && dialog.inst.externalId ? ` ${unmanagedExternal(provider)}` : ''
+        }`}
         confirmLabel="Desfazer"
         danger
         loading={reopen.isPending}
@@ -240,7 +257,24 @@ function ExternalSyncNotice({ billing, canEmit, onEmit }: { billing: Billing; ca
   );
 }
 
-function InstallmentMenu({ inst, onPick, contact }: { inst: Installment; onPick: (d: Dialog) => void; contact: { email: boolean; mobile: boolean } }) {
+/** Explica por que as parcelas emitidas no provedor não têm baixa, alteração nem estorno aqui. */
+function ProviderManagedNotice({ provider }: { provider: string | null }) {
+  const name = provider ? (PROVIDERS[provider] ?? provider) : 'provedor';
+  return (
+    <Alert tone="primary" title={`Parcelas com cobrança emitida no ${name}`}>
+      {provider === 'omie'
+        ? 'Para alterar vencimento ou valor, dar baixa ou cancelar, use a conta a receber no Omie: o Verifco confere os pagamentos do Omie periodicamente e atualiza a parcela.'
+        : 'Para alterar vencimento ou valor, confirmar recebimento em dinheiro ou estornar, use a cobrança no Asaas: o Verifco atualiza a parcela pelo aviso (webhook) do Asaas.'}{' '}
+      Assim o cliente não é cobrado em dobro.
+    </Alert>
+  );
+}
+
+/** Aviso para parcela com cobrança no provedor quando a integração está desativada (controle manual). */
+const unmanagedExternal = (provider: string) =>
+  `Esta parcela tem cobrança emitida no ${provider || 'provedor'}, mas a integração está desativada: a mudança vale só no Verifco. Altere ou cancele a cobrança no ${provider || 'provedor'} para o cliente não pagar em dobro.`;
+
+function InstallmentMenu({ inst, locked, onPick, contact }: { inst: Installment; locked: boolean; onPick: (d: Dialog) => void; contact: { email: boolean; mobile: boolean } }) {
   const { can } = useAuth();
   const open = inst.status === 'open' || inst.status === 'overdue';
   const paid = inst.status === 'paid';
@@ -261,8 +295,8 @@ function InstallmentMenu({ inst, onPick, contact }: { inst: Installment; onPick:
       {(close) => (
         <>
           {open && can('billing.edit') && (
-            <MenuItem icon={<Pencil />} onClick={() => (close(), onPick({ kind: 'edit', inst }))}>
-              Alterar vencimento ou valor
+            <MenuItem icon={<Pencil />} disabled={locked} onClick={() => (close(), onPick({ kind: 'edit', inst }))}>
+              {locked ? 'Alterar vencimento ou valor (pelo provedor)' : 'Alterar vencimento ou valor'}
             </MenuItem>
           )}
           {paid && can('billing.receipt_send') && (inst.receiptNumber || can('billing.receipt_generate')) && (
@@ -276,8 +310,8 @@ function InstallmentMenu({ inst, onPick, contact }: { inst: Installment; onPick:
             </>
           )}
           {paid && !inst.receiptNumber && can('billing.receive') && (
-            <MenuItem icon={<Undo2 />} danger onClick={() => (close(), onPick({ kind: 'reopen', inst }))}>
-              Desfazer recebimento
+            <MenuItem icon={<Undo2 />} danger disabled={locked} onClick={() => (close(), onPick({ kind: 'reopen', inst }))}>
+              {locked ? 'Desfazer recebimento (pelo provedor)' : 'Desfazer recebimento'}
             </MenuItem>
           )}
         </>
@@ -286,7 +320,7 @@ function InstallmentMenu({ inst, onPick, contact }: { inst: Installment; onPick:
   );
 }
 
-function ReceiveModal({ inst, onClose, invalidate }: { inst: Installment | null; onClose: () => void; invalidate: string[][] }) {
+function ReceiveModal({ inst, provider, onClose, invalidate }: { inst: Installment | null; provider: string; onClose: () => void; invalidate: string[][] }) {
   const [paidAt, setPaidAt] = useState(todayIso());
   const [amount, setAmount] = useState(0);
   useEffect(() => {
@@ -319,6 +353,7 @@ function ReceiveModal({ inst, onClose, invalidate }: { inst: Installment | null;
       }
     >
       <div className="vf-stack">
+        {inst?.externalId && <Alert tone="warning">{unmanagedExternal(provider)}</Alert>}
         <span className="vf-muted">
           Vencimento em {inst ? formatDate(inst.dueDate) : ''} · valor de {inst ? formatMoney(inst.amountCents) : ''}.
         </span>
@@ -331,7 +366,7 @@ function ReceiveModal({ inst, onClose, invalidate }: { inst: Installment | null;
   );
 }
 
-function EditInstallmentModal({ inst, onClose, invalidate }: { inst: Installment | null; onClose: () => void; invalidate: string[][] }) {
+function EditInstallmentModal({ inst, provider, onClose, invalidate }: { inst: Installment | null; provider: string; onClose: () => void; invalidate: string[][] }) {
   const [dueDate, setDueDate] = useState('');
   const [amount, setAmount] = useState(0);
   useEffect(() => {
@@ -364,10 +399,10 @@ function EditInstallmentModal({ inst, onClose, invalidate }: { inst: Installment
       }
     >
       <div className="vf-stack">
-        {inst?.externalId && <Alert tone="warning">Esta parcela já tem cobrança emitida no provedor. O valor só pode ser alterado por lá.</Alert>}
+        {inst?.externalId && <Alert tone="warning">{unmanagedExternal(provider)}</Alert>}
         <div className="vf-grid" style={{ '--cols': 2 } as React.CSSProperties}>
           <Input label="Vencimento" type="date" required value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
-          <MoneyInput label="Valor" required value={amount} onChange={setAmount} disabled={Boolean(inst?.externalId)} />
+          <MoneyInput label="Valor" required value={amount} onChange={setAmount} />
         </div>
         <span className="vf-text-xs vf-muted">O total do faturamento é recalculado com a soma das parcelas.</span>
         {err && <span className="vf-field__error">{err}</span>}
