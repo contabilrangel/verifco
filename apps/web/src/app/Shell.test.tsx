@@ -131,6 +131,31 @@ describe('Shell', () => {
     }
   });
 
+  it('menu: Dashboard e Kanban só para quem a API deixa abrir (dashboard: declaration.view ou customer.list; Kanban: declaration.view)', () => {
+    const sidebar = () => within(screen.getByRole('navigation', { name: 'Menu principal' }));
+    // em /kanban, o grupo Início abre sozinho quando o Kanban está no menu
+    auth.perms = ['declaration.view'];
+    renderShell();
+    expect(sidebar().getByRole('link', { name: 'Dashboard' }).getAttribute('href')).toBe('/');
+    expect(sidebar().getByRole('link', { name: 'Kanban' }).getAttribute('href')).toBe('/kanban');
+
+    cleanup();
+    auth.perms = ['customer.list'];
+    renderShell();
+    fireEvent.click(sidebar().getByRole('button', { name: 'Início' }));
+    expect(sidebar().getByRole('link', { name: 'Dashboard' })).toBeTruthy();
+    expect(sidebar().queryByRole('link', { name: 'Kanban' })).toBeNull();
+
+    // sem nenhum item do grupo, o grupo Início some
+    cleanup();
+    auth.perms = ['report.billing'];
+    renderShell();
+    expect(sidebar().queryByRole('button', { name: 'Início' })).toBeNull();
+    expect(sidebar().queryByRole('link', { name: 'Dashboard' })).toBeNull();
+    expect(sidebar().queryByRole('link', { name: 'Kanban' })).toBeNull();
+    expect(sidebar().getByRole('link', { name: 'Relatórios' })).toBeTruthy();
+  });
+
   it('mostra os favoritos no menu lateral e remove pelo X', async () => {
     auth.favorites = [
       { path: '/admin/colaboradores', label: 'Meu escritório › Colaboradores' },

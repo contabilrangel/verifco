@@ -12,6 +12,7 @@ import {
   IRPFM_THRESHOLD_CENTS,
   PROCURATION_STATUS,
   CERTIFICATE_EXPIRY_WARNING_DAYS,
+  DASHBOARD_PERMISSIONS,
   PROCURATOR_ACCESS,
   PROCURATOR_ACCESS_SEVERITY,
   brazilToday,
@@ -140,7 +141,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
   const sumOf = (col: SQL | AnyPgColumn) => sql<number>`coalesce(sum(${col}), 0)`.mapWith(Number);
 
   /** Dashboard do escritório no exercício: indicadores, alertas e gráficos. */
-  app.get('/dashboard', { preHandler: guard('declaration.view', 'customer.list') }, async (req) => {
+  app.get('/dashboard', { preHandler: guard(...DASHBOARD_PERMISSIONS) }, async (req) => {
     const user = requireUser(req);
     const year = parse(yearQuery, req.query).year ?? currentExerciseYear();
     const today = brazilToday();

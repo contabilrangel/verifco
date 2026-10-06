@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { IRPFM_THRESHOLD_CENTS, addDaysIso, todayIso } from '@verifco/shared';
+import { DASHBOARD_PERMISSIONS, IRPFM_THRESHOLD_CENTS, addDaysIso, todayIso } from '@verifco/shared';
 import { budgets, customers, integrations, procurators } from '../src/db/schema';
 import { VALID_CPFS, createEmployee, createTestEnv, registerOffice, type TestEnv } from './helpers';
 
@@ -202,6 +202,12 @@ describe('dashboard do escritório', () => {
     const office = await registerOffice(env);
     const emp = await createEmployee(env, office.api, ['budget.list']);
     expect((await emp.api.get(`/api/dashboard?year=${YEAR}`)).status).toBe(403);
+    // cada uma das permissões que o menu da web usa para mostrar o Dashboard (a mesma lista) abre a rota
+    expect(DASHBOARD_PERMISSIONS).toEqual(['declaration.view', 'customer.list']);
+    for (const perm of DASHBOARD_PERMISSIONS) {
+      const one = await createEmployee(env, office.api, [perm]);
+      expect((await one.api.get(`/api/dashboard?year=${YEAR}`)).status, perm).toBe(200);
+    }
   });
 });
 
