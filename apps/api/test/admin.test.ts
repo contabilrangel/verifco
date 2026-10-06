@@ -1,0 +1,186 @@
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { VALID_CPFS, client, createEmployee, createTestEnv, registerOffice, type TestEnv } from './helpers';
+
+let env: TestEnv;
+beforeAll(async () => {
+  env = await createTestEnv();
+});
+afterAll(async () => env.close());
+
+const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63f8ffff3f0005fe02fea7d6a4f20000000049454e44ae426082', 'hex');
+
+async function uploadLogo(token: string, data = PNG, filename = 'logo.png', type = 'image/png') {
+  const boundary = `----vf${Math.random().toString(16).slice(2)}`;
+  const payload = Buffer.concat([
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${type}\r\n\r\n`),
+    data,
+    Buffer.from(`\r\n--${boundary}--\r\n`),
+  ]);
+  const res = await env.app.inject({
+    method: 'POST',
+    url: '/api/office/logo',
+    payload,
+    headers: { 'content-type': `multipart/form-data; boundary=${boundary}`, authorization: `Bearer ${token}` },
+  });
+  return { status: res.statusCode, body: res.json() };
+}
+
+describe('escritório', () => {
+  it('valida e normaliza os dados do escritório', async () => {
+    const office = await registerOffice(env);
+    expect((await office.api.put('/api/office', { name: 'Contábil', email: 'invalido' })).status).toBe(400);
+    expect((await office.api.put('/api/office', { name: 'Contábil', state: 'Pernambuco' })).status).toBe(400);
+    expect((await office.api.put('/api/office', { name: 'Contábil', cpfCnpj: '11.222.333/0001-80' })).status).toBe(400);
+    const ok = await office.api.put('/api/office', {
+      name: 'Contábil Recife',
+      cpfCnpj: '11.222.333/0001-81',
+      email: 'Contato@Contabil.com.br',
+      phone: '(81) 3333-4444',
+      website: 'www.contabil.com.br',
+      city: 'Recife',
+      state: 'pe',
+    });
+    expect(ok.status).toBe(200);
+    expect(ok.body).toMatchObject({
+      cpfCnpj: '11222333000181',
+      email: 'contato@contabil.com.br',
+      phone: '8133334444',
+      website: 'https://www.contabil.com.br',
+      state: 'PE',
+    });
+    const emp = await createEmployee(env, office.api, ['customer.list']);
+    expect((await emp.api.put('/api/office', { name: 'Invasão' })).status).toBe(403);
+  });
+
+  it('envia, troca e remove o logo', async () => {
+    const office = await registerOffice(env);
+    expect((await uploadLogo(office.token, Buffer.from('%PDF-1.4'), 'logo.pdf', 'application/pdf')).status).toBe(400);
+    // SVG pode carregar script e não sai nos PDFs; conteúdo que não é PNG/JPG também é recusado
+    expect((await uploadLogo(office.token, Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>'), 'logo.svg', 'image/svg+xml')).status).toBe(400);
+    expect((await uploadLogo(office.token, Buffer.from('<script>alert(1)</script>'), 'logo.png', 'image/png')).status).toBe(400);
+    const first = await uploadLogo(office.token);
+    expect(first.status).toBe(200);
+    const second = await uploadLogo(office.token);
+    expect((await office.api.get('/api/office')).body.logoFileId).toBe(second.body.logoFileId);
+    // o logo anterior é apagado
+    expect((await office.api.get(`/api/files/${first.body.logoFileId}`)).status).toBe(404);
+    expect((await office.api.get(`/api/files/${second.body.logoFileId}`)).status).toBe(200);
+    expect((await office.api.del('/api/office/logo')).status).toBe(200);
+    expect((await office.api.get('/api/office')).body.logoFileId).toBeNull();
+    expect((await office.api.get(`/api/files/${second.body.logoFileId}`)).status).toBe(404);
+  });
+
+  it('preferências: status de bloqueio do checklist e cores validados', async () => {
+    const office = await registerOffice(env);
+    expect((await office.api.put('/api/office/settings', { lockChecklistFromSubstatus: 'qualquer' })).status).toBe(400);
+    expect((await office.api.put('/api/office/settings', { reportLineColor: 'azul' })).status).toBe(400);
+    const res = await office.api.put('/api/office/settings', { lockChecklistFromSubstatus: 'elaboration', highNetWorthBaseCents: 500_000_000 });
+    expect(res.body).toMatchObject({ lockChecklistFromSubstatus: 'elaboration', highNetWorthBaseCents: 500_000_000 });
+    expect((await office.api.put('/api/office/settings', { lockChecklistFromSubstatus: null })).body.lockChecklistFromSubstatus).toBeNull();
+    const viewer = await createEmployee(env, office.api, ['settings.view']);
+    expect((await viewer.api.put('/api/office/settings', { autoGenerateCnd: true })).status).toBe(403);
+  });
+
+  it('contratos do escritório', async () => {
+    const office = await registerOffice(env);
+    const list = await office.api.get('/api/office/contracts');
+    expect(list.body[0]).toMatchObject({ name: 'Avaliação gratuita', status: 'active' });
+    const emp = await createEmployee(env, office.api, []);
+    expect((await emp.api.get('/api/office/contracts')).status).toBe(403);
+  });
+});
+
+describe('funções, colaboradores e grupos', () => {
+  it('não aceita duas funções com o mesmo nome', async () => {
+    const office = await registerOffice(env);
+    expect((await office.api.post('/api/roles', { name: 'Assistente', permissions: ['customer.list'] })).status).toBe(201);
+    const dup = await office.api.post('/api/roles', { name: 'assistente', permissions: [] });
+    expect(dup.status).toBe(409);
+    expect(dup.body.error).toContain('com este nome');
+    expect((await office.api.post('/api/roles', { name: 'Outra', permissions: ['nao.existe'] })).status).toBe(400);
+  });
+
+  it('convite pendente pode ser reenviado e o link anterior deixa de valer', async () => {
+    const office = await registerOffice(env);
+    const roles = (await office.api.get('/api/roles')).body;
+    const role = roles.find((r: any) => r.name === 'Contador');
+    const created = await office.api.post('/api/employees', { name: 'Bia', email: 'bia@ex.com', roleId: role.id });
+    const oldToken = new URL(created.body.inviteLink).searchParams.get('token');
+
+    let list = (await office.api.get('/api/employees')).body;
+    expect(list.find((u: any) => u.id === created.body.id).invitePending).toBe(true);
+
+    const sentBefore = env.providers.sentEmails.length;
+    const again = await office.api.post(`/api/employees/${created.body.id}/invite`);
+    expect(again.status).toBe(200);
+    expect(env.providers.sentEmails.length).toBe(sentBefore + 1);
+    expect(env.providers.sentEmails.at(-1)!.to).toBe('bia@ex.com');
+
+    const old = await env.app.inject({ method: 'POST', url: '/api/auth/reset-password', payload: { token: oldToken, password: 'senha-bia-123' } });
+    expect(old.statusCode).toBe(400);
+    const newToken = new URL(again.body.inviteLink).searchParams.get('token');
+    const ok = await env.app.inject({ method: 'POST', url: '/api/auth/reset-password', payload: { token: newToken, password: 'senha-bia-123' } });
+    expect(ok.statusCode).toBe(200);
+
+    list = (await office.api.get('/api/employees')).body;
+    expect(list.find((u: any) => u.id === created.body.id).invitePending).toBe(false);
+    expect((await office.api.post(`/api/employees/${created.body.id}/invite`)).status).toBe(400);
+  });
+
+  it('reenvio de convite exige permissão e respeita o escritório', async () => {
+    const a = await registerOffice(env);
+    const b = await registerOffice(env);
+    const role = (await a.api.get('/api/roles')).body.find((r: any) => !r.isSystem);
+    const created = await a.api.post('/api/employees', { name: 'Caio', email: `caio-${Date.now()}@ex.com`, roleId: role.id });
+    expect((await b.api.post(`/api/employees/${created.body.id}/invite`)).status).toBe(404);
+    const viewer = await createEmployee(env, a.api, ['employee.list']);
+    expect((await viewer.api.post(`/api/employees/${created.body.id}/invite`)).status).toBe(403);
+  });
+
+  it('grupos com contagem de clientes e nomes únicos', async () => {
+    const office = await registerOffice(env);
+    const g = await office.api.post('/api/customer-groups', { name: 'Família' });
+    expect((await office.api.post('/api/customer-groups', { name: 'família' })).status).toBe(409);
+    const other = await office.api.post('/api/customer-groups', { name: 'VIP' });
+    expect((await office.api.put(`/api/customer-groups/${other.body.id}`, { name: 'FAMÍLIA' })).status).toBe(409);
+    expect((await office.api.put(`/api/customer-groups/${other.body.id}`, { name: 'Clientes VIP' })).status).toBe(200);
+
+    const c1 = await office.api.post('/api/customers', { name: 'Um', cpfCnpj: VALID_CPFS[0] });
+    const c2 = await office.api.post('/api/customers', { name: 'Dois', cpfCnpj: VALID_CPFS[1] });
+    await office.api.post('/api/customers/bulk', { ids: [c1.body.id, c2.body.id], action: 'groups_add', value: [g.body.id] });
+    await office.api.del(`/api/customers/${c2.body.id}`);
+    const list = (await office.api.get('/api/customer-groups')).body;
+    expect(list.find((x: any) => x.id === g.body.id).customers).toBe(1);
+
+    // excluir o grupo não exclui os clientes
+    expect((await office.api.del(`/api/customer-groups/${g.body.id}`)).status).toBe(200);
+    expect((await office.api.get(`/api/customers/${c1.body.id}`)).body.groups).toEqual([]);
+  });
+});
+
+describe('conta do usuário', () => {
+  it('altera o próprio nome, sem mexer no e-mail', async () => {
+    const office = await registerOffice(env);
+    expect((await office.api.put('/api/account/profile', { name: 'A' })).status).toBe(400);
+    const res = await office.api.put('/api/account/profile', { name: 'Ana Maria Dona', email: 'outro@ex.com' });
+    expect(res.status).toBe(200);
+    expect(res.body.user).toMatchObject({ name: 'Ana Maria Dona', email: office.email });
+  });
+
+  it('preferência de notificações e encerramento das sessões', async () => {
+    const office = await registerOffice(env);
+    const pref = await office.api.put('/api/auth/preferences', { notificationsEnabled: false });
+    expect(pref.body.user.notificationPrefs.enabled).toBe(false);
+    const login = await env.app.inject({ method: 'POST', url: '/api/auth/login', payload: { email: office.email, password: 'senha-forte-123' } });
+    const other = client(env, login.json().token);
+    expect((await other.get('/api/auth/me')).status).toBe(200);
+    expect((await office.api.post('/api/auth/logout-all')).status).toBe(200);
+    expect((await other.get('/api/auth/me')).status).toBe(401);
+    expect((await office.api.get('/api/auth/me')).status).toBe(401);
+  });
+
+  it('exige login', async () => {
+    const res = await env.app.inject({ method: 'PUT', url: '/api/account/profile', payload: { name: 'Fulano' } });
+    expect(res.statusCode).toBe(401);
+  });
+});
