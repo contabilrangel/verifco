@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { ELABORATION_STATUS, ITEM_KINDS, type DeclarationItem, type ElaborationStatus } from '@verifco/shared';
+import { ELABORATION_LIST_PERMISSIONS, ELABORATION_STATUS, ITEM_KINDS, type DeclarationItem, type ElaborationStatus } from '@verifco/shared';
 import type { DbOrTx } from '../../db/client';
 import { customers, declarationItems, declarations, documents, files, jobs } from '../../db/schema';
 import { badRequest, notFound } from '../../lib/errors';
@@ -26,7 +26,8 @@ import {
   type DocStat,
 } from './service';
 
-const LIST_PERMS = ['elaboration.export', 'elaboration.process', 'pre_declaration.view'];
+/** Quem processa, valida ou decide linhas da pré-declaração também precisa ver a lista (mesma lista do menu). */
+const LIST_PERMS = ELABORATION_LIST_PERMISSIONS;
 const STATUS_KEYS = Object.keys(ELABORATION_STATUS) as [ElaborationStatus, ...ElaborationStatus[]];
 
 const listQuery = z.object({

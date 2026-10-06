@@ -248,6 +248,19 @@ export function isPermission(key: string): boolean {
   return PERMISSION_SET.has(key);
 }
 
+/**
+ * Quem abre a central de elaboração (menu, lista, detalhe e jobs): quem exporta, processa,
+ * visualiza, cria (processa e valida) ou edita (decide as linhas) a pré-declaração. A API
+ * (`modules/elaboration/routes.ts`) e o menu da web usam esta mesma lista.
+ */
+export const ELABORATION_LIST_PERMISSIONS: string[] = [
+  'elaboration.export',
+  'elaboration.process',
+  'pre_declaration.view',
+  'pre_declaration.create',
+  'pre_declaration.edit',
+];
+
 /** Função padrão de quem cria o escritório: todas as permissões. */
 export const ADMIN_ROLE_NAME = 'Administrador';
 

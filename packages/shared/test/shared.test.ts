@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ALL_PERMISSIONS,
   DOCUMENT_CATEGORY_LIST,
+  ELABORATION_LIST_PERMISSIONS,
   PERMISSION_CATEGORIES,
   STAGE_SUBSTATUS,
   TEMPLATES,
@@ -10,6 +11,7 @@ import {
   formatCpfCnpj,
   isValidCnpj,
   isValidCpf,
+  isPermission,
   renderTemplate,
   stageOfSubstatus,
   unknownVariables,
@@ -35,6 +37,10 @@ describe('permissões', () => {
   it('não tem chaves repetidas', () => {
     expect(new Set(ALL_PERMISSIONS).size).toBe(ALL_PERMISSIONS.length);
     expect(PERMISSION_CATEGORIES.length).toBeGreaterThan(15);
+  });
+  it('a lista da elaboração só tem chaves existentes, com criar e editar a pré-declaração', () => {
+    for (const k of ELABORATION_LIST_PERMISSIONS) expect(isPermission(k), k).toBe(true);
+    expect(ELABORATION_LIST_PERMISSIONS).toEqual(expect.arrayContaining(['pre_declaration.create', 'pre_declaration.edit']));
   });
 });
 

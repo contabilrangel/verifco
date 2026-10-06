@@ -96,6 +96,20 @@ describe('ElaborationPage: permissões iguais às do servidor (CON-14)', () => {
     expect(within(drawer).queryByRole('button', { name: /Validar/ })).toBeNull();
   });
 
+  it('sem pre_declaration.view: quem só cria ou só edita abre a lista com as próprias ações (COB-13)', async () => {
+    await renderAs(['pre_declaration.create']);
+    expect(screen.getByRole('button', { name: /Processar documentos/ })).toBeTruthy();
+    const created = await openReview();
+    expect(within(created).getByRole('button', { name: /Validar/ })).toBeTruthy();
+    expect(within(created).queryByRole('button', { name: 'Aceitar linha' })).toBeNull();
+    cleanup();
+    await renderAs(['pre_declaration.edit']);
+    expect(screen.queryByRole('button', { name: /Processar documentos/ })).toBeNull();
+    const edited = await openReview();
+    expect(within(edited).getByRole('button', { name: 'Aceitar linha' })).toBeTruthy();
+    expect(within(edited).queryByRole('button', { name: /Validar/ })).toBeNull();
+  });
+
   it('elaboration.process faz tudo; só visualizar não mostra ações', async () => {
     await renderAs(['elaboration.process']);
     expect(screen.getByRole('button', { name: /Processar documentos/ })).toBeTruthy();
