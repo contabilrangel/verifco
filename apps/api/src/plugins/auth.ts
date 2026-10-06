@@ -2,7 +2,8 @@ import fp from 'fastify-plugin';
 import jwt from '@fastify/jwt';
 import { eq } from 'drizzle-orm';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { customers, roles, users, platformUsers } from '../db/schema';
+import { customers, roles, users } from '../db/schema';
+import { platformUsers } from '../db/platform-schema';
 
 export type UserToken = { typ: 'user'; sub: string; oid: string; tv: number };
 export type CustomerToken = { typ: 'customer'; cid: string; oid: string; scope: string };
@@ -33,7 +34,7 @@ export const authPlugin = fp(async (app: FastifyInstance) => {
     }
     const { db } = app.ctx;
     if (payload.typ === 'platform') {
-      const user = await db.query.platformUsers.findFirst({ where: eq(platformUsers.id, payload.sub) });
+      const user = await app.ctx.platformDb.query.platformUsers.findFirst({ where: eq(platformUsers.id, payload.sub) });
       if (!user?.isActive || user.tokenVersion !== payload.tv) return;
       req.platformAuth = { id: user.id, name: user.name, email: user.email, role: user.role };
     } else if (payload.typ === 'user') {

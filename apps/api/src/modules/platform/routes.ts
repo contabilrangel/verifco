@@ -3,7 +3,8 @@ import { asc, desc, eq, ilike, sql } from 'drizzle-orm';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { AI_PROVIDERS, aiProviderDef, todayIso } from '@verifco/shared';
-import { contracts, offices, platformUsers, platformSettings, platformAiConnections, platformAuditLogs } from '../../db/schema';
+import { contracts, offices } from '../../db/schema';
+import { platformUsers, platformSettings, platformAiConnections, platformAuditLogs } from '../../db/platform-schema';
 import { badRequest, conflict, forbidden, notFound, unauthorized } from '../../lib/errors';
 import { guard, parse } from '../../lib/http';
 import { consume } from '../../services/rate-limit';
@@ -37,27 +38,28 @@ function platformUser(req: FastifyRequest, owner = false) {
 }
 
 export default async function platformRoutes(app: FastifyInstance) {
-  const { ctx } = app; const { db } = ctx;
+  const { ctx } = app; const { db, platformDb } = ctx;
+  const rateCtx = { config: ctx.config, db: platformDb };
   const read = { preHandler: async (req: FastifyRequest) => { platformUser(req); } };
   const write = { preHandler: async (req: FastifyRequest) => { platformUser(req, true); } };
   async function audit(req: FastifyRequest, action: string, entityId: string | null = null, details: Record<string, unknown> = {}) {
-    await db.insert(platformAuditLogs).values({ actorId: platformUser(req).id, action, entityId, details });
+    await platformDb.insert(platformAuditLogs).values({ actorId: platformUser(req).id, action, entityId, details });
   }
   app.post('/platform/login', async (req) => {
     const body = parse(loginBody, req.body);
-    await consume(ctx, `platform-login-email:${body.email}`, { max: 10, windowSec: 900 });
-    const user = await db.query.platformUsers.findFirst({ where: eq(platformUsers.email, body.email) });
+    await consume(rateCtx, `platform-login-email:${body.email}`, { max: 10, windowSec: 900 });
+    const user = await platformDb.query.platformUsers.findFirst({ where: eq(platformUsers.email, body.email) });
     // Mesmo custo para conta inexistente; mensagem não revela se a conta existe.
     const hash = user?.passwordHash ?? '$2b$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy';
     const valid = await bcrypt.compare(body.password, hash);
     if (!user?.isActive || !valid) throw unauthorized('E-mail ou senha inválidos.');
-    await db.insert(platformAuditLogs).values({ actorId: user.id, action: 'platform.login' });
+    await platformDb.insert(platformAuditLogs).values({ actorId: user.id, action: 'platform.login' });
     return { token: app.jwt.sign({ typ: 'platform', sub: user.id, tv: user.tokenVersion }, { expiresIn: '1h' }) };
   });
   app.get('/platform/me', read, async (req) => platformUser(req));
   app.post('/platform/logout', read, async (req) => {
     const user = platformUser(req);
-    await db.update(platformUsers).set({ tokenVersion: sql`${platformUsers.tokenVersion} + 1` }).where(eq(platformUsers.id, user.id));
+    await platformDb.update(platformUsers).set({ tokenVersion: sql`${platformUsers.tokenVersion} + 1` }).where(eq(platformUsers.id, user.id));
     await audit(req, 'platform.logout'); return { ok: true };
   });
   app.get('/platform/overview', read, async () => {
@@ -108,13 +110,13 @@ export default async function platformRoutes(app: FastifyInstance) {
   app.put('/platform/contracts/:id', write, async (req) => saveContract(req, parse(idParam, req.params).id));
   app.get('/platform/ai', write, async () => ({
     catalog: AI_PROVIDERS,
-    connections: (await db.select().from(platformAiConnections).orderBy(asc(platformAiConnections.name))).map(safeConnection),
-    defaultAiId: (await db.query.platformSettings.findFirst({ where: eq(platformSettings.id, 'global') }))?.defaultAiId ?? null,
+    connections: (await platformDb.select().from(platformAiConnections).orderBy(asc(platformAiConnections.name))).map(safeConnection),
+    defaultAiId: (await platformDb.query.platformSettings.findFirst({ where: eq(platformSettings.id, 'global') }))?.defaultAiId ?? null,
     environmentConfigured: Boolean(ctx.config.ANTHROPIC_API_KEY),
   }));
   async function saveAi(req: FastifyRequest, id?: string) {
     const body = parse(aiBody, req.body); const def = aiProviderDef(body.provider)!;
-    const old = id ? await db.query.platformAiConnections.findFirst({ where: eq(platformAiConnections.id, id) }) : null;
+    const old = id ? await platformDb.query.platformAiConnections.findFirst({ where: eq(platformAiConnections.id, id) }) : null;
     if (id && !old) throw notFound('Conexão');
     if (old && old.provider !== body.provider) throw badRequest('Crie outra conexão para trocar de serviço.');
     const baseUrl = def.key === 'compatible' ? (body.baseUrl ?? '') : def.baseUrl;
@@ -124,8 +126,8 @@ export default async function platformRoutes(app: FastifyInstance) {
     if (body.enabled && !secretsEnc && def.key !== 'ollama') throw badRequest('Informe a chave de API para ativar esta conexão.');
     const values = { provider: def.key, name: body.name, model: body.model, baseUrl: baseUrl.replace(/\/+$/, ''),
       supportsImages: body.supportsImages, enabled: body.enabled, secretsEnc, status: 'configured', lastTestAt: null, updatedAt: new Date() };
-    const [saved] = old ? await db.update(platformAiConnections).set(values).where(eq(platformAiConnections.id, old.id)).returning()
-      : await db.insert(platformAiConnections).values(values).returning();
+    const [saved] = old ? await platformDb.update(platformAiConnections).set(values).where(eq(platformAiConnections.id, old.id)).returning()
+      : await platformDb.insert(platformAiConnections).values(values).returning();
     await audit(req, old ? 'ai.update' : 'ai.create', saved.id, { provider: def.key, model: body.model, enabled: body.enabled, keyChanged: Boolean(body.apiKey) || body.apiKey === null });
     return safeConnection(saved);
   }
@@ -134,19 +136,19 @@ export default async function platformRoutes(app: FastifyInstance) {
   app.put('/platform/ai-default', write, async (req) => {
     const { id } = parse(z.object({ id: z.uuid().nullable() }), req.body);
     if (id) {
-      const row = await db.query.platformAiConnections.findFirst({ where: eq(platformAiConnections.id, id) });
+      const row = await platformDb.query.platformAiConnections.findFirst({ where: eq(platformAiConnections.id, id) });
       if (!row?.enabled) throw badRequest('Selecione uma conexão ativa.');
       unlockConnection(ctx, row);
     }
-    await db.insert(platformSettings).values({ id: 'global', defaultAiId: id }).onConflictDoUpdate({
+    await platformDb.insert(platformSettings).values({ id: 'global', defaultAiId: id }).onConflictDoUpdate({
       target: platformSettings.id, set: { defaultAiId: id, updatedAt: new Date() },
     });
     await audit(req, 'ai.default', id); return { ok: true };
   });
   app.post('/platform/ai/:id/test', write, async (req) => {
-    await consume(ctx, `ai-test:${platformUser(req).id}`, { max: 10, windowSec: 60 });
+    await consume(rateCtx, `ai-test:${platformUser(req).id}`, { max: 10, windowSec: 60 });
     const { id } = parse(idParam, req.params);
-    const row = await db.query.platformAiConnections.findFirst({ where: eq(platformAiConnections.id, id) });
+    const row = await platformDb.query.platformAiConnections.findFirst({ where: eq(platformAiConnections.id, id) });
     if (!row) throw notFound('Conexão');
     let ok = true;
     try {
@@ -154,34 +156,34 @@ export default async function platformRoutes(app: FastifyInstance) {
       await completeConnection(c, { system: 'Responda em português.', messages: [{ role: 'user', content: 'Responda apenas: conexão disponível.' }], maxTokens: 1024 },
         connectionFetch(c, ctx.providers.fetch, ctx.providers.userUrlFetch));
     } catch { ok = false; }
-    await db.update(platformAiConnections).set({ lastTestAt: new Date(), status: ok ? 'connected' : 'error' }).where(eq(platformAiConnections.id, id));
+    await platformDb.update(platformAiConnections).set({ lastTestAt: new Date(), status: ok ? 'connected' : 'error' }).where(eq(platformAiConnections.id, id));
     await audit(req, 'ai.test', id, { ok });
     return { ok, message: ok ? 'O modelo respondeu. Conexão disponível.' : 'Não foi possível obter uma resposta. Confira chave, modelo, saldo e disponibilidade do serviço.' };
   });
   app.delete('/platform/ai/:id', write, async (req, reply) => {
     const { id } = parse(idParam, req.params);
     // FK restrict cobre a corrida entre exclusão e seleção como padrão.
-    const settings = await db.query.platformSettings.findFirst({ where: eq(platformSettings.id, 'global') });
+    const settings = await platformDb.query.platformSettings.findFirst({ where: eq(platformSettings.id, 'global') });
     if (settings?.defaultAiId === id) throw conflict('Escolha outra conexão padrão antes de excluir esta.');
-    const deleted = await db.delete(platformAiConnections).where(eq(platformAiConnections.id, id)).returning({ id: platformAiConnections.id });
+    const deleted = await platformDb.delete(platformAiConnections).where(eq(platformAiConnections.id, id)).returning({ id: platformAiConnections.id });
     if (!deleted.length) throw notFound('Conexão');
     await audit(req, 'ai.delete', id); return reply.code(204).send();
   });
-  app.get('/platform/users', write, async () => db.select({
+  app.get('/platform/users', write, async () => platformDb.select({
     id: platformUsers.id, name: platformUsers.name, email: platformUsers.email, role: platformUsers.role, isActive: platformUsers.isActive,
   }).from(platformUsers).orderBy(asc(platformUsers.name)));
   app.post('/platform/users', write, async (req, reply) => {
     const body = parse(z.object({ name: z.string().trim().min(1).max(100), email: z.email().max(320).transform((v) => v.toLowerCase()),
       password: z.string().min(12, 'Use uma senha com pelo menos 12 caracteres.').max(200), role: z.enum(['owner', 'developer']) }), req.body);
-    if (await db.query.platformUsers.findFirst({ where: eq(platformUsers.email, body.email) })) throw conflict('Este e-mail já possui uma conta do sistema.');
-    const [saved] = await db.insert(platformUsers).values({ name: body.name, email: body.email, role: body.role,
+    if (await platformDb.query.platformUsers.findFirst({ where: eq(platformUsers.email, body.email) })) throw conflict('Este e-mail já possui uma conta do sistema.');
+    const [saved] = await platformDb.insert(platformUsers).values({ name: body.name, email: body.email, role: body.role,
       passwordHash: await bcrypt.hash(body.password, 12) }).returning({ id: platformUsers.id });
     await audit(req, 'platform.user.create', saved.id, { role: body.role }); return reply.code(201).send(saved);
   });
   app.put('/platform/users/:id/active', write, async (req) => {
     const { id } = parse(idParam, req.params); const { isActive } = parse(z.object({ isActive: z.boolean() }), req.body);
     if (id === platformUser(req).id) throw badRequest('Você não pode desativar sua própria conta.');
-    const saved = await db.transaction(async (tx) => {
+    const saved = await platformDb.transaction(async (tx) => {
       await tx.execute(sql`select pg_advisory_xact_lock(728103)`);
       const actor = await tx.query.platformUsers.findFirst({ where: eq(platformUsers.id, platformUser(req).id) });
       if (!actor?.isActive || actor.role !== 'owner') throw forbidden();
@@ -196,7 +198,7 @@ export default async function platformRoutes(app: FastifyInstance) {
     });
     await audit(req, 'platform.user.active', id, { isActive }); return saved;
   });
-  app.get('/platform/audit', read, async () => db.select({
+  app.get('/platform/audit', read, async () => platformDb.select({
     id: platformAuditLogs.id, actor: platformUsers.name, action: platformAuditLogs.action,
     entityId: platformAuditLogs.entityId, details: platformAuditLogs.details, createdAt: platformAuditLogs.createdAt,
   }).from(platformAuditLogs).leftJoin(platformUsers, eq(platformUsers.id, platformAuditLogs.actorId))

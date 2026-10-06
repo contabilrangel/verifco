@@ -99,8 +99,9 @@ export async function buildApp(ctx: AppContext, opts: { logger?: boolean } = {})
     const rule = limitFor(req);
     if (!rule) return;
     const key = `${rule.group}:${req.ip}`;
-    if (rule.count === 'all') await consume(ctx, key, rule);
-    else await check(ctx, key, rule);
+    const rateCtx = rule.group === 'platform-login' ? { config: ctx.config, db: ctx.platformDb } : ctx;
+    if (rule.count === 'all') await consume(rateCtx, key, rule);
+    else await check(rateCtx, key, rule);
   });
   app.addHook('onResponse', async (req, reply) => {
     const rule = limitFor(req);
