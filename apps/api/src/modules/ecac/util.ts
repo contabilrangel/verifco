@@ -2,7 +2,7 @@ import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { parseBrDate } from '@verifco/shared';
 import type { Db } from '../../db/client';
 import { jobs } from '../../db/schema';
-import { activeJob } from '../../jobs/queue';
+import { activeJob, INTERRUPTED_ERROR, isJobActive } from '../../jobs/queue';
 
 export type JobRow = typeof jobs.$inferSelect;
 
@@ -78,6 +78,7 @@ export async function fanoutJobView(db: Db, job: JobRow | null | undefined) {
   const base = jobView(job);
   const view = base && job!.runAt > job!.createdAt ? { ...base, createdAt: job!.runAt } : base;
   if (!view) return view;
+  if (job!.status === 'running' && !isJobActive(job!)) return { ...view, status: 'failed', error: INTERRUPTED_ERROR };
   const children = await db.select().from(jobs).where(eq(jobs.parentId, job!.id));
   const stored = fanoutOf(job!);
   const fan = children.length ? { ...summarizeOfficeChildren(children), finishedAt: stored?.finishedAt } : stored;
