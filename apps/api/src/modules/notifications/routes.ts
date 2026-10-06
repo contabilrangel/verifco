@@ -1,6 +1,6 @@
 import { and, desc, eq, isNull, or } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
-import { notifications } from '../../db/schema';
+import { notifications, users } from '../../db/schema';
 import { parse, requireUser, uuidParam } from '../../lib/http';
 
 export async function notificationRoutes(app: FastifyInstance) {
@@ -11,6 +11,9 @@ export async function notificationRoutes(app: FastifyInstance) {
 
   app.get('/notifications', async (req) => {
     const user = requireUser(req);
+    // o usuário pode desligar as notificações em Conta › Preferências
+    const me = await db.query.users.findFirst({ where: eq(users.id, user.userId) });
+    if (me?.notificationPrefs?.enabled === false) return [];
     return db.select().from(notifications).where(mine(user.officeId, user.userId)).orderBy(desc(notifications.createdAt)).limit(50);
   });
 

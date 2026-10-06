@@ -51,6 +51,7 @@ export const NAV: NavGroup[] = [
       { to: '/importacoes/atualizar-clientes', label: 'Atualizar clientes em lote', perms: ['worksheet.update_customers'] },
       { to: '/importacoes/procuracoes', label: 'Procuração em lote', perms: ['worksheet.procuration'] },
       { to: '/importacoes/inss', label: 'Login INSS em lote', perms: ['worksheet.inss'] },
+      { to: '/importacoes/ecac', label: 'Login eCAC em lote', perms: ['worksheet.ecac'] },
     ],
   },
   {
@@ -77,7 +78,7 @@ export const NAV: NavGroup[] = [
   { id: 'relatorios', label: 'Relatórios', icon: BarChart3, to: '/relatorios', perms: ['report.billing', 'report.results', 'report.backlogs', 'report.refund'] },
   { id: 'elaboracao', label: 'Elaboração', icon: Wand2, to: '/elaboracao', perms: ['elaboration.export', 'pre_declaration.view'] },
   { id: 'pre-preenchidas', label: 'Pré-preenchidas', icon: FileStack, to: '/pre-preenchidas', perms: ['prefilled.download'] },
-  { id: 'admin', label: 'Administração', icon: Building2, to: '/admin', perms: ['office.edit', 'settings.view', 'employee.list', 'role.list', 'customer_group.list', 'integrations.manage', 'contracts.view'] },
+  { id: 'admin', label: 'Administração', icon: Building2, to: '/admin', perms: ['office.edit', 'settings.view', 'employee.list', 'role.list', 'customer_group.list', 'integrations.manage', 'contracts.view', 'procuration.list', 'procuration.edit', 'procuration.certificate', 'copilot.manage'] },
   { id: 'backup', label: 'Backup', icon: HardDriveDownload, to: '/backup', perms: ['backup.download'] },
   { id: 'downloads', label: 'Central de downloads', icon: Download, to: '/downloads' },
 ];

@@ -553,7 +553,7 @@ export async function customerRoutes(app: FastifyInstance) {
   const procuratorBody = z.object({
     name: z.string().trim().min(2).max(200),
     cpfCnpj: z.string().refine(isValidCpfCnpj, 'CPF/CNPJ inválido'),
-    authType: z.enum(['govbr', 'certificate_local', 'certificate_cloud']).default('govbr'),
+    authType: z.enum(['govbr', 'certificate_local', 'certificate_cloud']).optional(),
     userId: z.uuid().nullable().optional(),
     certificateExpiresAt: z.preprocess((v) => (v === '' ? null : v), dateStr.nullable().optional()),
   });
@@ -561,7 +561,10 @@ export async function customerRoutes(app: FastifyInstance) {
   app.post('/procurators', { preHandler: guard('procuration.edit') }, async (req, reply) => {
     const user = requireUser(req);
     const body = parse(procuratorBody, req.body);
-    const [row] = await db.insert(procurators).values({ ...body, cpfCnpj: onlyDigits(body.cpfCnpj), officeId: user.officeId }).returning();
+    const doc = onlyDigits(body.cpfCnpj);
+    const dup = await db.query.procurators.findFirst({ where: and(eq(procurators.officeId, user.officeId), eq(procurators.cpfCnpj, doc)) });
+    if (dup) throw conflict('Já existe um procurador com este CPF/CNPJ.');
+    const [row] = await db.insert(procurators).values({ ...body, authType: body.authType ?? 'govbr', cpfCnpj: doc, officeId: user.officeId }).returning();
     reply.status(201);
     return row;
   });
@@ -570,9 +573,13 @@ export async function customerRoutes(app: FastifyInstance) {
     const user = requireUser(req);
     const { id } = parse(uuidParam, req.params);
     const body = parse(procuratorBody, req.body);
+    const doc = onlyDigits(body.cpfCnpj);
+    const dup = await db.query.procurators.findFirst({ where: and(eq(procurators.officeId, user.officeId), eq(procurators.cpfCnpj, doc), ne(procurators.id, id)) });
+    if (dup) throw conflict('Já existe um procurador com este CPF/CNPJ.');
+    // sem authType no corpo, mantém a forma de acesso atual
     const [row] = await db
       .update(procurators)
-      .set({ ...body, cpfCnpj: onlyDigits(body.cpfCnpj), updatedAt: new Date() })
+      .set({ ...body, cpfCnpj: doc, updatedAt: new Date() })
       .where(and(eq(procurators.id, id), eq(procurators.officeId, user.officeId)))
       .returning();
     if (!row) throw notFound('Procurador');

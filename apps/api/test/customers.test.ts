@@ -119,3 +119,22 @@ describe('clientes', () => {
     expect(list.body[0].customers).toBe(1);
   });
 });
+
+describe('procuradores e notificações', () => {
+  it('impede procurador repetido e mantém a forma de acesso ao editar', async () => {
+    const { api } = await registerOffice(env);
+    const p = await api.post('/api/procurators', { name: 'Proc', cpfCnpj: '11.222.333/0001-81', authType: 'certificate_local' });
+    expect((await api.post('/api/procurators', { name: 'Outro', cpfCnpj: '11222333000181' })).status).toBe(409);
+    const upd = await api.put(`/api/procurators/${p.body.id}`, { name: 'Proc 2', cpfCnpj: '11222333000181' });
+    expect(upd.body.authType).toBe('certificate_local');
+  });
+
+  it('respeita a preferência de não receber notificações', async () => {
+    const { api, officeId } = await registerOffice(env);
+    const { notify } = await import('../src/services/notify');
+    await notify(env.ctx.db, { officeId, title: 'Aviso' });
+    expect((await api.get('/api/notifications')).body).toHaveLength(1);
+    await api.put('/api/auth/preferences', { notificationsEnabled: false });
+    expect((await api.get('/api/notifications')).body).toHaveLength(0);
+  });
+});
