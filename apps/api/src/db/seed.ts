@@ -270,7 +270,8 @@ function itemsFor(p: Person, year: number) {
 async function main() {
   const force = process.argv.includes('--force');
   const providers = new MemoryProviders();
-  const { ctx, close } = await createContext({ RUN_WORKER: false }, { providers });
+  // o seed define a senha dos colaboradores pelo link de convite devolvido na resposta (só fora de produção)
+  const { ctx, close } = await createContext({ RUN_WORKER: false, DEV_SHOW_ACCESS_CODES: true }, { providers });
   if (ctx.config.NODE_ENV === 'production' && !force) {
     console.error('Recusado: NODE_ENV=production. Use --force se quiser mesmo criar dados de demonstração.');
     await close();

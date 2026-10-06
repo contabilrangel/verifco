@@ -1,5 +1,7 @@
 import type { FastifyRequest } from 'fastify';
 import { badRequest } from '../../lib/errors';
+import { fileExtension } from '@verifco/shared';
+import { KNOWN_FILE_TYPES, OCTET_STREAM } from '../../services/uploads';
 
 export interface UploadedFile {
   buffer: Buffer;
@@ -27,21 +29,13 @@ export async function readMultipart(req: FastifyRequest): Promise<{ file: Upload
   return { file, fields };
 }
 
-/** Tipo MIME pelo nome quando o cliente manda `application/octet-stream`. */
-export function guessMimeType(filename: string, sent: string): string {
-  if (sent && sent !== 'application/octet-stream') return sent;
-  const ext = /\.([a-z0-9]+)$/i.exec(filename)?.[1]?.toLowerCase();
-  const map: Record<string, string> = {
-    pdf: 'application/pdf',
-    xml: 'application/xml',
-    png: 'image/png',
-    jpg: 'image/jpeg',
-    jpeg: 'image/jpeg',
-    webp: 'image/webp',
-    zip: 'application/zip',
-    txt: 'text/plain',
-  };
-  return (ext && map[ext]) || 'application/octet-stream';
+/**
+ * Tipo MIME gravado para arquivos do robô e uploads manuais (eCAC, pré-preenchidas): só pela
+ * extensão, numa lista de tipos sem script. O tipo informado por quem enviou é ignorado (um
+ * .html enviado como "application/pdf" vira binário, só para download).
+ */
+export function guessMimeType(filename: string, _sent?: string): string {
+  return KNOWN_FILE_TYPES[fileExtension(filename)] ?? OCTET_STREAM;
 }
 
 /** Nome seguro para entradas de .zip e cabeçalhos de download. */

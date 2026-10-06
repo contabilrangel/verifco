@@ -7,6 +7,7 @@ import { files, importBatches, users } from '../../db/schema';
 import { badRequest, forbidden, notFound } from '../../lib/errors';
 import { audit, can, paginate, paginationSchema, parse, requirePermission, requireUser, uuidParam } from '../../lib/http';
 import { buildWorkbook } from '../../services/xlsx';
+import { mimeForStoredFile, safeFilename } from '../../services/uploads';
 import { PROCESSORS } from './processors';
 import { COLUMNS, hasColumn, readImportFile, type SheetRow } from './sheet';
 import { buildTemplate } from './templates';
@@ -94,7 +95,7 @@ export async function importRoutes(app: FastifyInstance) {
     // planilhas com senha não são guardadas: o conteúdo já foi cifrado nos clientes
     const saved = def.hasSecrets
       ? null
-      : await app.ctx.files.save({ officeId: user.officeId, data, filename: file.filename, mimeType: file.mimetype, userId: user.userId });
+      : await app.ctx.files.save({ officeId: user.officeId, data, filename: safeFilename(file.filename), mimeType: mimeForStoredFile(file.filename, data), userId: user.userId });
 
     const [batch] = await db
       .insert(importBatches)

@@ -2,7 +2,7 @@ import { useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { CheckCircle2, Lock, Mail } from 'lucide-react';
 import { Alert, Button, Input } from '../../ds';
-import { api } from '../../lib/api';
+import { ApiError, api } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 
 function AuthLayout({ children }: { children: ReactNode }) {
@@ -121,6 +121,7 @@ export function ForgotPasswordPage() {
   const [email, setEmail] = useState('');
   const [sent, setSent] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   return (
     <AuthLayout>
       <form
@@ -128,12 +129,21 @@ export function ForgotPasswordPage() {
         onSubmit={async (e) => {
           e.preventDefault();
           setLoading(true);
-          await api.post('/auth/forgot-password', { email }).catch(() => {});
-          setLoading(false);
-          setSent(true);
+          setError(null);
+          try {
+            await api.post('/auth/forgot-password', { email });
+            setSent(true);
+          } catch (err) {
+            // a resposta é a mesma exista ou não a conta; só o limite de tentativas e a falta de conexão aparecem
+            if (err instanceof ApiError && (err.status === 429 || err.status === 0 || err.status === 400)) setError(err.message);
+            else setSent(true);
+          } finally {
+            setLoading(false);
+          }
         }}
       >
         <h2 className="vf-text-xl">Esqueci minha senha</h2>
+        {error && <Alert tone="danger">{error}</Alert>}
         {sent ? (
           <Alert tone="success">Se houver uma conta com este e-mail, você vai receber um link para criar uma nova senha.</Alert>
         ) : (
@@ -153,10 +163,24 @@ export function ResetPasswordPage() {
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const invite = params.get('convite') === '1';
+  const token = params.get('token');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // sem o token do e-mail não há o que redefinir: explica e leva para pedir um link novo
+  if (!token) {
+    return (
+      <AuthLayout>
+        <div className="vf-stack">
+          <h2 className="vf-text-xl">Link inválido ou expirado</h2>
+          <Alert tone="danger">Este endereço não tem o código de redefinição. Abra o link completo que chegou por e-mail ou peça um novo.</Alert>
+          <Link to="/esqueci-senha">Pedir um novo link</Link>
+          <Link to="/entrar">Voltar para o login</Link>
+        </div>
+      </AuthLayout>
+    );
+  }
   return (
     <AuthLayout>
       <form
@@ -167,7 +191,7 @@ export function ResetPasswordPage() {
           setLoading(true);
           setError(null);
           try {
-            await api.post('/auth/reset-password', { token: params.get('token'), password });
+            await api.post('/auth/reset-password', { token, password });
             navigate('/entrar');
           } catch (err) {
             setError(err instanceof Error ? err.message : 'Link inválido.');

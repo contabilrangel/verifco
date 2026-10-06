@@ -5,8 +5,9 @@ import { DECLARATION_SUBSTATUS, PERMISSION_CATEGORIES, isPermission, isValidCpfC
 import type { AuthUser } from '../../context';
 import { contracts, customerGroupMembers, customerGroups, customers, offices, passwordResets, roles, users } from '../../db/schema';
 import { randomToken, sha256 } from '../../lib/crypto';
-import { badRequest, conflict, notFound } from '../../lib/errors';
-import { audit, guard, optionalText, parse, requirePermission, requireUser, uuidParam } from '../../lib/http';
+import { badRequest, conflict, forbidden, notFound } from '../../lib/errors';
+import { exposeDevSecrets } from '../../config';
+import { audit, can, guard, optionalText, parse, requirePermission, requireUser, uuidParam } from '../../lib/http';
 import { DEFAULT_SETTINGS, getOfficeSettings } from '../../services/settings';
 
 const settingsSchema = z
@@ -35,11 +36,13 @@ export async function adminRoutes(app: FastifyInstance) {
   const { db } = app.ctx;
 
   // ---------------------------------------------------------------- escritório
+  /** Dados do escritório; as preferências só para quem tem settings.view ou settings.edit. */
   app.get('/office', async (req) => {
     const user = requireUser(req);
     const office = await db.query.offices.findFirst({ where: eq(offices.id, user.officeId) });
     if (!office) throw notFound('Escritório');
-    return { ...office, settings: { ...DEFAULT_SETTINGS, ...office.settings } };
+    const { settings, ...rest } = office;
+    return canSeeSettings(user) ? { ...rest, settings: { ...DEFAULT_SETTINGS, ...settings } } : rest;
   });
 
   app.put('/office', { preHandler: guard('office.edit') }, async (req) => {
@@ -154,6 +157,7 @@ export async function adminRoutes(app: FastifyInstance) {
   app.post('/roles', { preHandler: guard('role.create') }, async (req, reply) => {
     const user = requireUser(req);
     const body = parse(roleBody, req.body);
+    assertGrantable(user, body.permissions);
     await assertRoleNameFree(user.officeId, body.name);
     const [row] = await db.insert(roles).values({ officeId: user.officeId, ...body }).returning();
     await audit(req, 'create', 'role', row.id, { name: row.name });
@@ -168,6 +172,9 @@ export async function adminRoutes(app: FastifyInstance) {
     const role = await db.query.roles.findFirst({ where: and(eq(roles.id, id), eq(roles.officeId, user.officeId)) });
     if (!role) throw notFound('Função');
     if (role.isSystem) throw badRequest('A função Administrador não pode ser alterada.');
+    // quem não é dono só mexe em funções que não passam das próprias permissões
+    assertGrantable(user, role.permissions, 'Esta função tem permissões que você não tem. Peça ao dono da conta para alterá-la.');
+    assertGrantable(user, body.permissions);
     await assertRoleNameFree(user.officeId, body.name, id);
     const [row] = await db.update(roles).set({ ...body, updatedAt: new Date() }).where(eq(roles.id, id)).returning();
     await audit(req, 'update', 'role', id, { permissions: body.permissions.length });
@@ -240,6 +247,7 @@ export async function adminRoutes(app: FastifyInstance) {
     const body = parse(employeeBody, req.body);
     const role = await db.query.roles.findFirst({ where: and(eq(roles.id, body.roleId), eq(roles.officeId, user.officeId)) });
     if (!role) throw badRequest('Função inválida.');
+    assertRoleAssignable(user, role);
     const exists = await db.query.users.findFirst({ where: sql`lower(${users.email}) = ${body.email.toLowerCase()}` });
     if (exists) throw conflict('Já existe um usuário com este e-mail.');
     const [row] = await db
@@ -249,7 +257,7 @@ export async function adminRoutes(app: FastifyInstance) {
     const link = await sendInvite(req, user, row);
     await audit(req, 'create', 'employee', row.id, { email: row.email });
     reply.status(201);
-    return { id: row.id, name: row.name, email: row.email, roleId: row.roleId, inviteLink: app.ctx.config.NODE_ENV === 'production' ? undefined : link };
+    return { id: row.id, name: row.name, email: row.email, roleId: row.roleId, inviteLink: exposeDevSecrets(app.ctx.config) ? link : undefined };
   });
 
   /** Reenvia o convite de quem ainda não definiu a senha (o link anterior deixa de valer). */
@@ -263,8 +271,31 @@ export async function adminRoutes(app: FastifyInstance) {
     await db.update(passwordResets).set({ usedAt: new Date() }).where(and(eq(passwordResets.userId, target.id), isNull(passwordResets.usedAt)));
     const link = await sendInvite(req, user, target);
     await audit(req, 'resend_invite', 'employee', target.id);
-    return { ok: true, inviteLink: app.ctx.config.NODE_ENV === 'production' ? undefined : link };
+    return { ok: true, inviteLink: exposeDevSecrets(app.ctx.config) ? link : undefined };
   });
+
+  /** Quem não é dono só administra colaboradores cuja função não passa das próprias permissões. */
+  async function assertCanManage(user: AuthUser, target: { isOwner: boolean; roleId: string | null }) {
+    if (user.isOwner) return;
+    if (target.isOwner) throw forbidden('Só o dono da conta pode alterar os dados dele.');
+    const role = target.roleId ? await db.query.roles.findFirst({ where: eq(roles.id, target.roleId) }) : null;
+    if (role && role.permissions.some((p) => !user.permissions.has(p))) {
+      throw forbidden('Este colaborador tem permissões que você não tem. Peça ao dono da conta para alterá-lo.');
+    }
+  }
+
+  /** Avisa o endereço antigo de que o e-mail de acesso mudou. */
+  async function notifyEmailChange(req: Parameters<typeof requireUser>[0], by: AuthUser, target: { name: string; email: string }, newEmail: string) {
+    const office = await db.query.offices.findFirst({ where: eq(offices.id, by.officeId) });
+    await app.ctx.providers.email
+      .send(by.officeId, {
+        to: target.email,
+        toName: target.name,
+        subject: 'Seu e-mail de acesso ao Verifco foi alterado',
+        html: `<p>Olá, ${escapeHtml(target.name)}.</p><p>${escapeHtml(by.name)} alterou o e-mail de acesso da sua conta no Verifco (escritório ${escapeHtml(office?.name ?? '')}) de ${escapeHtml(target.email)} para ${escapeHtml(newEmail)}.</p><p>Se você não reconhece esta alteração, fale com o dono da conta do escritório.</p>`,
+      })
+      .catch((err) => req.log.warn({ err }, 'falha ao avisar a troca de e-mail'));
+  }
 
   app.put('/employees/:id', { preHandler: guard('employee.edit') }, async (req) => {
     const user = requireUser(req);
@@ -274,23 +305,40 @@ export async function adminRoutes(app: FastifyInstance) {
     if (!target) throw notFound('Colaborador');
     const role = await db.query.roles.findFirst({ where: and(eq(roles.id, body.roleId), eq(roles.officeId, user.officeId)) });
     if (!role) throw badRequest('Função inválida.');
+    const email = body.email.toLowerCase();
+    const emailChanged = email !== target.email.toLowerCase();
+    const roleChanged = body.roleId !== target.roleId;
+    const activeChanged = body.isActive !== undefined && body.isActive !== target.isActive;
+    const self = target.id === user.userId;
+    // a própria função, o próprio e-mail e a própria situação só mudam por outra pessoa (ou pelo dono)
+    if (self && !user.isOwner && (emailChanged || roleChanged || activeChanged)) {
+      throw forbidden('Você não pode alterar o próprio e-mail, função ou situação. Peça a quem administra o escritório.');
+    }
+    await assertCanManage(user, target);
+    if (roleChanged) assertRoleAssignable(user, role);
     if (target.isOwner && (body.isActive === false || !role.isSystem)) throw badRequest('O dono da conta precisa continuar ativo e administrador.');
-    const clash = await db.query.users.findFirst({ where: and(sql`lower(${users.email}) = ${body.email.toLowerCase()}`, ne(users.id, id)) });
+    const clash = await db.query.users.findFirst({ where: and(sql`lower(${users.email}) = ${email}`, ne(users.id, id)) });
     if (clash) throw conflict('Já existe um usuário com este e-mail.');
     const deactivating = body.isActive === false && target.isActive;
+    // e-mail novo de outra pessoa: encerra as sessões dela e invalida links de senha pendentes
+    const resetSessions = deactivating || (emailChanged && !self);
     const [row] = await db
       .update(users)
       .set({
         name: body.name,
-        email: body.email.toLowerCase(),
+        email,
         roleId: body.roleId,
         isActive: body.isActive ?? target.isActive,
-        tokenVersion: deactivating ? target.tokenVersion + 1 : target.tokenVersion,
+        tokenVersion: resetSessions ? target.tokenVersion + 1 : target.tokenVersion,
         updatedAt: new Date(),
       })
       .where(eq(users.id, id))
       .returning();
-    await audit(req, 'update', 'employee', id);
+    if (emailChanged) {
+      await db.update(passwordResets).set({ usedAt: new Date() }).where(and(eq(passwordResets.userId, target.id), isNull(passwordResets.usedAt)));
+      await notifyEmailChange(req, user, target, email);
+    }
+    await audit(req, 'update', 'employee', id, emailChanged ? { emailChanged: true, from: target.email, to: email } : undefined);
     return { id: row.id, name: row.name, email: row.email, roleId: row.roleId, isActive: row.isActive };
   });
 
@@ -301,6 +349,7 @@ export async function adminRoutes(app: FastifyInstance) {
     if (!target) throw notFound('Colaborador');
     if (target.isOwner) throw badRequest('O dono da conta não pode ser excluído.');
     if (target.id === user.userId) throw badRequest('Você não pode excluir o próprio usuário.');
+    await assertCanManage(user, target);
     await db.delete(users).where(eq(users.id, id));
     await audit(req, 'delete', 'employee', id, { email: target.email });
     return { ok: true };
@@ -310,6 +359,14 @@ export async function adminRoutes(app: FastifyInstance) {
   /** Grupos com a quantidade de clientes (não excluídos) em cada um. */
   app.get('/customer-groups', async (req) => {
     const user = requirePermission(req);
+    // os seletores (cadastro, filtros) só precisam de id e nome; a contagem é da tela de grupos
+    if (!GROUP_ADMIN.some((p) => can(user, p))) {
+      return db
+        .select({ id: customerGroups.id, name: customerGroups.name })
+        .from(customerGroups)
+        .where(eq(customerGroups.officeId, user.officeId))
+        .orderBy(asc(customerGroups.name));
+    }
     return db
       .select({ id: customerGroups.id, officeId: customerGroups.officeId, name: customerGroups.name, createdAt: customerGroups.createdAt, customers: count(customers.id) })
       .from(customerGroups)
@@ -373,3 +430,23 @@ function imageKind(data: Buffer): 'image/png' | 'image/jpeg' | null {
 }
 
 const escapeHtml = (v: string) => v.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
+
+const GROUP_ADMIN = ['customer_group.list', 'customer_group.create', 'customer_group.edit', 'customer_group.delete'];
+
+const canSeeSettings = (user: AuthUser) => can(user, 'settings.view') || can(user, 'settings.edit');
+
+/**
+ * Quem não é dono só concede permissões que ele mesmo tem (evita, por exemplo, que quem tem
+ * role.edit ou employee.create se dê acesso total).
+ */
+function assertGrantable(user: AuthUser, permissions: readonly string[], message = 'Você só pode conceder permissões que você mesmo tem.') {
+  if (user.isOwner) return;
+  if (permissions.some((p) => !user.permissions.has(p))) throw forbidden(message);
+}
+
+/** A função Administrador só é atribuída pelo dono; as demais, se não passarem das permissões de quem atribui. */
+function assertRoleAssignable(user: AuthUser, role: { isSystem: boolean; permissions: string[] }) {
+  if (user.isOwner) return;
+  if (role.isSystem) throw forbidden('Só o dono da conta pode atribuir a função Administrador.');
+  assertGrantable(user, role.permissions, 'Você só pode atribuir funções com permissões que você mesmo tem.');
+}

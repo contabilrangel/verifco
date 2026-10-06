@@ -212,7 +212,7 @@ export async function refreshFinished(db: Db, checklistId: string): Promise<bool
 
 /** Notificação para o responsável pelo cliente (ou o escritório todo, se não houver). */
 export async function notifyOffice(db: Db, customer: CustomerRow, title: string, body: string | null, link: string) {
-  await notify(db, { officeId: customer.officeId, userId: customer.responsibleUserId ?? null, title, body: body ?? undefined, link });
+  await notify(db, { officeId: customer.officeId, userId: customer.responsibleUserId ?? null, customerId: customer.id, title, body: body ?? undefined, link });
 }
 
 /** Grava os arquivos enviados e os vincula ao item do checklist. */

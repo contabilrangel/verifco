@@ -127,6 +127,7 @@ export async function messagesRoutes(app: FastifyInstance) {
       await notify(db, {
         officeId: auth.officeId,
         userId: customer.responsibleUserId ?? null,
+        customerId: customer.id,
         title: `Nova mensagem de ${customer.name}`,
         body: body.body.length > 140 ? `${body.body.slice(0, 139)}…` : body.body,
         link,

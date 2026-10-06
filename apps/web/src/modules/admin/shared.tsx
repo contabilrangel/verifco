@@ -62,7 +62,6 @@ export interface ProcuratorRow {
   cpfCnpj: string;
   authType: 'govbr' | 'certificate_local' | 'certificate_cloud';
   userId: string | null;
-  certificateFileId: string | null;
   certificateExpiresAt: string | null;
   loginStatus: string;
   lastValidatedAt: string | null;

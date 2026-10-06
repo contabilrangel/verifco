@@ -7,6 +7,7 @@ import { eq } from 'drizzle-orm';
 import type { AppContext } from '../context';
 import { offices } from '../db/schema';
 import { IntegrationError } from './http';
+import { resolvePublicAddress } from './ssrf';
 import type { EmailSender, OutgoingEmail } from './providers';
 import { loadIntegration, type LoadedIntegration } from './store';
 
@@ -33,7 +34,16 @@ export interface SmtpTransportOptions {
   connectionTimeout: number;
   greetingTimeout: number;
   socketTimeout: number;
+  /**
+   * SMTP informado pelo escritório: só portas de e-mail e só IPs públicos (proteção contra SSRF).
+   * O SMTP da plataforma (`SMTP_URL`) é configuração do servidor e não tem essa trava.
+   */
+  restrictToPublic?: boolean;
+  tls?: { servername?: string };
 }
+
+/** Portas de envio de e-mail aceitas no SMTP do escritório. */
+export const SMTP_ALLOWED_PORTS = [25, 465, 587, 2525];
 
 export interface MailTransport {
   sendMail(mail: Record<string, unknown>): Promise<{ messageId?: string }>;
@@ -43,7 +53,34 @@ export interface MailTransport {
 
 export type TransportFactory = (opts: SmtpTransportOptions) => MailTransport;
 
-export const defaultTransportFactory: TransportFactory = (opts) => nodemailer.createTransport(opts) as unknown as MailTransport;
+const nodemailerTransport = (opts: SmtpTransportOptions) => {
+  const { restrictToPublic: _r, ...rest } = opts;
+  return nodemailer.createTransport(rest) as unknown as MailTransport;
+};
+
+/**
+ * Transporte real (nodemailer). Para o SMTP do escritório, resolve o servidor antes de conectar,
+ * recusa IP interno e conecta no IP conferido (mantendo o nome para o TLS), o que impede
+ * DNS rebinding; a porta precisa ser de e-mail.
+ */
+export const defaultTransportFactory: TransportFactory = (opts) => {
+  if (!opts.restrictToPublic) return nodemailerTransport(opts);
+  let inner: MailTransport | null = null;
+  const connect = async () => {
+    if (inner) return inner;
+    if (!SMTP_ALLOWED_PORTS.includes(opts.port)) {
+      throw new IntegrationError('smtp', `Porta ${opts.port} não permitida. Use ${SMTP_ALLOWED_PORTS.join(', ')}.`);
+    }
+    const address = await resolvePublicAddress('smtp', opts.host);
+    inner = nodemailerTransport({ ...opts, host: address, tls: { ...(opts.tls ?? {}), servername: opts.host } });
+    return inner;
+  };
+  return {
+    sendMail: async (mail) => (await connect()).sendMail(mail),
+    verify: async () => (await connect()).verify(),
+    close: () => inner?.close?.(),
+  };
+};
 
 const TIMEOUTS = { connectionTimeout: 15_000, greetingTimeout: 15_000, socketTimeout: 60_000 };
 
@@ -59,6 +96,7 @@ export function smtpOptionsFromConfig(cfg: SmtpConfig, secrets: SmtpSecrets): Sm
     ignoreTLS: cfg.security === 'none',
     auth: cfg.username ? { user: cfg.username, pass: secrets.password ?? '' } : undefined,
     ...TIMEOUTS,
+    restrictToPublic: true,
   };
 }
 

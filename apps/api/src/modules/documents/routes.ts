@@ -9,6 +9,7 @@ import { HttpError, badRequest, notFound } from '../../lib/errors';
 import { audit, guard, parse, requireUser, uuidParam, yearSchema } from '../../lib/http';
 import { customerScope, getCustomerForUser } from '../../services/customers';
 import { getOrCreateDeclaration } from '../../services/declarations';
+import { DOCUMENT_TYPES, readUploads, sendStoredFile } from '../../services/uploads';
 
 const categoryEnum = z.enum(DOCUMENT_CATEGORY_LIST as [DocumentCategory, ...DocumentCategory[]]);
 const MAX_ZIP_BYTES = 1024 * 1024 * 1024;
@@ -74,16 +75,9 @@ export async function documentRoutes(app: FastifyInstance) {
     const { id } = parse(uuidParam, req.params);
     const { year } = parse(z.object({ year: yearSchema }), req.query);
     const customer = await getCustomerForUser(app.ctx, user, id);
-    const received: { data: Buffer; filename: string; mimeType: string }[] = [];
-    let category: DocumentCategory = 'other';
-    for await (const part of req.parts()) {
-      if (part.type === 'file') {
-        const data = await part.toBuffer();
-        if (data.length) received.push({ data, filename: part.filename || 'arquivo', mimeType: part.mimetype });
-      } else if (part.fieldname === 'category') {
-        category = parse(categoryEnum, String(part.value));
-      }
-    }
+    // o tipo gravado vem da extensão conferida com o conteúdo; desconhecidos viram binário (só download)
+    const { files: received, fields } = await readUploads(req, { types: DOCUMENT_TYPES, unknown: 'octet-stream' });
+    const category: DocumentCategory = fields.category ? parse(categoryEnum, fields.category) : 'other';
     if (!received.length) throw badRequest('Selecione ao menos um arquivo.');
     const declaration = await getOrCreateDeclaration(db, user.officeId, customer.id, year);
     const created = [];
@@ -125,11 +119,7 @@ export async function documentRoutes(app: FastifyInstance) {
     const { id } = parse(uuidParam, req.params);
     const doc = await getDocumentForUser(app.ctx, user, id);
     const { row, data } = await app.ctx.files.get(user.officeId, doc.fileId);
-    const inline = (req.query as Record<string, string>).inline === '1';
-    return reply
-      .header('Content-Type', row.mimeType)
-      .header('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(row.filename)}`)
-      .send(data);
+    return sendStoredFile(reply, row, data, (req.query as Record<string, string>).inline === '1');
   });
 
   /** Baixa os documentos de vários clientes num .zip, com uma pasta por cliente. */

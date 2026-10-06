@@ -53,6 +53,11 @@ export interface Providers {
   ai: AiProvider;
   /** `fetch` injetável para que os clientes HTTP (Asaas, Omie, SERPRO...) sejam testáveis. */
   fetch: typeof fetch;
+  /**
+   * `fetch` para endereços informados pelo escritório (URL da Evolution API): bloqueia rede
+   * interna (também por DNS) e não segue redirecionamentos. Sem ele, usa `fetch`.
+   */
+  userUrlFetch?: typeof fetch;
   /** Fábrica de transporte SMTP usada no teste da integração de e-mail (padrão: nodemailer). */
   smtpTransport?: TransportFactory;
   /** Requisição com certificado de cliente (mTLS) usada na autenticação do SERPRO (padrão: node:https). */

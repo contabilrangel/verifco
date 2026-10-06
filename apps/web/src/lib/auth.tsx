@@ -3,7 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { api, getToken, setToken, setUnauthorizedHandler } from './api';
 
 export interface Me {
-  user: { id: string; name: string; email: string; isOwner: boolean; notificationPrefs: { enabled?: boolean } };
+  user: { id: string; name: string; email: string; isOwner: boolean; notificationPrefs: { enabled?: boolean; devices?: string[] } };
   office: { id: string; name: string; logoFileId: string | null; settings: Record<string, unknown> } | null;
   role: { id: string; name: string } | null;
   permissions: string[];

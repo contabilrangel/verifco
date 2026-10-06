@@ -16,7 +16,9 @@ import { integrations, procurators } from '../../db/schema';
 import { randomToken } from '../../lib/crypto';
 import { badRequest, notFound } from '../../lib/errors';
 import { audit, guard, parse, requireUser } from '../../lib/http';
+import { SMTP_ALLOWED_PORTS } from '../../integrations/email';
 import { IntegrationError, errorMessage } from '../../integrations/http';
+import { isInternalHostname, unsafeBaseUrlReason } from '../../integrations/ssrf';
 import { scheduleOmiePoll, type OmieConfig } from '../../integrations/omie';
 import { clearSerproTokens } from '../../integrations/serpro';
 import { decryptSecrets, getIntegrationRow, maskSecret, type IntegrationRow } from '../../integrations/store';
@@ -38,17 +40,15 @@ function fieldSchema(f: IntegrationField): z.ZodType {
     case 'select':
       return z.enum((f.options ?? []).map((o) => o.value) as [string, ...string[]], { message: 'opção inválida' });
     case 'url':
+      // a URL é chamada pelo servidor: só https público (proteção contra SSRF)
       return z
         .string()
         .trim()
         .max(500)
-        .refine((v) => {
-          try {
-            return ['http:', 'https:'].includes(new URL(v).protocol);
-          } catch {
-            return false;
-          }
-        }, 'informe uma URL começando com https://');
+        .superRefine((v, ctx) => {
+          const reason = unsafeBaseUrlReason(v);
+          if (reason) ctx.addIssue({ code: 'custom', message: reason });
+        });
     case 'email':
       return z.email('e-mail inválido').max(320);
     case 'procurator':
@@ -74,6 +74,15 @@ function parseConfig(def: IntegrationDef, input: Record<string, unknown>) {
     const r = fieldSchema(f).safeParse(typeof raw === 'string' ? raw.trim() : raw);
     if (r.success) set[f.key] = f.key === 'contractorCnpj' ? String(r.data).replace(/\D+/g, '') : r.data;
     else errors.push({ path: `config.${f.key}`, message: `${f.label}: ${r.error.issues[0]?.message ?? 'valor inválido'}` });
+  }
+  // SMTP do escritório: o servidor conecta nele, então nada de rede interna nem portas que não sejam de e-mail
+  if (def.key === 'smtp') {
+    if (typeof set.host === 'string' && (isInternalHostname(set.host) || /[/:@\s]/.test(set.host))) {
+      errors.push({ path: 'config.host', message: 'Servidor SMTP: informe o nome público do servidor (endereços internos não são permitidos)' });
+    }
+    if (set.port !== undefined && !SMTP_ALLOWED_PORTS.includes(Number(set.port))) {
+      errors.push({ path: 'config.port', message: `Porta: use ${SMTP_ALLOWED_PORTS.join(', ')}` });
+    }
   }
   if (errors.length) throw badRequest('Dados inválidos: ' + errors.map((e) => e.message).join('; '), errors);
   return { set, unset };

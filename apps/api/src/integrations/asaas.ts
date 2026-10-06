@@ -324,6 +324,7 @@ export async function handleAsaasWebhook(ctx: AppContext, officeId: string, evt:
     const customer = billing ? await db.query.customers.findFirst({ where: eq(customers.id, billing.customerId) }) : null;
     await notify(db, {
       officeId,
+      customerId: customer?.id ?? null,
       title: 'Pagamento recebido pelo Asaas',
       body: `${customer?.name ?? 'Cliente'}: parcela ${inst.number} paga (${formatMoney(patch.paidAmountCents ?? inst.amountCents)}).`,
       link: customer ? `/clientes/${customer.id}` : undefined,

@@ -136,7 +136,7 @@ export async function elaborationRoutes(app: FastifyInstance) {
     };
   });
 
-  app.post('/elaboration/process', { preHandler: guard('elaboration.process') }, async (req, reply) => {
+  app.post('/elaboration/process', { preHandler: guard('elaboration.process', 'pre_declaration.create') }, async (req, reply) => {
     const user = requireUser(req);
     const body = parse(selectionSchema, req.body);
     const ids = await scopedIds(req, body.customerIds);
@@ -165,7 +165,7 @@ export async function elaborationRoutes(app: FastifyInstance) {
   }
 
   /** Decisão sobre uma linha extraída (aceitar/recusar), usada para resolver conflitos. */
-  app.put('/elaboration/documents/:id/lines/:index', { preHandler: guard('elaboration.process') }, async (req) => {
+  app.put('/elaboration/documents/:id/lines/:index', { preHandler: guard('elaboration.process', 'pre_declaration.edit') }, async (req) => {
     const user = requireUser(req);
     const params = parse(z.object({ id: z.uuid(), index: z.coerce.number().int().min(0) }), req.params);
     const body = parse(z.object({ decision: z.enum(['accept', 'reject']).nullable() }), req.body);
@@ -187,7 +187,7 @@ export async function elaborationRoutes(app: FastifyInstance) {
    * Novas → incluídas; conflito aceito → substitui os valores da linha existente;
    * conflito sem decisão → fica pendente; recusadas e repetidas → ignoradas.
    */
-  app.post('/elaboration/validate', { preHandler: guard('elaboration.process') }, async (req) => {
+  app.post('/elaboration/validate', { preHandler: guard('elaboration.process', 'pre_declaration.create') }, async (req) => {
     const user = requireUser(req);
     const body = parse(selectionSchema, req.body);
     const ids = await scopedIds(req, body.customerIds);

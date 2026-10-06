@@ -608,12 +608,19 @@ export const messages = pgTable(
   (t) => [index('messages_customer_idx').on(t.customerId, t.createdAt)],
 );
 
+/**
+ * Notificações do sino. Sem `userId`, valem para o escritório todo; com `customerId`, só
+ * aparecem para quem enxerga o cliente (restrição "contadores veem só seus clientes").
+ * `readAt` marca a leitura das notificações pessoais; as do escritório têm a leitura
+ * guardada por usuário em `notification_reads`.
+ */
 export const notifications = pgTable(
   'notifications',
   {
     id: id(),
     officeId: officeId(),
     userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
+    customerId: uuid('customer_id').references(() => customers.id, { onDelete: 'cascade' }),
     title: text('title').notNull(),
     body: text('body'),
     link: text('link'),
@@ -621,6 +628,21 @@ export const notifications = pgTable(
     createdAt: createdAt(),
   },
   (t) => [index('notifications_user_idx').on(t.officeId, t.userId, t.createdAt)],
+);
+
+/** Leitura, por usuário, das notificações do escritório inteiro. */
+export const notificationReads = pgTable(
+  'notification_reads',
+  {
+    notificationId: uuid('notification_id')
+      .notNull()
+      .references(() => notifications.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    readAt: ts('read_at').notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.notificationId, t.userId] }), index('notification_reads_user_idx').on(t.userId)],
 );
 
 // ---------------------------------------------------------------------------
@@ -734,6 +756,16 @@ export const importBatches = pgTable('import_batches', {
   createdAt: createdAt(),
 });
 
+/**
+ * Contadores de tentativas com janela fixa (login, redefinição de senha, cadastro, links públicos).
+ * Ficam no banco para valer com várias instâncias da API.
+ */
+export const rateLimits = pgTable('rate_limits', {
+  key: text('key').primaryKey(),
+  count: integer('count').notNull().default(0),
+  windowStartedAt: ts('window_started_at').notNull().defaultNow(),
+});
+
 export const auditLogs = pgTable(
   'audit_logs',
   {
@@ -795,6 +827,23 @@ export const aiMessages = pgTable('ai_messages', {
   rating: integer('rating'),
   createdAt: createdAt(),
 });
+
+/** Arquivos enviados como anexo na conversa com a IA, vinculados ao cliente da conversa. */
+export const aiAttachments = pgTable(
+  'ai_attachments',
+  {
+    fileId: uuid('file_id')
+      .primaryKey()
+      .references(() => files.id, { onDelete: 'cascade' }),
+    officeId: officeId(),
+    customerId: uuid('customer_id')
+      .notNull()
+      .references(() => customers.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id'),
+    createdAt: createdAt(),
+  },
+  (t) => [index('ai_attachments_customer_idx').on(t.customerId)],
+);
 
 export const aiAnalyses = pgTable('ai_analyses', {
   id: id(),

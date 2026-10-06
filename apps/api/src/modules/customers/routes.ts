@@ -1,5 +1,5 @@
 import { and, asc, count, desc, eq, exists, gte, ilike, inArray, isNotNull, isNull, lte, ne, notExists, or, sql, type SQL } from 'drizzle-orm';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import {
   CND_STATUS,
@@ -15,13 +15,15 @@ import {
 } from '@verifco/shared';
 import { customerGroupMembers, customerGroups, customers, declarations, procurators, users } from '../../db/schema';
 import { randomCode, sha256 } from '../../lib/crypto';
-import { badRequest, conflict, notFound } from '../../lib/errors';
-import { audit, dateStr, guard, optionalText, paginate, parse, requirePermission, requireUser, uuidParam, yearSchema } from '../../lib/http';
+import { badRequest, conflict, forbidden, notFound } from '../../lib/errors';
+import { audit, can, dateStr, guard, optionalText, paginate, parse, requirePermission, requireUser, uuidParam, yearSchema } from '../../lib/http';
 import { customerScope, getCustomerForUser, publicCustomer } from '../../services/customers';
 import { getOrCreateDeclaration, setDeclarationSubstatus } from '../../services/declarations';
 import { queueDelivery } from '../../services/delivery';
 import { PdfBuilder, loadBranding } from '../../services/pdf';
+import { CERTIFICATE_TYPES, readUploads } from '../../services/uploads';
 import { buildWorkbook } from '../../services/xlsx';
+import { exposeDevSecrets } from '../../config';
 
 const csv = z
   .string()
@@ -363,10 +365,26 @@ export async function customerRoutes(app: FastifyInstance) {
       channel: 'email',
       subject: 'Seu acesso ao portal do cliente',
       body: `<p>Olá, ${c.name}!</p><p>Seu escritório liberou o acesso ao portal do cliente, onde você acompanha sua declaração e envia documentos.</p><p>Acesse <a href="${link}">${link}</a> e entre com seu CPF e o código <strong>${code}</strong> (válido por 30 dias).</p>`,
+      // o código só vai no e-mail; o histórico de envios guarda a versão mascarada
+      redact: [code],
       userId: user.userId,
     });
     await audit(req, 'portal_access', 'customer', c.id);
-    return { ok: true, code: app.ctx.config.NODE_ENV === 'production' ? undefined : code };
+    return { ok: true, code: exposeDevSecrets(app.ctx.config) ? code : undefined };
+  });
+
+  /** Revoga o acesso ao portal: o código atual deixa de valer. */
+  app.delete('/customers/:id/portal-access', { preHandler: guard('customer.portal_access') }, async (req) => {
+    const user = requireUser(req);
+    const { id } = parse(uuidParam, req.params);
+    const c = await getCustomerForUser(app.ctx, user, id);
+    const [row] = await db
+      .update(customers)
+      .set({ portalEnabled: false, portalCodeHash: null, portalCodeExpiresAt: null, updatedAt: new Date() })
+      .where(eq(customers.id, c.id))
+      .returning();
+    await audit(req, 'revoke_portal_access', 'customer', c.id);
+    return publicCustomer(row);
   });
 
   // ------------------------------------------------------------ ações em massa
@@ -535,6 +553,9 @@ export async function customerRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ procuradores
+  /** Quem administra procuradores vê os dados completos; os demais, só id e nome (seletores). */
+  const PROCURATOR_ADMIN = ['procuration.list', 'procuration.edit', 'procuration.certificate'];
+
   app.get('/procurators', async (req) => {
     const user = requireUser(req);
     const rows = await db
@@ -544,10 +565,8 @@ export async function customerRoutes(app: FastifyInstance) {
       .where(eq(procurators.officeId, user.officeId))
       .groupBy(procurators.id)
       .orderBy(asc(procurators.name));
-    return rows.map(({ p, customers: n }) => {
-      const { certificatePasswordEnc, ...rest } = p;
-      return { ...rest, hasCertificate: Boolean(p.certificateFileId && certificatePasswordEnc), customers: n };
-    });
+    if (!PROCURATOR_ADMIN.some((perm) => can(user, perm))) return rows.map(({ p }) => ({ id: p.id, name: p.name }));
+    return rows.map(({ p, customers: n }) => ({ ...publicProcurator(p), customers: n }));
   });
 
   const procuratorBody = z.object({
@@ -564,9 +583,10 @@ export async function customerRoutes(app: FastifyInstance) {
     const doc = onlyDigits(body.cpfCnpj);
     const dup = await db.query.procurators.findFirst({ where: and(eq(procurators.officeId, user.officeId), eq(procurators.cpfCnpj, doc)) });
     if (dup) throw conflict('Já existe um procurador com este CPF/CNPJ.');
+    if (body.userId && !(await db.query.users.findFirst({ where: and(eq(users.id, body.userId), eq(users.officeId, user.officeId)) }))) throw badRequest('Colaborador inválido.');
     const [row] = await db.insert(procurators).values({ ...body, authType: body.authType ?? 'govbr', cpfCnpj: doc, officeId: user.officeId }).returning();
     reply.status(201);
-    return row;
+    return publicProcurator(row);
   });
 
   app.put('/procurators/:id', { preHandler: guard('procuration.edit') }, async (req) => {
@@ -576,6 +596,7 @@ export async function customerRoutes(app: FastifyInstance) {
     const doc = onlyDigits(body.cpfCnpj);
     const dup = await db.query.procurators.findFirst({ where: and(eq(procurators.officeId, user.officeId), eq(procurators.cpfCnpj, doc), ne(procurators.id, id)) });
     if (dup) throw conflict('Já existe um procurador com este CPF/CNPJ.');
+    if (body.userId && !(await db.query.users.findFirst({ where: and(eq(users.id, body.userId), eq(users.officeId, user.officeId)) }))) throw badRequest('Colaborador inválido.');
     // sem authType no corpo, mantém a forma de acesso atual
     const [row] = await db
       .update(procurators)
@@ -583,7 +604,7 @@ export async function customerRoutes(app: FastifyInstance) {
       .where(and(eq(procurators.id, id), eq(procurators.officeId, user.officeId)))
       .returning();
     if (!row) throw notFound('Procurador');
-    return row;
+    return publicProcurator(row);
   });
 
   app.delete('/procurators/:id', { preHandler: guard('procuration.edit') }, async (req) => {
@@ -595,41 +616,66 @@ export async function customerRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
-  /** Certificado digital A1 (.pfx) do procurador, com a senha cifrada. */
-  app.post('/procurators/:id/certificate', { preHandler: guard('procuration.certificate') }, async (req) => {
+  /**
+   * Procurador que o usuário pode alterar: com a permissão, qualquer um do escritório;
+   * sem ela, só o registro em que ele mesmo é o procurador (Minha conta).
+   */
+  async function procuratorForUpdate(req: FastifyRequest, permission: string) {
     const user = requireUser(req);
     const { id } = parse(uuidParam, req.params);
-    const p = await db.query.procurators.findFirst({ where: and(eq(procurators.id, id), eq(procurators.officeId, user.officeId)) });
-    if (!p) throw notFound('Procurador');
-    let password = '';
-    let fileBuf: Buffer | null = null;
-    let filename = 'certificado.pfx';
-    for await (const part of req.parts()) {
-      if (part.type === 'file') {
-        fileBuf = await part.toBuffer();
-        filename = part.filename;
-      } else if (part.fieldname === 'password') password = String(part.value);
-    }
-    if (!fileBuf || !/\.(pfx|p12)$/i.test(filename)) throw badRequest('Envie o arquivo .pfx ou .p12 do certificado A1.');
+    const admin = can(user, permission);
+    const p = await db.query.procurators.findFirst({
+      where: and(eq(procurators.id, id), eq(procurators.officeId, user.officeId), ...(admin ? [] : [eq(procurators.userId, user.userId)])),
+    });
+    if (!p) throw admin ? notFound('Procurador') : forbidden();
+    return { user, p };
+  }
+
+  /** Forma de acesso do procurador (gov.br ou certificado); o próprio procurador também pode mudar. */
+  app.patch('/procurators/:id/auth-type', async (req) => {
+    const { p } = await procuratorForUpdate(req, 'procuration.edit');
+    const { authType } = parse(z.object({ authType: z.enum(['govbr', 'certificate_local', 'certificate_cloud']) }), req.body);
+    const [row] = await db.update(procurators).set({ authType, updatedAt: new Date() }).where(eq(procurators.id, p.id)).returning();
+    await audit(req, 'update_auth_type', 'procurator', p.id, { authType });
+    return publicProcurator(row);
+  });
+
+  /** Certificado digital A1 (.pfx) do procurador, com a senha cifrada; o próprio procurador também pode enviar. */
+  app.post('/procurators/:id/certificate', async (req) => {
+    const { user, p } = await procuratorForUpdate(req, 'procuration.certificate');
+    const { files: received, fields } = await readUploads(req, {
+      types: CERTIFICATE_TYPES,
+      maxFiles: 1,
+      maxBytes: 1024 * 1024,
+      accepted: 'o arquivo .pfx ou .p12 do certificado A1',
+    });
+    const file = received[0];
+    if (!file) throw badRequest('Envie o arquivo .pfx ou .p12 do certificado A1.');
+    const password = fields.password ?? '';
     if (!password) throw badRequest('Informe a senha de instalação do certificado.');
-    const saved = await app.ctx.files.save({ officeId: user.officeId, data: fileBuf, filename, mimeType: 'application/x-pkcs12', userId: user.userId });
+    const saved = await app.ctx.files.save({ officeId: user.officeId, data: file.data, filename: file.filename, mimeType: file.mimeType, userId: user.userId });
     if (p.certificateFileId) await app.ctx.files.remove(user.officeId, p.certificateFileId);
     await db
       .update(procurators)
       .set({ certificateFileId: saved.id, certificatePasswordEnc: secrets.encrypt(password), authType: 'certificate_cloud', updatedAt: new Date() })
       .where(eq(procurators.id, p.id));
-    await audit(req, 'upload_certificate', 'procurator', p.id);
+    await audit(req, 'upload_certificate', 'procurator', p.id, { self: p.userId === user.userId });
     return { ok: true };
   });
 
-  app.delete('/procurators/:id/certificate', { preHandler: guard('procuration.certificate') }, async (req) => {
-    const user = requireUser(req);
-    const { id } = parse(uuidParam, req.params);
-    const p = await db.query.procurators.findFirst({ where: and(eq(procurators.id, id), eq(procurators.officeId, user.officeId)) });
-    if (!p) throw notFound('Procurador');
+  app.delete('/procurators/:id/certificate', async (req) => {
+    const { user, p } = await procuratorForUpdate(req, 'procuration.certificate');
     if (p.certificateFileId) await app.ctx.files.remove(user.officeId, p.certificateFileId);
     await db.update(procurators).set({ certificateFileId: null, certificatePasswordEnc: null, updatedAt: new Date() }).where(eq(procurators.id, p.id));
-    await audit(req, 'remove_certificate', 'procurator', p.id);
+    await audit(req, 'remove_certificate', 'procurator', p.id, { self: p.userId === user.userId });
     return { ok: true };
   });
+}
+
+type ProcuratorRow = typeof procurators.$inferSelect;
+
+/** Procurador para o navegador: sem o arquivo e sem a senha do certificado (regra 6). */
+export function publicProcurator(p: ProcuratorRow) {
+  const { certificateFileId, certificatePasswordEnc, ...rest } = p;
+  return { ...rest, hasCertificate: Boolean(certificateFileId && certificatePasswordEnc) };
 }

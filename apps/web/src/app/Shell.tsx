@@ -5,6 +5,7 @@ import { Bell, ChevronRight, CircleHelp, LogOut, Menu as MenuIcon, PanelLeftClos
 import { Avatar, IconButton, Menu, MenuItem, Select, cx } from '../ds';
 import { api } from '../lib/api';
 import { useAuth } from '../lib/auth';
+import { useBrowserNotifications } from '../lib/deviceNotifications';
 import { YEAR_OPTIONS, useYear } from '../lib/year';
 import { NAV, type NavGroup } from './nav';
 import './shell.css';
@@ -76,6 +77,8 @@ export function Shell() {
     retry: false,
   });
   const unread = (notifications.data ?? []).filter((n) => !n.readAt).length;
+  // avisos do sistema neste navegador, se ligado em Conta › Preferências
+  useBrowserNotifications(notifications.data, me?.user.notificationPrefs, navigate);
 
   return (
     <div className={cx('shell', collapsed && 'shell--collapsed', mobileOpen && 'shell--mobile-open')}>

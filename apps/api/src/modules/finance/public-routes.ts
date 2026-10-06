@@ -53,6 +53,7 @@ async function notifyOffice(ctx: AppContext, b: BudgetRow, approved: boolean, vi
   await notify(ctx.db, {
     officeId: b.officeId,
     userId: c?.responsibleUserId ?? null,
+    customerId: b.customerId,
     title: approved ? 'Orçamento aprovado pelo cliente' : 'Orçamento recusado pelo cliente',
     body: `${c?.name ?? 'Cliente'} ${approved ? 'aprovou' : 'recusou'} a proposta de ${categoryLabel(b.category)} ${b.exerciseYear} (${via}).`,
     link: `/clientes/${b.customerId}/irpf/orcamento`,

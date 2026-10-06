@@ -293,7 +293,8 @@ describe('faturamento e recibos', () => {
     expect(r2.body.receiptNumber).toBe(2);
     const again = await api.post(`/api/finance/installments/${p1.id}/receipt`);
     expect(again.body.receiptNumber).toBe(1);
-    const pdf = await api.get(`/api/files/${r1.body.fileId}`);
+    // o recibo gerado de novo substitui o arquivo; /files só entrega o recibo atual da parcela
+    const pdf = await api.get(`/api/files/${again.body.fileId}`);
     expect(pdf.raw.rawPayload.subarray(0, 4).toString()).toBe('%PDF');
     expect((await api.post(`/api/finance/installments/${p1.id}/reopen`)).status).toBe(409);
 

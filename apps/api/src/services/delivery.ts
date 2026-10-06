@@ -1,7 +1,7 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { getTemplateDef, renderTemplate, onlyDigits, type DeliveryChannel } from '@verifco/shared';
 import type { AppContext } from '../context';
-import { customers, deliveries, emailTemplates, messages, offices, users } from '../db/schema';
+import { customers, deliveries, emailTemplates, jobs, messages, offices, users } from '../db/schema';
 import { badRequest } from '../lib/errors';
 
 export type DeliveryRow = typeof deliveries.$inferSelect;
@@ -65,7 +65,25 @@ export interface QueueDeliveryInput {
   idempotencyKey?: string;
   userId?: string | null;
   exerciseYear?: number;
+  /**
+   * Trechos secretos (código de acesso, token do link): vão só na mensagem entregue. O que fica
+   * gravado em `deliveries.body` e `messages.body` traz a versão mascarada; a versão real segue
+   * cifrada no job de envio e é apagada depois que o envio dá certo.
+   */
+  redact?: string[];
 }
+
+/** Máscara gravada no lugar dos trechos secretos. */
+export const REDACTED = '••••••';
+
+/** Troca cada trecho secreto pela máscara. */
+export function redactSecrets(text: string, secrets: readonly string[]): string {
+  let out = text;
+  for (const s of secrets) if (s) out = out.split(s).join(REDACTED);
+  return out;
+}
+
+const JOB_TYPE = 'delivery.send';
 
 /**
  * Registra um envio e agenda o job que entrega por e-mail ou WhatsApp.
@@ -95,6 +113,10 @@ export async function queueDelivery(ctx: AppContext, input: QueueDeliveryInput):
     body = renderTemplate(tpl.body, values, { rawHtml: input.rawHtml });
   }
   if (input.channel === 'whatsapp') body = htmlToText(body);
+  const secrets = (input.redact ?? []).filter((v) => v.length >= 4);
+  const storedSubject = redactSecrets(subject, secrets);
+  const storedBody = redactSecrets(body, secrets);
+  const sealed = storedSubject !== subject || storedBody !== body ? ctx.secrets.encrypt(JSON.stringify({ subject, body })) : undefined;
 
   const [row] = await db
     .insert(deliveries)
@@ -103,10 +125,10 @@ export async function queueDelivery(ctx: AppContext, input: QueueDeliveryInput):
       customerId: input.customerId,
       channel: input.channel,
       templateKey: input.templateKey ?? null,
-      subject,
+      subject: storedSubject,
       toAddress: to,
       toName: customer?.name ?? null,
-      body,
+      body: storedBody,
       attachments: input.attachments ?? [],
       idempotencyKey: input.idempotencyKey ?? null,
       createdByUserId: input.userId ?? null,
@@ -118,13 +140,25 @@ export async function queueDelivery(ctx: AppContext, input: QueueDeliveryInput):
       customerId: input.customerId,
       direction: 'out',
       channel: 'whatsapp',
-      body,
+      body: storedBody,
       authorUserId: input.userId ?? null,
       deliveryId: row.id,
     });
   }
-  await ctx.jobs.enqueue('delivery.send', { deliveryId: row.id }, { officeId: input.officeId, idempotencyKey: row.id });
+  await ctx.jobs.enqueue(JOB_TYPE, sealed ? { deliveryId: row.id, sealed } : { deliveryId: row.id }, { officeId: input.officeId, idempotencyKey: row.id });
   return row;
+}
+
+/** Conteúdo real (cifrado) guardado no job original do envio, se houver trechos secretos. */
+async function sealedContent(ctx: AppContext, deliveryId: string) {
+  const job = await ctx.db.query.jobs.findFirst({ where: and(eq(jobs.type, JOB_TYPE), eq(jobs.idempotencyKey, deliveryId)) });
+  const sealed = job?.payload?.sealed;
+  if (typeof sealed !== 'string') return null;
+  try {
+    return { jobId: job!.id, content: JSON.parse(ctx.secrets.decrypt(sealed)) as { subject: string; body: string } };
+  } catch {
+    return null;
+  }
 }
 
 /** Executor do job: entrega e registra o resultado. */
@@ -134,14 +168,17 @@ export async function sendDeliveryJob(ctx: AppContext, deliveryId: string) {
   if (!d || d.status === 'sent' || d.status === 'delivered') return { skipped: true };
   const office = await db.query.offices.findFirst({ where: eq(offices.id, d.officeId) });
   const files = await Promise.all(d.attachments.map(async (a) => ({ a, f: await ctx.files.get(d.officeId, a.fileId) })));
+  const secret = await sealedContent(ctx, d.id);
+  const subject = secret?.content.subject ?? d.subject ?? '';
+  const body = secret?.content.body ?? d.body;
   try {
     let result: { messageId: string };
     if (d.channel === 'email') {
       result = await ctx.providers.email.send(d.officeId, {
         to: d.toAddress,
         toName: d.toName,
-        subject: d.subject ?? '',
-        html: d.body,
+        subject,
+        html: body,
         fromName: office?.name,
         replyTo: office?.email,
         attachments: files.map(({ a, f }) => ({ filename: a.filename, content: f.data, contentType: f.row.mimeType })),
@@ -150,11 +187,13 @@ export async function sendDeliveryJob(ctx: AppContext, deliveryId: string) {
       const first = files[0];
       result = await ctx.providers.whatsapp.send(d.officeId, {
         to: d.toAddress,
-        text: d.body,
+        text: body,
         document: first ? { filename: first.a.filename, content: first.f.data, contentType: first.f.row.mimeType } : undefined,
       });
     }
     await db.update(deliveries).set({ status: 'sent', sentAt: new Date(), providerMessageId: result.messageId, error: null }).where(eq(deliveries.id, d.id));
+    // entregue: a versão com o código não fica guardada nem cifrada
+    if (secret) await db.update(jobs).set({ payload: sql`${jobs.payload} - 'sealed'` }).where(eq(jobs.id, secret.jobId));
     return { messageId: result.messageId };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

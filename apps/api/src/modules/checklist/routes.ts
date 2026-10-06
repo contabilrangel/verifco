@@ -255,7 +255,8 @@ export async function checklistRoutes(app: FastifyInstance) {
 
   /**
    * Gera um novo link e código de acesso e envia pelos canais escolhidos.
-   * Só os hashes ficam gravados; por isso cada envio gera um par novo e os anteriores deixam de valer.
+   * Só os hashes ficam gravados (o histórico de envios guarda a mensagem com link e código mascarados);
+   * por isso cada envio gera um par novo e os anteriores deixam de valer.
    * Sem canais, apenas gera (para o escritório repassar ao cliente).
    */
   app.post('/checklists/:checklistId/access', { preHandler: guard('checklist_digital.send') }, async (req) => {
@@ -275,6 +276,8 @@ export async function checklistRoutes(app: FastifyInstance) {
         channel,
         templateKey: 'checklist_digital',
         values: { LINK: link, CODIGO: code },
+        // link e código só na mensagem entregue; o histórico (envios e mensagens) guarda a versão mascarada
+        redact: [token, code],
         exerciseYear: declaration.exerciseYear,
         userId: user.userId,
       });

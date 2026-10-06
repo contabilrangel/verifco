@@ -17,6 +17,7 @@ import { contracts, copilotEnrollments, copilotEntries, customers, documents, fi
 import { badRequest, conflict, forbidden, notFound } from '../../lib/errors';
 import { audit, dateStr, guard, parse, requireUser, uuidParam } from '../../lib/http';
 import { customerScope, getCustomerForUser } from '../../services/customers';
+import { DOCUMENT_TYPES, readUploads } from '../../services/uploads';
 
 /** O cliente precisa estar habilitado (e ativo) no plano do Copiloto. */
 export async function requireActiveEnrollment(ctx: AppContext, officeId: string, customerId: string) {
@@ -252,11 +253,10 @@ export async function copilotRoutes(app: FastifyInstance) {
     const customer = await getCustomerForUser(app.ctx, user, id);
     await requireActiveEnrollment(app.ctx, user.officeId, customer.id);
     const created: string[] = [];
-    for await (const part of req.parts()) {
-      if (part.type !== 'file') continue;
-      const data = await part.toBuffer();
-      if (!data.length) continue;
-      const f = await app.ctx.files.save({ officeId: user.officeId, data, filename: part.filename, mimeType: part.mimetype, userId: user.userId });
+    // tipo pela extensão conferida com o conteúdo; desconhecidos viram binário (só download)
+    const { files: received } = await readUploads(req, { types: DOCUMENT_TYPES, unknown: 'octet-stream' });
+    for (const u of received) {
+      const f = await app.ctx.files.save({ officeId: user.officeId, data: u.data, filename: u.filename, mimeType: u.mimeType, userId: user.userId });
       const [doc] = await db.insert(documents).values({ officeId: user.officeId, customerId: customer.id, fileId: f.id, category: 'copilot', uploadedBy: 'office' }).returning();
       created.push(doc.id);
     }

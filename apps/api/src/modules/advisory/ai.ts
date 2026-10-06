@@ -2,11 +2,12 @@ import { and, asc, desc, eq, inArray, isNull } from 'drizzle-orm';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { formatCpfCnpj, formatDate } from '@verifco/shared';
-import { aiAnalyses, aiConversations, aiMessages, declarations, documents, files } from '../../db/schema';
+import { aiAnalyses, aiAttachments, aiConversations, aiMessages, declarations, documents, files } from '../../db/schema';
 import { badRequest, forbidden, notFound } from '../../lib/errors';
 import { audit, can, parse, requireUser, uuidParam, yearSchema } from '../../lib/http';
 import { getCustomerForUser } from '../../services/customers';
 import { PdfBuilder, loadBranding } from '../../services/pdf';
+import { AI_ATTACHMENT_TYPES, readUploads } from '../../services/uploads';
 import type { AiMessage } from '../../integrations/providers';
 import {
   ASSISTANTS,
@@ -16,7 +17,6 @@ import {
   MAX_ATTACHMENT_BYTES,
   attachmentsForAi,
   completeWithTimeout,
-  isSupportedAttachment,
   systemPrompt,
   type AssistantKey,
 } from './ai-service';
@@ -63,6 +63,17 @@ export async function aiRoutes(app: FastifyInstance) {
     return rows.map((r) => r.fileId);
   }
 
+  /** Anexos enviados nesta conversa: só os arquivos subidos para este cliente em /ai/attachments. */
+  async function attachmentFileIds(officeId: string, customerId: string, fileIds: string[]) {
+    if (!fileIds.length) return [];
+    const rows = await db
+      .select({ fileId: aiAttachments.fileId })
+      .from(aiAttachments)
+      .where(and(eq(aiAttachments.officeId, officeId), eq(aiAttachments.customerId, customerId), inArray(aiAttachments.fileId, fileIds)));
+    if (rows.length !== new Set(fileIds).size) throw notFound('Anexo');
+    return rows.map((r) => r.fileId);
+  }
+
   async function contextFor(officeId: string, customer: { id: string; name: string }, assistant: AssistantKey, year: number) {
     const base = await clientContextText(app.ctx, officeId, customer, year);
     if (assistant !== 'copilot') return base;
@@ -94,7 +105,9 @@ export async function aiRoutes(app: FastifyInstance) {
       req.body,
     );
     const { user, customer } = await assistantAccess(req, id, assistant);
-    const fileIds = [...new Set([...body.attachments, ...(await documentFileIds(user.officeId, customer.id, body.documentIds))])];
+    const fileIds = [
+      ...new Set([...(await attachmentFileIds(user.officeId, customer.id, body.attachments)), ...(await documentFileIds(user.officeId, customer.id, body.documentIds))]),
+    ];
     if (fileIds.length > MAX_ATTACHMENTS) throw badRequest(`Envie no máximo ${MAX_ATTACHMENTS} anexos por mensagem.`);
     const att = await attachmentsForAi(app.ctx, user.officeId, fileIds);
 
@@ -161,18 +174,21 @@ export async function aiRoutes(app: FastifyInstance) {
     const user = requireUser(req);
     if (!AI_ANY.some((p) => can(user, p))) throw forbidden();
     const { id } = parse(uuidParam, req.params);
-    await getCustomerForUser(app.ctx, user, id);
+    const customer = await getCustomerForUser(app.ctx, user, id);
+    // tipo pela extensão conferida com o conteúdo (nunca o informado pelo navegador)
+    const { files: received } = await readUploads(req, {
+      types: AI_ATTACHMENT_TYPES,
+      maxBytes: MAX_ATTACHMENT_BYTES,
+      maxFiles: MAX_ATTACHMENTS,
+      accepted: 'PDF, imagem (JPG, PNG, WEBP, GIF), CSV, TXT ou XLSX',
+    });
+    if (!received.length) throw badRequest('Selecione ao menos um arquivo.');
     const saved: { fileId: string; filename: string; mimeType: string; size: number }[] = [];
-    for await (const part of req.parts()) {
-      if (part.type !== 'file') continue;
-      const data = await part.toBuffer();
-      if (!isSupportedAttachment(part.filename, part.mimetype)) throw badRequest(`Tipo de arquivo não aceito: ${part.filename}. Use PDF, imagem, CSV, TXT ou XLSX.`);
-      if (data.length > MAX_ATTACHMENT_BYTES) throw badRequest(`${part.filename} passa de 15 MB.`);
-      const row = await app.ctx.files.save({ officeId: user.officeId, data, filename: part.filename, mimeType: part.mimetype, userId: user.userId });
+    for (const f of received) {
+      const row = await app.ctx.files.save({ officeId: user.officeId, data: f.data, filename: f.filename, mimeType: f.mimeType, userId: user.userId });
+      await db.insert(aiAttachments).values({ fileId: row.id, officeId: user.officeId, customerId: customer.id, userId: user.userId });
       saved.push({ fileId: row.id, filename: row.filename, mimeType: row.mimeType, size: row.size });
-      if (saved.length > MAX_ATTACHMENTS) throw badRequest(`Envie no máximo ${MAX_ATTACHMENTS} arquivos.`);
     }
-    if (!saved.length) throw badRequest('Selecione ao menos um arquivo.');
     reply.status(201);
     return saved;
   });

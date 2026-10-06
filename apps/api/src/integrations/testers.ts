@@ -43,7 +43,7 @@ export async function testIntegration(
     case 'omie':
       return testOmie(ctx, await saved<OmieConfig, OmieSecrets>(ctx, officeId, provider));
     case 'whatsapp':
-      return testWhatsApp(ctx.providers.fetch, await saved<WhatsAppConfig, WhatsAppSecrets>(ctx, officeId, provider), opts);
+      return testWhatsApp(ctx.providers.fetch, await saved<WhatsAppConfig, WhatsAppSecrets>(ctx, officeId, provider), opts, ctx.providers.userUrlFetch ?? ctx.providers.fetch);
     case 'smtp': {
       const loaded = await saved<SmtpConfig, SmtpSecrets>(ctx, officeId, provider);
       const office = await ctx.db.query.offices.findFirst({ where: eq(offices.id, officeId) });
