@@ -238,9 +238,10 @@ export function computeIrpfm(input: IrpfmInput): IrpfmResult {
   const incomes = input.incomes.filter((l) => l.cents !== 0);
   const included = incomes.filter((l) => !l.exclusion);
   const excluded = incomes.filter((l) => l.exclusion);
-  const totalIncomeCents = sumBy(incomes, (l) => Math.max(0, l.cents));
   const exclusionsCents = sumBy(excluded, (l) => Math.max(0, l.cents));
   const baseCents = Math.max(0, sumBy(included, (l) => l.cents));
+  // rendimentos do caput: tudo o que entra na base (com o resultado rural líquido) + as exclusões
+  const totalIncomeCents = baseCents + exclusionsCents;
   const subject = totalIncomeCents > params.thresholdCents;
   const ratePercent = subject ? irpfmRatePercent(baseCents, params) : 0;
   const grossTaxCents = Math.round((baseCents * ratePercent) / 100);

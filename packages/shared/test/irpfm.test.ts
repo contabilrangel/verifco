@@ -248,6 +248,16 @@ describe('IRPFM — linhas da declaração', () => {
     expect(r.dividendWithholdingCents).toBe(R(30_000));
   });
 
+  it('rendimentos totais consideram o resultado rural, não a receita bruta', () => {
+    const r = irpfmFromItems([
+      { kind: 'rural_income', valueCents: R(1_350_000) },
+      { kind: 'rural_expense', valueCents: R(820_000) },
+    ]);
+    const res = computeIrpfm({ calendarYear: 2026, incomes: r.incomes, regularTaxDueCents: 0, exclusiveWithheldCents: 0 });
+    expect(res.totalIncomeCents).toBe(R(530_000));
+    expect(res.subject).toBe(false);
+  });
+
   it('resultado rural negativo não reduz a base', () => {
     const r = irpfmFromItems([
       { kind: 'rural_income', valueCents: R(10_000) },
