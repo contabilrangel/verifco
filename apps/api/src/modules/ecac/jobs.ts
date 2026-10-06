@@ -1,5 +1,5 @@
 import { and, asc, count, desc, eq, gte, isNotNull, isNull, lte, ne, sql } from 'drizzle-orm';
-import { addDaysIso as addDays, brazilToday } from '@verifco/shared';
+import { SITFIS_STATUS, addDaysIso as addDays, brazilToday } from '@verifco/shared';
 import type { AppContext } from '../../context';
 import type { Db } from '../../db/client';
 import { auditLogs, customers, darfs, ecacRecords, integrations, jobs, procurators } from '../../db/schema';
@@ -19,6 +19,7 @@ import {
   revenueCode,
   type SerproClient,
 } from './serpro';
+import { readSitfisReport, type SitfisReading } from './sitfis';
 import { fanoutOf, summarizeOfficeChildren } from './util';
 
 export const ECAC_SYNC = 'ecac.sync';
@@ -56,7 +57,8 @@ export interface SyncOptions {
  * 2. indicador de mensagens novas na caixa postal (não bilhetado);
  * 3. lista da caixa postal (MSGCONTRIBUINTE61) quando há mensagem nova ou alguma registrada como
  *    não lida; cada mensagem é gravada uma vez (`externalId` = isn) e atualizada depois;
- * 4. relatório de situação fiscal (SITFIS) com o PDF, a cada 30 dias;
+ * 4. relatório de situação fiscal (SITFIS) com o PDF, a cada 30 dias, e a leitura dele (situação,
+ *    pendências e certidão vigente; "não interpretado" quando o texto foge do modelo oficial);
  * 5. pagamentos da receita 0211 (PAGTOWEB) quando há quota do DARF em aberto perto do
  *    vencimento: a quota de mesmo vencimento e valor (principal ou total da guia) fica paga.
  * As etapas 3 a 5 são bilhetadas pelo SERPRO, por isso só rodam quando há o que conferir (o pedido
@@ -173,7 +175,23 @@ async function syncMailbox(ctx: AppContext, client: SerproClient, customer: Cust
   return `mensagens da caixa postal: ${list.length} consultada(s), ${created} nova(s)`;
 }
 
-/** Relatório de situação fiscal (SITFIS): pede o protocolo, espera o tempo indicado e grava o PDF. */
+/** Mensagem gravada com a leitura do relatório (a situação em si fica em `status`). */
+function sitfisMessage(reading: SitfisReading): string {
+  if (reading.status === 'regular') return reading.message ?? 'O relatório não aponta pendências na Receita Federal nem na PGFN.';
+  if (reading.status === 'pending') return 'O relatório lista pendências na Receita Federal ou na PGFN: confira os detalhes no PDF.';
+  return reading.readable
+    ? 'Relatório salvo, mas o texto não segue o modelo conhecido e não foi interpretado: abra o PDF para conferir.'
+    : 'Relatório salvo, mas não foi possível ler o texto do PDF: abra o PDF para conferir.';
+}
+
+/** Resumo da leitura para o resultado da sincronização. */
+const sitfisStep = (reading: SitfisReading) =>
+  reading.status === 'pending' ? `com pendências: ${reading.pendencies.length}` : SITFIS_STATUS[reading.status].toLowerCase();
+
+/**
+ * Relatório de situação fiscal (SITFIS): pede o protocolo, espera o tempo indicado, grava o PDF e a
+ * leitura dele. A leitura nunca impede a gravação: o PDF é a fonte da verdade.
+ */
 async function syncFiscalSituation(ctx: AppContext, client: SerproClient, customer: CustomerRow, today: string, thorough: boolean) {
   const last = await ctx.db.query.ecacRecords.findFirst({
     where: and(eq(ecacRecords.customerId, customer.id), eq(ecacRecords.kind, 'fiscal_situation'), eq(ecacRecords.source, 'serpro')),
@@ -199,6 +217,7 @@ async function syncFiscalSituation(ctx: AppContext, client: SerproClient, custom
     const pdf = findField(report.dados, 'pdf');
     const file = pdf ? uploadedFromBase64(`situacao-fiscal-${contribuinte}-${today}.pdf`, pdf) : null;
     if (!file || file.data.subarray(0, 5).toString('latin1') !== '%PDF-') return 'situação fiscal: a resposta do SERPRO não trouxe o PDF do relatório';
+    const reading = readSitfisReport(file.data);
     await saveEcacRecord(ctx, {
       officeId: customer.officeId,
       customer,
@@ -209,11 +228,15 @@ async function syncFiscalSituation(ctx: AppContext, client: SerproClient, custom
       data: {
         service: 'SITFIS/RELATORIOSITFIS92',
         issuedAt: today,
-        message: 'Relatório de situação fiscal emitido pela Receita Federal: abra o PDF para ver as pendências.',
+        status: reading.status,
+        situation: reading.status === 'unknown' ? null : SITFIS_STATUS[reading.status],
+        message: sitfisMessage(reading),
+        pendencies: reading.pendencies,
+        certificate: reading.certificate,
       },
       file,
     });
-    return 'situação fiscal: relatório emitido';
+    return `situação fiscal: relatório emitido (${sitfisStep(reading)})`;
   }
   return 'situação fiscal: relatório ainda em processamento no SERPRO; nova tentativa na próxima sincronização';
 }

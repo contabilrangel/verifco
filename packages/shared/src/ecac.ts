@@ -25,6 +25,17 @@ export const ECAC_RECORD_KINDS = {
 export type EcacRecordKind = keyof typeof ECAC_RECORD_KINDS;
 export const ECAC_RECORD_KIND_LIST = Object.keys(ECAC_RECORD_KINDS) as EcacRecordKind[];
 
+/**
+ * Situação lida no relatório de situação fiscal (SITFIS). O PDF é a fonte da verdade: quando o
+ * texto não segue o modelo oficial, a situação fica "não interpretada".
+ */
+export const SITFIS_STATUS = {
+  regular: 'Regular (sem pendências)',
+  pending: 'Com pendências',
+  unknown: 'Não interpretado',
+} as const;
+export type SitfisStatus = keyof typeof SITFIS_STATUS;
+
 /** Origem de um registro do eCAC. */
 export const ECAC_RECORD_SOURCES = {
   manual: 'Lançamento manual',
