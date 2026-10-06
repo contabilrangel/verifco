@@ -1,5 +1,5 @@
 import { and, asc, count, desc, eq, gte, isNotNull, isNull, lte, ne, sql } from 'drizzle-orm';
-import { brazilToday } from '@verifco/shared';
+import { addDaysIso as addDays, brazilToday } from '@verifco/shared';
 import type { AppContext } from '../../context';
 import type { Db } from '../../db/client';
 import { auditLogs, customers, darfs, ecacRecords, integrations, jobs, procurators } from '../../db/schema';
@@ -42,12 +42,6 @@ const SITFIS_WAIT = { min: 1_000, max: 10_000, fallback: 5_000 };
 export const robotTiming = { sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)) };
 
 const errMsg = (err: unknown) => (err instanceof Error ? err.message : String(err));
-
-const addDays = (iso: string, days: number) => {
-  const d = new Date(`${iso}T12:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + days);
-  return d.toISOString().slice(0, 10);
-};
 
 export interface SyncOptions {
   /** Pedido de um cliente só (botão da aba eCAC): faz agora as consultas que a rotina diária espaça. */

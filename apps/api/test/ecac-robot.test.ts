@@ -5,7 +5,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
-import { brazilToday } from '@verifco/shared';
+import { addDaysIso as addDays, brazilToday } from '@verifco/shared';
 import { auditLogs, customers, darfs, declarations, ecacRecords, integrations, jobs, procurators } from '../src/db/schema';
 import type { Providers } from '../src/integrations/providers';
 import { clearSerproTokens } from '../src/integrations/serpro';
@@ -28,12 +28,6 @@ beforeEach(() => {
     waits.push(ms);
   };
 });
-
-const addDays = (iso: string, days: number) => {
-  const d = new Date(`${iso}T12:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + days);
-  return d.toISOString().slice(0, 10);
-};
 
 interface GatewayCall {
   tipo: string;
