@@ -1,3 +1,6 @@
+import type { TransportFactory } from './email';
+import type { MtlsRequest } from './serpro';
+
 /**
  * Contratos dos provedores externos usados pelos módulos.
  * As implementações reais ficam em `integrations/*` e são montadas em `createProviders`;
@@ -50,6 +53,10 @@ export interface Providers {
   ai: AiProvider;
   /** `fetch` injetável para que os clientes HTTP (Asaas, Omie, SERPRO...) sejam testáveis. */
   fetch: typeof fetch;
+  /** Fábrica de transporte SMTP usada no teste da integração de e-mail (padrão: nodemailer). */
+  smtpTransport?: TransportFactory;
+  /** Requisição com certificado de cliente (mTLS) usada na autenticação do SERPRO (padrão: node:https). */
+  mtlsRequest?: MtlsRequest;
 }
 
 /** Provedores em memória para testes e desenvolvimento sem credenciais. */
