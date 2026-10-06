@@ -1,7 +1,17 @@
-import { and, asc, count, desc, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, isNotNull, isNull, type SQL } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { checklistLock, checklistProgress, currentExerciseYear, customerDeclarationStatus, isValidCpfCnpj, onlyDigits, stageOfSubstatus, type DeclarationSubstatus } from '@verifco/shared';
+import {
+  SHARED_WITH_CUSTOMER,
+  checklistLock,
+  checklistProgress,
+  currentExerciseYear,
+  customerDeclarationStatus,
+  isValidCpfCnpj,
+  onlyDigits,
+  stageOfSubstatus,
+  type DeclarationSubstatus,
+} from '@verifco/shared';
 import {
   auditLogs,
   backlogs,
@@ -23,6 +33,14 @@ import { CUSTOMER_LOGIN_RULE, check, fail, resetLimit } from '../../services/rat
 import { getOfficeSettings } from '../../services/settings';
 import { sendStoredFile } from '../../services/uploads';
 import { firstName, maskCpf, requirePortal } from './access';
+
+/**
+ * Documentos que o escritório compartilhou com o cliente: enviados pelo escritório e marcados
+ * "Visível no portal do cliente" na etapa Documentos do IRPF (no upload ou depois). Arquivos do
+ * próprio cliente e da sincronização nunca entram.
+ */
+const sharedWithCustomer = (customerId: string, officeId: string): SQL =>
+  and(eq(documents.customerId, customerId), eq(documents.officeId, officeId), eq(documents.uploadedBy, 'office'), eq(documents.category, SHARED_WITH_CUSTOMER))!;
 
 /**
  * Portal do cliente: login com CPF + código do portal (gerado em
@@ -146,7 +164,7 @@ export async function portalRoutes(app: FastifyInstance) {
       .from(documents)
       .innerJoin(files, eq(files.id, documents.fileId))
       .leftJoin(declarations, eq(declarations.id, documents.declarationId))
-      .where(and(eq(documents.customerId, auth.customerId), eq(documents.officeId, auth.officeId), eq(documents.uploadedBy, 'office'), eq(documents.category, 'shared_with_customer')))
+      .where(sharedWithCustomer(auth.customerId, auth.officeId))
       .orderBy(desc(documents.createdAt))
       .limit(100);
 
@@ -162,15 +180,7 @@ export async function portalRoutes(app: FastifyInstance) {
   app.get('/portal/documents/:id', async (req, reply) => {
     const auth = requirePortal(req);
     const { id } = parse(z.object({ id: z.uuid() }), req.params);
-    const doc = await db.query.documents.findFirst({
-      where: and(
-        eq(documents.id, id),
-        eq(documents.customerId, auth.customerId),
-        eq(documents.officeId, auth.officeId),
-        eq(documents.uploadedBy, 'office'),
-        eq(documents.category, 'shared_with_customer'),
-      ),
-    });
+    const doc = await db.query.documents.findFirst({ where: and(eq(documents.id, id), sharedWithCustomer(auth.customerId, auth.officeId)) });
     if (!doc) throw notFound('Documento');
     const { row, stream } = await ctx.files.open(auth.officeId, doc.fileId);
     return sendStoredFile(reply, row, stream, (req.query as Record<string, string>).inline === '1');

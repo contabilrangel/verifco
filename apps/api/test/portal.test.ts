@@ -6,6 +6,7 @@ import { sha256 } from '../src/lib/crypto';
 import { getOrCreateDeclaration } from '../src/services/declarations';
 import { VALID_CPFS, client, createEmployee, createTestEnv, registerOffice, type TestEnv } from './helpers';
 import { PDF, customerLogin, issueAccess, officeWithCustomer, setSubstatus } from './portal-helpers';
+import { upload } from './upload-helpers';
 
 let env: TestEnv;
 beforeAll(async () => {
@@ -148,6 +149,94 @@ describe('início do portal', () => {
     expect((await env.app.inject({ method: 'GET', url: '/api/portal/overview' })).statusCode).toBe(401);
     // token de usuário do escritório não serve no portal
     expect((await a.api.get('/api/portal/overview')).status).toBe(401);
+  });
+});
+
+describe('documentos do escritório no portal (INT-3)', () => {
+  const docsUrl = (customerId: string) => `/api/customers/${customerId}/documents?year=${YEAR}`;
+  const portalFiles = async (portal: ReturnType<typeof client>) => (await portal.get('/api/portal/overview')).body.documents.map((d: any) => d.filename).sort();
+
+  it('o escritório marca e desmarca "Visível no portal do cliente"; o portal lista e baixa só os marcados', async () => {
+    const a = await withPortal(VALID_CPFS[0], 'Helena Prado');
+    // escolhido no upload
+    const shared = await upload(env, a.token, docsUrl(a.customerId), [{ name: 'recibo-entrega.pdf', content: PDF, type: 'application/pdf' }], { category: 'shared_with_customer' });
+    expect(shared.status).toBe(201);
+    expect(shared.body[0]).toMatchObject({ category: 'shared_with_customer', uploadedBy: 'office' });
+    const internal = await upload(env, a.token, docsUrl(a.customerId), [{ name: 'planilha-interna.pdf', content: PDF, type: 'application/pdf' }], { category: 'darf' });
+    expect(internal.status).toBe(201);
+    const sharedId = shared.body[0].id as string;
+    const internalId = internal.body[0].id as string;
+    const uploadAudits = await env.ctx.db.query.auditLogs.findMany({ where: (t, { and: all, eq: e }) => all(e(t.entityId, a.customerId), e(t.action, 'upload')) });
+    expect(uploadAudits.map((x) => x.data).find((d: any) => d?.category === 'shared_with_customer')).toMatchObject({ sharedWithCustomer: true, documentIds: [sharedId] });
+    expect(uploadAudits.map((x) => x.data).find((d: any) => d?.category === 'darf')).not.toHaveProperty('sharedWithCustomer');
+
+    let ov = await a.portal.get('/api/portal/overview');
+    expect(ov.body.documents.map((d: any) => d.filename)).toEqual(['recibo-entrega.pdf']);
+    expect(ov.body.documents[0].exerciseYear).toBe(YEAR);
+    const dl = await env.app.inject({ method: 'GET', url: `/api/portal/documents/${sharedId}`, headers: { authorization: `Bearer ${a.portalToken}` } });
+    expect(dl.statusCode).toBe(200);
+    expect(dl.rawPayload.subarray(0, 4).toString()).toBe('%PDF');
+    // o cliente não vê nem baixa o que não foi marcado
+    expect((await a.portal.get(`/api/portal/documents/${internalId}`)).status).toBe(404);
+
+    // marcar depois do upload (ação da etapa Documentos do IRPF)
+    const marked = await a.api.patch(`/api/documents/${internalId}`, { category: 'shared_with_customer' });
+    expect(marked.status).toBe(200);
+    expect(marked.body.category).toBe('shared_with_customer');
+    expect(await portalFiles(a.portal)).toEqual(['planilha-interna.pdf', 'recibo-entrega.pdf']);
+    expect((await a.portal.get(`/api/portal/documents/${internalId}`)).status).toBe(200);
+
+    // desmarcar tira do portal (lista e download)
+    expect((await a.api.patch(`/api/documents/${sharedId}`, { category: 'other' })).status).toBe(200);
+    expect(await portalFiles(a.portal)).toEqual(['planilha-interna.pdf']);
+    expect((await a.portal.get(`/api/portal/documents/${sharedId}`)).status).toBe(404);
+
+    const audits = await env.ctx.db.query.auditLogs.findMany({ where: (t, { inArray: within }) => within(t.entityId, [sharedId, internalId]) });
+    expect(audits.find((x) => x.entityId === internalId && x.action === 'share_with_customer')?.data).toMatchObject({ category: 'shared_with_customer', from: 'darf', customerId: a.customerId });
+    expect(audits.find((x) => x.entityId === sharedId && x.action === 'unshare_with_customer')?.data).toMatchObject({ category: 'other', from: 'shared_with_customer' });
+    // troca entre categorias comuns continua como "update"
+    expect((await a.api.patch(`/api/documents/${sharedId}`, { category: 'receipt' })).status).toBe(200);
+    const plain = await env.ctx.db.query.auditLogs.findMany({ where: (t, { and: all, eq: e }) => all(e(t.entityId, sharedId), e(t.action, 'update')) });
+    expect(plain.map((x) => x.data)).toEqual([{ category: 'receipt', from: 'other', customerId: a.customerId }]);
+  });
+
+  it('só arquivos do escritório podem ser compartilhados; permissões e isolamento', async () => {
+    const a = await withPortal(VALID_CPFS[1], 'Igor Lima');
+    const b = await withPortal(VALID_CPFS[2], 'Júlia Castro');
+    const up = await upload(env, a.token, docsUrl(a.customerId), [{ name: 'declaracao.pdf', content: PDF, type: 'application/pdf' }]);
+    const docId = up.body[0].id as string;
+
+    // arquivo do próprio cliente (checklist) e da sincronização não vão para o portal
+    const fromCustomer = await shareDoc(a.officeId, a.customerId, 'meu-rg.pdf', { category: 'checklist', uploadedBy: 'customer' });
+    const refused = await a.api.patch(`/api/documents/${fromCustomer}`, { category: 'shared_with_customer' });
+    expect(refused.status).toBe(400);
+    expect(refused.body.error).toMatch(/enviados pelo escritório/);
+    const synced = await shareDoc(a.officeId, a.customerId, 'recibo.rec', { category: 'irpf_receipt', uploadedBy: 'sync' });
+    expect((await a.api.patch(`/api/documents/${synced}`, { category: 'shared_with_customer' })).status).toBe(400);
+    // arquivo do copiloto continua no copiloto: compartilhar mudaria a categoria e o tiraria de lá
+    const fromCopilot = await shareDoc(a.officeId, a.customerId, 'copiloto.pdf', { category: 'copilot' });
+    expect((await a.api.patch(`/api/documents/${fromCopilot}`, { category: 'shared_with_customer' })).status).toBe(400);
+    expect((await env.ctx.db.select().from(documents).where(eq(documents.id, fromCopilot)))[0].category).toBe('copilot');
+    // mesmo gravados direto no banco com a categoria, não aparecem
+    const forcedCustomer = await shareDoc(a.officeId, a.customerId, 'forcado-cliente.pdf', { uploadedBy: 'customer' });
+    const forcedSync = await shareDoc(a.officeId, a.customerId, 'forcado-sync.pdf', { uploadedBy: 'sync' });
+    expect((await a.portal.get(`/api/portal/documents/${forcedCustomer}`)).status).toBe(404);
+    expect((await a.portal.get(`/api/portal/documents/${forcedSync}`)).status).toBe(404);
+    expect(await portalFiles(a.portal)).toEqual([]);
+
+    // sem declaration.edit não marca
+    const viewer = await createEmployee(env, a.api, ['customer.list', 'declaration.view']);
+    expect((await viewer.api.patch(`/api/documents/${docId}`, { category: 'shared_with_customer' })).status).toBe(403);
+    const editor = await createEmployee(env, a.api, ['customer.list', 'declaration.view', 'declaration.edit']);
+    expect((await editor.api.patch(`/api/documents/${docId}`, { category: 'shared_with_customer' })).status).toBe(200);
+    expect(await portalFiles(a.portal)).toEqual(['declaracao.pdf']);
+
+    // outro escritório não marca nem desmarca, e o cliente dele não vê nem baixa
+    expect((await b.api.patch(`/api/documents/${docId}`, { category: 'other' })).status).toBe(404);
+    expect((await b.api.patch(`/api/documents/${docId}`, { category: 'shared_with_customer' })).status).toBe(404);
+    expect((await b.portal.get(`/api/portal/documents/${docId}`)).status).toBe(404);
+    expect(await portalFiles(b.portal)).toEqual([]);
+    expect(await portalFiles(a.portal)).toEqual(['declaracao.pdf']);
   });
 });
 

@@ -1,7 +1,15 @@
 import { useState, type CSSProperties } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Download, Eye, File as FileIcon, FileArchive, FileImage, FileSpreadsheet, FileText, FolderOpen, Trash2 } from 'lucide-react';
-import { DOCUMENT_CATEGORIES, DOCUMENT_CATEGORY_LIST, documentCategoryLabel, documentOriginLabel } from '@verifco/shared';
+import { Download, Eye, File as FileIcon, FileArchive, FileImage, FileSpreadsheet, FileText, FolderOpen, Share2, Trash2, Undo2 } from 'lucide-react';
+import {
+  DOCUMENT_CATEGORIES,
+  DOCUMENT_CATEGORY_LIST,
+  SHARED_WITH_CUSTOMER,
+  UNSHARED_CATEGORY,
+  canShareWithCustomer,
+  documentCategoryLabel,
+  documentOriginLabel,
+} from '@verifco/shared';
 import { Alert, Button, Card, ConfirmDialog, DropFile, EmptyState, IconButton, Loading, Select, Tag, useToast, type Tone } from '../../ds';
 import { api, errorMessage, isViewableType } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
@@ -26,6 +34,14 @@ interface DocumentRow {
 }
 
 const CATEGORY_OPTIONS = DOCUMENT_CATEGORY_LIST.map((value) => ({ value, label: DOCUMENT_CATEGORIES[value] }));
+/** Arquivos do cliente e da sincronização não podem ficar visíveis no portal. */
+const NOT_SHAREABLE_OPTIONS = CATEGORY_OPTIONS.filter((o) => o.value !== SHARED_WITH_CUSTOMER);
+
+/** Opções da categoria de um arquivo da lista (a categoria gravada pelo sistema continua na lista). */
+const categoryOptionsFor = (d: DocumentRow) => {
+  const base = canShareWithCustomer(d) ? CATEGORY_OPTIONS : NOT_SHAREABLE_OPTIONS;
+  return base.some((o) => o.value === d.category) ? base : [{ value: d.category, label: documentCategoryLabel(d.category) }, ...base];
+};
 const ORIGIN_TONE: Record<string, Tone> = { office: 'primary', customer: 'highlight', sync: 'neutral' };
 
 const iconFor = (mime: string, name: string) => {
@@ -66,6 +82,11 @@ export function DocumentsStep() {
     }
   };
   const changeCategory = useAction((v: { id: string; category: string }) => api.patch(`/documents/${v.id}`, { category: v.category }), { success: 'Categoria atualizada.', onSuccess: refresh });
+  /** "Visível no portal do cliente": o arquivo aparece em "Documentos do escritório" no portal. */
+  const share = useAction((v: { id: string; shared: boolean }) => api.patch(`/documents/${v.id}`, { category: v.shared ? SHARED_WITH_CUSTOMER : UNSHARED_CATEGORY }), {
+    success: 'Visibilidade no portal do cliente atualizada.',
+    onSuccess: refresh,
+  });
   const del = useAction((d: DocumentRow) => api.del(`/documents/${d.id}`), { success: 'Arquivo excluído.', onSuccess: () => (setRemove(null), refresh()) });
   const zip = async () => {
     setZipping(true);
@@ -95,6 +116,7 @@ export function DocumentsStep() {
         >
           <div className="vf-stack">
             <DropFile multiple onFiles={(f) => void upload(f)} disabled={uploading} title={uploading ? 'Enviando...' : "Arraste os arquivos ou clique em 'Selecionar'"} hint="PDF, imagens, planilhas e outros arquivos até 25 MB cada, até 20 por vez e 100 MB por envio." />
+            <span className="vf-text-xs vf-muted">Na categoria “{DOCUMENT_CATEGORIES[SHARED_WITH_CUSTOMER]}”, o cliente vê e baixa o arquivo no portal (ex.: declaração, recibo, DARF).</span>
           </div>
         </Card>
       )}
@@ -139,6 +161,7 @@ export function DocumentsStep() {
                       <span className="vf-file-cell" title={d.filename}>
                         {iconFor(d.mimeType, d.filename)}
                         <span>{d.filename}</span>
+                        {d.category === SHARED_WITH_CUSTOMER && <Tag tone="success">No portal</Tag>}
                       </span>
                     </td>
                     <td>
@@ -147,7 +170,7 @@ export function DocumentsStep() {
                           aria-label={`Categoria de ${d.filename}`}
                           value={d.category}
                           onChange={(e) => changeCategory.mutate({ id: d.id, category: e.target.value })}
-                          options={d.category in DOCUMENT_CATEGORIES ? CATEGORY_OPTIONS : [{ value: d.category, label: documentCategoryLabel(d.category) }, ...CATEGORY_OPTIONS]}
+                          options={categoryOptionsFor(d)}
                           style={{ minWidth: 200 }}
                         />
                       ) : (
@@ -168,6 +191,17 @@ export function DocumentsStep() {
                       <IconButton label="Baixar" onClick={() => void api.download(`/documents/${d.id}/file`, d.filename)}>
                         <Download />
                       </IconButton>
+                      {canEdit &&
+                        canShareWithCustomer(d) &&
+                        (d.category === SHARED_WITH_CUSTOMER ? (
+                          <IconButton label="Tirar do portal do cliente" disabled={share.isPending} onClick={() => share.mutate({ id: d.id, shared: false })}>
+                            <Undo2 />
+                          </IconButton>
+                        ) : (
+                          <IconButton label="Mostrar no portal do cliente" disabled={share.isPending} onClick={() => share.mutate({ id: d.id, shared: true })}>
+                            <Share2 />
+                          </IconButton>
+                        ))}
                       {canEdit && (
                         <IconButton label="Excluir" onClick={() => setRemove(d)}>
                           <Trash2 />
