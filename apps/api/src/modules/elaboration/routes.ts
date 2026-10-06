@@ -9,7 +9,7 @@ import { audit, guard, parse, requireUser, uuidParam, yearSchema } from '../../l
 import { customerScope, getCustomerForUser } from '../../services/customers';
 import { listItems, recomputeTotals } from '../../services/declarations';
 import { jobView } from '../ecac/util';
-import { safeName } from '../sync/multipart';
+import { safeZipName, sendStoredFile } from '../../services/uploads';
 import {
   computeElaborationStatus,
   docCounts,
@@ -306,8 +306,7 @@ export async function elaborationRoutes(app: FastifyInstance) {
       .where(and(eq(declarations.officeId, user.officeId), eq(declarations.exerciseYear, body.year), inArray(declarations.customerId, ids)));
     const fileIds = rows.flatMap((r) => (r.fileId ? [r.fileId] : []));
     if (!fileIds.length) throw notFound('Pacote exportado');
-    const send = (name: string, data: Buffer) =>
-      reply.header('Content-Type', 'application/zip').header('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(name)}`).send(data);
+    const send = (name: string, data: Buffer) => sendStoredFile(reply, { filename: name, mimeType: 'application/zip' }, data);
     if (fileIds.length === 1) {
       const { row, data } = await app.ctx.files.get(user.officeId, fileIds[0]);
       return send(row.filename, data);
@@ -315,7 +314,7 @@ export async function elaborationRoutes(app: FastifyInstance) {
     const zip = new JSZip();
     for (const id of fileIds) {
       const { row, data } = await app.ctx.files.get(user.officeId, id);
-      zip.file(safeName(row.filename), data);
+      zip.file(safeZipName(row.filename), data);
     }
     return send(`conferencia-${body.year}.zip`, await zip.generateAsync({ type: 'nodebuffer' }));
   });

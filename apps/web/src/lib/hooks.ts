@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient, type QueryKey } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import { ApiError, api } from './api';
+import { ApiError, api, errorMessage } from './api';
 import { useToast } from '../ds';
 
 /** GET tipado com cache do React Query. */
@@ -30,7 +30,7 @@ export function useAction<V, R = unknown>(
       if (opts.success) toast.success(typeof opts.success === 'function' ? opts.success(r) : opts.success);
       opts.onSuccess?.(r, v);
     },
-    onError: (err) => toast.error(err instanceof ApiError ? err.message : 'Não foi possível concluir. Tente novamente.'),
+    onError: (err) => toast.error(errorMessage(err)),
   });
 }
 

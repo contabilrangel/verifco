@@ -5,7 +5,7 @@ import { ArrowRightLeft, Columns3, FileWarning, RefreshCw, Search } from 'lucide
 import { DECLARATION_STAGES, DECLARATION_SUBSTATUS, STAGE_SUBSTATUS, stageOfSubstatus, type DeclarationStage, type DeclarationSubstatus } from '@verifco/shared';
 import { Alert, Button, ConfirmDialog, EmptyState, IconButton, Input, Loading, Modal, Select, Tag, useToast } from '../../ds';
 import { PageHeader } from '../../app/Shell';
-import { ApiError, api, qs } from '../../lib/api';
+import { api, errorMessage, qs } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { useApi, useDebounced } from '../../lib/hooks';
 import { formatCpfCnpj, formatMoney, stageLabel, stageTone, substatusLabel } from '../../lib/format';
@@ -84,7 +84,7 @@ export function KanbanPage() {
       const res = await api.get<KanbanData>(`/kanban${qs({ year, search: debounced, groups: group, stageLimit: STAGE_LIMIT, stage: col.stage, offset: col.cards.length })}`);
       setExtra((e) => ({ ...e, [col.stage]: [...(e[col.stage] ?? []), ...(res.columns[0]?.cards ?? [])] }));
     } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : 'Não foi possível carregar mais clientes.');
+      toast.error(errorMessage(err, 'Não foi possível carregar mais clientes.'));
     } finally {
       setLoadingMore(null);
     }
@@ -104,7 +104,7 @@ export function KanbanPage() {
       void qc.invalidateQueries({ queryKey: ['dashboard'] });
       void qc.invalidateQueries({ queryKey: ['declaration', card.customerId] });
     } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : 'Não foi possível mover o cliente.');
+      toast.error(errorMessage(err, 'Não foi possível mover o cliente.'));
     } finally {
       setMoving(false);
     }
@@ -172,7 +172,7 @@ export function KanbanPage() {
         <Loading />
       ) : k.error ? (
         <Alert tone="danger" title="Não foi possível carregar o Kanban.">
-          {k.error instanceof ApiError ? k.error.message : 'Tente atualizar.'}
+          {errorMessage(k.error, 'Tente atualizar.')}
         </Alert>
       ) : k.data && k.data.total === 0 ? (
         <EmptyState

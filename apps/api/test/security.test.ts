@@ -6,11 +6,11 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { currentExerciseYear } from '@verifco/shared';
-import { checklists, customers, darfs, deliveries, documents, ecacRecords, importBatches, jobs, messages, passwordResets, procurators, users } from '../src/db/schema';
+import { checklists, customers, darfs, deliveries, documents, ecacRecords, files, importBatches, jobs, messages, passwordResets, prefilledStatements, procurators, users } from '../src/db/schema';
 import { signCustomerToken } from '../src/plugins/auth';
 import { notify } from '../src/services/notify';
 import { buildWorkbook } from '../src/services/xlsx';
-import { guessMimeType } from '../src/modules/sync/multipart';
+import { mimeForStoredFile, uploadedFromBase64 } from '../src/services/uploads';
 import { VALID_CPFS, createEmployee, createTestEnv, registerOffice, type TestEnv } from './helpers';
 import { PDF } from './portal-helpers';
 
@@ -224,10 +224,60 @@ describe('tipos de arquivo e entrega segura (SEG-3, CON-3)', () => {
     expect(page.body.error).toContain('.xlsx ou .csv');
   });
 
-  it('robô e uploads manuais ignoram o tipo informado', () => {
-    expect(guessMimeType('informe.pdf', 'text/html')).toBe('application/pdf');
-    expect(guessMimeType('pagina.html', 'text/html')).toBe('application/octet-stream');
-    expect(guessMimeType('img.svg', 'image/svg+xml')).toBe('application/octet-stream');
+  it('robô e uploads manuais: tipo pela extensão conferida com o conteúdo, nunca o informado (CON-3)', async () => {
+    const html = Buffer.from('<html><script>alert(1)</script></html>');
+    expect(mimeForStoredFile('informe.pdf', PDF)).toBe('application/pdf');
+    expect(mimeForStoredFile('informe.pdf', html)).toBe('application/octet-stream');
+    expect(mimeForStoredFile('pagina.html', html)).toBe('application/octet-stream');
+    expect(mimeForStoredFile('img.svg', Buffer.from('<svg/>'))).toBe('application/octet-stream');
+    // PDF em base64 da extensão: mesmo tratamento do upload (nome seguro, tipo conferido)
+    expect(uploadedFromBase64('../../cnd.pdf', html.toString('base64'))).toMatchObject({ filename: 'cnd.pdf', mimeType: 'application/octet-stream' });
+    expect(uploadedFromBase64('cnd.pdf', PDF.toString('base64')).mimeType).toBe('application/pdf');
+
+    // envio manual da pré-preenchida (readMultipart → readUploads): HTML disfarçado de PDF vira binário
+    const o = await officeWithCustomer(VALID_CPFS[6]);
+    const up = await uploadAs(o.token, '/api/prefilled/upload', [{ name: 'pre.pdf', data: html, type: 'application/pdf' }], { customerId: o.customerId, year: String(YEAR) });
+    expect(up.status).toBe(201);
+    const st = await env.ctx.db.query.prefilledStatements.findFirst({ where: eq(prefilledStatements.id, up.body.id) });
+    expect((await env.ctx.files.get(o.officeId, st!.fileId)).row.mimeType).toBe('application/octet-stream');
+    // e o download sai por sendStoredFile (anexo, nosniff, CSP sandbox)
+    const dl = await o.api.get(`/api/prefilled/${up.body.id}/download`);
+    expect(dl.status).toBe(200);
+    expect(dl.raw.headers['content-type']).toBe('application/octet-stream');
+    expect(dl.raw.headers['x-content-type-options']).toBe('nosniff');
+    expect(String(dl.raw.headers['content-security-policy'])).toContain('sandbox');
+  });
+
+  it('checklist e portal entregam arquivos pela lista branca, com CSP (CON-3)', async () => {
+    const o = await officeWithCustomer(VALID_CPFS[7]);
+    const created = await o.api.post(`/api/customers/${o.customerId}/checklist`, { year: YEAR });
+    expect(created.status).toBe(201);
+    const item = created.body.sections.flatMap((sec: { items: { id: string }[] }) => sec.items)[0];
+    // o checklist usa as regras do readUploads: extensão fora da lista e arquivo vazio são recusados
+    const page = await uploadAs(o.token, `/api/checklists/${created.body.id}/items/${item.id}/files`, [{ name: 'x.html', data: Buffer.from('<b>oi</b>'), type: 'text/html' }]);
+    expect(page.status).toBe(400);
+    expect(page.body.error).toBe('O arquivo “x.html” não é aceito. Envie PDF, imagem (JPG, PNG, HEIC) ou planilha (XLSX, XLS, ODS, CSV).');
+    const empty = await uploadAs(o.token, `/api/checklists/${created.body.id}/items/${item.id}/files`, [{ name: 'vazio.pdf', data: Buffer.alloc(0), type: 'application/pdf' }]);
+    expect(empty.body.error).toBe('O arquivo “vazio.pdf” está vazio.');
+    const up = await uploadAs(o.token, `/api/checklists/${created.body.id}/items/${item.id}/files`, [{ name: 'rg.pdf', data: PDF, type: 'text/html' }]);
+    expect(up.status).toBe(201);
+    const doc = await env.ctx.db.query.documents.findFirst({ where: eq(documents.checklistItemId, item.id) });
+    // registro antigo gravado com tipo perigoso: sai como binário, anexo e com sandbox
+    await env.ctx.db.update(files).set({ mimeType: 'text/html' }).where(eq(files.id, doc!.fileId));
+    const office = await o.api.get(`/api/checklists/${created.body.id}/files/${doc!.id}?inline=1`);
+    expect(office.status).toBe(200);
+    expect(office.raw.headers['content-type']).toBe('application/octet-stream');
+    expect(String(office.raw.headers['content-disposition'])).toMatch(/^attachment;/);
+    expect(String(office.raw.headers['content-security-policy'])).toContain('sandbox');
+    const customer = await env.ctx.db.query.customers.findFirst({ where: eq(customers.id, o.customerId) });
+    const portal = await env.app.inject({
+      method: 'GET',
+      url: `/api/portal/checklists/${created.body.id}/files/${doc!.id}?inline=1`,
+      headers: { authorization: `Bearer ${signCustomerToken(env.app, customer!, 'portal')}` },
+    });
+    expect(portal.statusCode).toBe(200);
+    expect(portal.headers['content-type']).toBe('application/octet-stream');
+    expect(String(portal.headers['content-security-policy'])).toContain('sandbox');
   });
 
   it('anexo da IA: só tipos legíveis e conteúdo conferido; anexo de outro cliente é recusado (SEG-5)', async () => {
@@ -426,6 +476,15 @@ describe('permissões do catálogo conferidas no servidor (CON-17)', () => {
     expect(Object.keys((await basic.api.get('/api/customer-groups')).body[0]).sort()).toEqual(['id', 'name']);
     expect((await basic.api.get('/api/office')).body).not.toHaveProperty('settings');
     expect((await basic.api.get('/api/auth/me')).body.office.settings).toEqual({});
+    // quem só edita os dados do escritório recebe no PUT o mesmo formato do GET (sem as preferências)
+    const editor = await createEmployee(env, o.api, ['office.edit']);
+    const put = await editor.api.put('/api/office', { name: 'Escritório Renomeado' });
+    expect(put.status).toBe(200);
+    expect(put.body.name).toBe('Escritório Renomeado');
+    expect(put.body).not.toHaveProperty('settings');
+    expect(Object.keys(put.body).sort()).toEqual(Object.keys((await editor.api.get('/api/office')).body).sort());
+    const ownerPut = await o.api.put('/api/office', { name: 'Escritório Teste' });
+    expect(ownerPut.body.settings.whatsappServiceNumber).toBe('11 99999-0000');
     const viewer = await createEmployee(env, o.api, ['settings.view', 'procuration.list', 'customer_group.list']);
     expect((await viewer.api.get('/api/office')).body.settings.whatsappServiceNumber).toBe('11 99999-0000');
     expect((await viewer.api.get('/api/procurators')).body[0]).toHaveProperty('cpfCnpj');

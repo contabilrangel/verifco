@@ -70,6 +70,14 @@ Não há registro central para editar: criar a pasta basta.
 | `xlsx.ts` | `buildWorkbook`, `readSheet`, `parseMoneyToCents`, `parseDate` |
 | `settings.ts` | `getOfficeSettings` com os padrões aplicados |
 | `notify.ts` | notificação no sino |
+| `uploads.ts` | `readUploads` (multipart: tipo pela extensão conferida com o conteúdo, limites e mensagens em português), `sendStoredFile` (download com lista branca de tipos, `nosniff` e CSP `sandbox`), `safeFilename`, `safeZipName`, `uploadedFromBase64`, listas de tipos (`DOCUMENT_TYPES`, `SHEET_TYPES`, `PDF_TYPES`...) |
+| `rate-limit.ts` | limite de tentativas no banco (vale entre instâncias): `consume`, `check`, `fail`, `allow`, `resetLimit`; `ROUTE_LIMITS` (por IP, aplicado em `app.ts`) e as regras por e-mail, CPF/link (`CUSTOMER_LOGIN_RULE`) e conta |
+
+**Arquivos**: todo upload usa `readUploads` (ou um leitor do módulo construído sobre ele, como
+`readChecklistUploads` e `readMultipart`) e todo download de arquivo gravado usa
+`sendStoredFile`. Nunca grave nem devolva o `Content-Type` informado por quem enviou.
+**Limites de tentativa**: use as funções de `rate-limit.ts` (nunca um contador em memória, que
+vale só para uma instância da API).
 
 Contexto (`app.ctx`): `db`, `config`, `secrets`, `files` (salvar/ler arquivos), `jobs`
 (fila), `providers` (e-mail, WhatsApp, IA, `fetch` injetável).
@@ -83,7 +91,11 @@ externo ou demora (envios, exportações, IA, sincronizações) passa pela fila.
 ### Banco
 
 `src/db/schema.ts` concentra as tabelas. Depois de alterá-lo, gere a migração
-(`pnpm db:generate`) e não edite arquivos em `drizzle/` à mão.
+(`pnpm db:generate`) e não edite arquivos em `drizzle/` à mão. SQL de dados (ex.: um `UPDATE` de
+preenchimento) vai numa migração própria, criada com
+`npx drizzle-kit generate --custom --name <nome>` dentro de `apps/api` (veja
+`0003_checklist_validade_links.sql`). `test/migrations.test.ts` confere que as migrações aplicam
+num banco vazio e chegam ao mesmo banco que o `schema.ts`.
 
 ### Testes
 
@@ -98,11 +110,20 @@ permissões e isolamento entre escritórios.
 - `NODE_ENV=production` (o `pnpm start` já define): a API recusa subir sem `JWT_SECRET` (32+
   caracteres), `ENCRYPTION_KEY` e `DATABASE_URL` de PostgreSQL. Modelo em `apps/api/.env.example`.
 - **Atrás de proxy reverso ou balanceador (nginx, Caddy, Traefik, load balancer da nuvem),
-  `TRUST_PROXY=true` é obrigatório.** Sem ele, a API enxerga só o IP do proxy e o limite de
-  tentativas por IP (login, senha, cadastro, links públicos) passa a valer para todos os clientes
-  juntos: algumas senhas erradas bloqueiam o escritório inteiro. Em produção, a API avisa no
-  console (uma vez) quando recebe `X-Forwarded-For` com `TRUST_PROXY` desligado. O proxy precisa
-  repassar o IP do cliente em `X-Forwarded-For`.
+  `TRUST_PROXY=1` é obrigatório** (o número de proxies na frente da API; com dois, `2`). Pelo
+  número, a API só confia no proxy da frente quando ele conecta por rede interna (127.x, 10.x,
+  172.16–31.x, 192.168.x, link-local, fc00::/7); se ele chega por IP público, use a lista de
+  IPs/CIDRs dos proxies (`TRUST_PROXY=10.0.0.0/8,192.168.1.10`), e a API avisa no console quando
+  ignora o cabeçalho por isso. O Fastify 5.12+ não aceita mais `trustProxy` numérico sozinho
+  (`lib/proxy.ts` converte o número numa função que confere a conexão). Sem `TRUST_PROXY`, a API
+  enxerga só o IP do proxy e o limite de tentativas por IP (login, senha, cadastro, links
+  públicos) passa a valer para todos os clientes juntos: algumas senhas erradas bloqueiam o
+  escritório inteiro. Em produção, a API avisa no console (uma vez) quando recebe
+  `X-Forwarded-For` com `TRUST_PROXY` desligado. O proxy precisa acrescentar o IP do cliente ao
+  `X-Forwarded-For`; a API usa o valor acrescentado pelo último proxy confiável e ignora o que o
+  cliente mandou antes dele.
+- Não use `TRUST_PROXY=true`: confia em todos os saltos, e o cliente escolhe o próprio IP no
+  primeiro valor do `X-Forwarded-For` para escapar do limite (a API aceita, mas avisa no console).
 - Com a API exposta direto na internet, deixe `TRUST_PROXY` desligado: o cliente poderia forjar o
   cabeçalho para escapar do limite.
 - Ao subir, a API aplica as migrações de `apps/api/drizzle/` (padrão `DB_SYNC=migrate`); não use

@@ -1,5 +1,6 @@
 /**
- * Upload e download seguros de arquivos.
+ * Upload e download seguros de arquivos. Todo upload passa por `readUploads` e todo download
+ * de arquivo gravado sai por `sendStoredFile`.
  *
  * - O tipo gravado vem da extensão conferida com a assinatura do conteúdo, nunca do
  *   `Content-Type` que o navegador (ou quem chama a API) informa.
@@ -44,16 +45,21 @@ export const KNOWN_FILE_TYPES: Record<string, string> = {
   p12: 'application/x-pkcs12',
 };
 
-const pick = (...exts: string[]) => Object.fromEntries(exts.map((e) => [e, KNOWN_FILE_TYPES[e]]));
+/** Subconjunto de `KNOWN_FILE_TYPES` (extensão → MIME) para o `types` do `readUploads`. */
+export const fileTypes = (...exts: string[]): Record<string, string> => Object.fromEntries(exts.map((e) => [e, KNOWN_FILE_TYPES[e]]));
 
 /** Documentos do cliente enviados pela equipe: tudo o que é conhecido (o resto vira octet-stream). */
-export const DOCUMENT_TYPES = pick('pdf', 'jpg', 'jpeg', 'png', 'webp', 'gif', 'heic', 'heif', 'xls', 'xlsx', 'ods', 'csv', 'txt', 'xml', 'ofx', 'doc', 'docx', 'odt', 'zip');
+export const DOCUMENT_TYPES = fileTypes('pdf', 'jpg', 'jpeg', 'png', 'webp', 'gif', 'heic', 'heif', 'xls', 'xlsx', 'ods', 'csv', 'txt', 'xml', 'ofx', 'doc', 'docx', 'odt', 'zip');
 /** Anexos que a IA consegue ler. */
-export const AI_ATTACHMENT_TYPES = pick('pdf', 'jpg', 'jpeg', 'png', 'webp', 'gif', 'csv', 'txt', 'xlsx');
+export const AI_ATTACHMENT_TYPES = fileTypes('pdf', 'jpg', 'jpeg', 'png', 'webp', 'gif', 'csv', 'txt', 'xlsx');
 /** Planilhas de importação. */
-export const SHEET_TYPES = pick('xlsx', 'csv');
+export const SHEET_TYPES = fileTypes('xlsx', 'csv');
 /** Certificado digital A1. */
-export const CERTIFICATE_TYPES = pick('pfx', 'p12');
+export const CERTIFICATE_TYPES = fileTypes('pfx', 'p12');
+/** Só PDF (ex.: guia do DARF). */
+export const PDF_TYPES = fileTypes('pdf');
+/** Logo do escritório: os PDFs só desenham PNG/JPG (SVG ainda pode carregar script). */
+export const LOGO_TYPES = fileTypes('png', 'jpg', 'jpeg');
 
 /** Tipos que podem abrir no navegador (sem script). */
 const INLINE_TYPES = new Set(['application/pdf', 'image/png', 'image/jpeg', 'image/gif', 'image/webp']);
@@ -68,6 +74,22 @@ export function safeFilename(name: string): string {
   if (cleaned.length <= 180) return cleaned;
   const ext = fileExtension(cleaned);
   return `${cleaned.slice(0, 170).trimEnd()}${ext ? `.${ext}` : ''}`;
+}
+
+/**
+ * Nome seguro para pastas e arquivos dentro de um .zip (e cabeçalhos de download): troca
+ * separadores de caminho e caracteres proibidos por `_`, mantendo o resto do texto
+ * (ex.: o CNPJ "12.345.678/0001-90" vira "12.345.678_0001-90").
+ */
+export function safeZipName(name: string, maxLength = 150): string {
+  return (
+    name
+      .normalize('NFC')
+      .replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '_')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, maxLength) || 'arquivo'
+  );
 }
 
 /** Confere a assinatura do arquivo com a extensão (evita, por ex., um HTML renomeado para .pdf). */
@@ -131,6 +153,17 @@ export function mimeForStoredFile(filename: string, data: Buffer): string {
   return detectMime(filename, data) ?? OCTET_STREAM;
 }
 
+/**
+ * Arquivo recebido em base64 dentro de um JSON (ex.: PDFs da extensão do eCAC), com as mesmas
+ * regras do `readUploads`: nome seguro e tipo pela extensão conferida com o conteúdo (o tipo
+ * informado por quem enviou é ignorado).
+ */
+export function uploadedFromBase64(filename: string, base64: string): UploadedFile {
+  const name = safeFilename(filename || 'arquivo');
+  const data = Buffer.from(base64, 'base64');
+  return { filename: name, data, mimeType: mimeForStoredFile(name, data) };
+}
+
 export interface ReadUploadsOptions {
   /** Extensões aceitas (extensão → MIME). */
   types: Record<string, string>;
@@ -143,6 +176,8 @@ export interface ReadUploadsOptions {
   maxFiles?: number;
   /** Descrição dos tipos aceitos, para a mensagem de erro (ex.: "PDF, imagem ou planilha"). */
   accepted?: string;
+  /** Recusa arquivo vazio (padrão: ignora). */
+  rejectEmpty?: boolean;
 }
 
 const DEFAULT_MAX_BYTES = 25 * 1024 * 1024;
@@ -167,18 +202,19 @@ export async function readUploads(req: FastifyRequest, opts: ReadUploadsOptions)
       }
       const filename = safeFilename(part.filename || 'arquivo');
       current = filename;
+      const strict = opts.unknown !== 'octet-stream';
+      // extensão fora da lista: recusa antes de ler o conteúdo
+      if (strict && !opts.types[fileExtension(filename)]) {
+        throw badRequest(`O arquivo “${filename}” não é aceito.${opts.accepted ? ` Envie ${opts.accepted}.` : ''}`);
+      }
       const data = await part.toBuffer();
-      if (!data.length) continue;
+      if (!data.length) {
+        if (opts.rejectEmpty) throw badRequest(`O arquivo “${filename}” está vazio.`);
+        continue;
+      }
       let mimeType = detectMime(filename, data, opts.types);
       if (!mimeType) {
-        if (opts.unknown !== 'octet-stream') {
-          const known = Boolean(opts.types[fileExtension(filename)]);
-          throw badRequest(
-            known
-              ? `O conteúdo de “${filename}” não corresponde ao tipo do arquivo.`
-              : `O arquivo “${filename}” não é aceito.${opts.accepted ? ` Envie ${opts.accepted}.` : ''}`,
-          );
-        }
+        if (strict) throw badRequest(`O conteúdo de “${filename}” não corresponde ao tipo do arquivo.`);
         mimeType = OCTET_STREAM;
       }
       files.push({ filename, mimeType, data });
@@ -186,7 +222,7 @@ export async function readUploads(req: FastifyRequest, opts: ReadUploadsOptions)
   } catch (err) {
     const code = (err as { code?: string }).code;
     if (code === 'FST_REQ_FILE_TOO_LARGE') throw new HttpError(413, `O arquivo “${current}” passa de ${formatMb(maxBytes)}. Envie um arquivo menor.`);
-    if (code === 'FST_FILES_LIMIT') throw new HttpError(413, `Envie no máximo ${maxFiles} arquivo(s) por vez.`);
+    if (code === 'FST_FILES_LIMIT') throw new HttpError(413, `Envie no máximo ${maxFiles === 1 ? 'um arquivo' : `${maxFiles} arquivos`} por vez.`);
     throw err;
   }
   return { files, fields };
@@ -202,15 +238,16 @@ export const isInlineType = (mime: string) => INLINE_TYPES.has(mime);
 
 /**
  * Entrega um arquivo gravado sem permitir execução de conteúdo: tipo da lista branca,
- * `inline` só para PDF e imagens, `nosniff`, CSP `sandbox` e sem cache compartilhado.
+ * `inline` só para PDF e imagens, `nosniff`, CSP `sandbox` e sem cache compartilhado
+ * (`cacheControl` só muda o cache, ex.: o logo público do escritório).
  */
-export function sendStoredFile(reply: FastifyReply, file: { filename: string; mimeType: string }, data: Buffer, inline = false) {
+export function sendStoredFile(reply: FastifyReply, file: { filename: string; mimeType: string }, data: Buffer, inline = false, cacheControl = 'private, no-store') {
   const type = servedMimeType(file.mimeType);
   const canInline = inline && isInlineType(type);
   reply
     .header('Content-Type', type)
     .header('X-Content-Type-Options', 'nosniff')
-    .header('Cache-Control', 'private, no-store')
+    .header('Cache-Control', cacheControl)
     .header('Content-Disposition', `${canInline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(file.filename)}`);
   // o visualizador de PDF do Chrome não abre em documento com sandbox
   if (type !== 'application/pdf') reply.header('Content-Security-Policy', "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox");

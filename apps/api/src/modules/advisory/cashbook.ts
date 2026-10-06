@@ -15,12 +15,16 @@ import { cashbookEntries, importBatches } from '../../db/schema';
 import { badRequest, notFound } from '../../lib/errors';
 import { audit, guard, parse, requireUser, uuidParam } from '../../lib/http';
 import { getCustomerForUser } from '../../services/customers';
+import { fileTypes, readUploads } from '../../services/uploads';
 import { readCsv, readSheet } from '../../services/xlsx';
 import { decodeText } from './ai-service';
 
 const calendarYear = z.coerce.number().int().min(2000).max(2100);
 
 type Row = { rowNumber: number; values: Record<string, string> };
+
+/** Planilhas aceitas na conversão do livro caixa. */
+const CASHBOOK_TYPES = fileTypes('csv', 'txt', 'xlsx');
 
 /** Lê .csv (UTF-8 ou Windows-1252, ; ou ,) ou .xlsx e devolve cabeçalhos normalizados e linhas. */
 async function readUpload(data: Buffer, filename: string): Promise<{ headers: string[]; rows: Row[] }> {
@@ -81,10 +85,7 @@ export async function cashbookRoutes(app: FastifyInstance) {
     const { id } = parse(uuidParam, req.params);
     const { year } = parse(z.object({ year: calendarYear }), req.query);
     const customer = await getCustomerForUser(app.ctx, user, id);
-    const uploads: { filename: string; data: Buffer }[] = [];
-    for await (const part of req.parts()) {
-      if (part.type === 'file') uploads.push({ filename: part.filename, data: await part.toBuffer() });
-    }
+    const { files: uploads } = await readUploads(req, { types: CASHBOOK_TYPES, accepted: 'um arquivo .csv ou .xlsx no layout do modelo' });
     if (!uploads.length) throw badRequest('Selecione ao menos um arquivo.');
     const parsed = [];
     let total = 0;

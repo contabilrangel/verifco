@@ -13,6 +13,7 @@ import { sha256 } from '../../lib/crypto';
 import { HttpError, conflict, notFound, unauthorized } from '../../lib/errors';
 import { optionalText, parse, uuidParam } from '../../lib/http';
 import { notify } from '../../services/notify';
+import { sendStoredFile } from '../../services/uploads';
 import { approveBudget, linkExpiresAt, rejectBudget, type BudgetRow } from './service';
 import { categoryLabel } from './text';
 
@@ -95,7 +96,7 @@ export async function publicRoutes(app: FastifyInstance) {
     if (!office?.logoFileId) throw notFound('Logo');
     const { row, data } = await ctx.files.get(office.id, office.logoFileId);
     if (!/^image\//.test(row.mimeType)) throw notFound('Logo');
-    return reply.header('Content-Type', row.mimeType).header('Cache-Control', 'private, max-age=3600').send(data);
+    return sendStoredFile(reply, row, data, true, 'private, max-age=3600');
   });
 
   /** Aprovação idempotente: repetir não gera outro faturamento. */

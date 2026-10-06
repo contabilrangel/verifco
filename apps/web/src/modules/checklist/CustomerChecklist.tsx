@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, CheckCircle2, ChevronDown, Clock, FileText, History, MessageSquareText, Paperclip, PartyPopper, Plus, RotateCcw, Trash2, Undo2, Upload, X } from 'lucide-react';
 import { CHECKLIST_FINISH_OPTIONS, CHECKLIST_ITEM_STATUS_CUSTOMER, CHECKLIST_UPLOAD_ACCEPT } from '@verifco/shared';
 import { Alert, Button, Card, IconButton, Input, Loading, Modal, Progress, Tag, Textarea, useToast, type Tone } from '../../ds';
-import { ApiError, isViewableType } from '../../lib/api';
+import { errorMessage, isViewableType } from '../../lib/api';
 import { formatDateTime } from '../../lib/format';
 import { checkFiles, formatBytes, type CustomerClient } from './customerApi';
 import type { ChecklistFile, ChecklistItem, ChecklistSectionView, CustomerChecklistView } from './types';
@@ -16,7 +16,6 @@ const SECTION_STATUS_CUSTOMER: Record<string, string> = {
 };
 const sectionTone = (s: string): Tone => (s === 'done' ? 'success' : s === 'pending_documents' ? 'warning' : s === 'no_documents' ? 'neutral' : 'primary');
 const itemTone = (s: string): Tone => (s === 'sent' ? 'success' : s === 'pending' ? 'warning' : 'neutral');
-const errMsg = (e: unknown) => (e instanceof ApiError ? e.message : 'Não foi possível concluir. Tente de novo.');
 
 /**
  * Checklist na visão do cliente (link do checklist ou portal).
@@ -35,11 +34,11 @@ export function CustomerChecklist({ checklistId, client }: { checklistId: string
   const run = useMutation({
     mutationFn: (fn: () => Promise<CustomerChecklistView>) => fn(),
     onSuccess: apply,
-    onError: (e) => toast.error(errMsg(e)),
+    onError: (e) => toast.error(errorMessage(e)),
   });
 
   if (q.isLoading) return <Loading label="Abrindo seu checklist..." />;
-  if (!q.data) return <Alert tone="danger">{errMsg(q.error)}</Alert>;
+  if (!q.data) return <Alert tone="danger">{errorMessage(q.error)}</Alert>;
   const c = q.data;
   const base = `/portal/checklists/${c.id}`;
   const editable = !c.readOnly;
@@ -56,7 +55,7 @@ export function CustomerChecklist({ checklistId, client }: { checklistId: string
     },
     removeFile: (f) => run.mutate(() => client.del(`${base}/files/${f.id}`)),
     removeItem: (item) => run.mutate(() => client.del(`${base}/items/${item.id}`)),
-    openFile: (f) => client.open(`${base}/files/${f.id}`, f.filename, isViewableType(f.mimeType)).catch((e) => toast.error(errMsg(e))),
+    openFile: (f) => client.open(`${base}/files/${f.id}`, f.filename, isViewableType(f.mimeType)).catch((e) => toast.error(errorMessage(e))),
   };
 
   const sectionsDone = c.sections.filter((s) => s.status !== 'open').length;
@@ -420,7 +419,7 @@ function AddDocumentModal({ section, onClose, onCreate }: { section: ChecklistSe
     try {
       await onCreate(title.trim(), description.trim(), files);
     } catch (e) {
-      toast.error(errMsg(e));
+      toast.error(errorMessage(e));
     } finally {
       setSaving(false);
     }

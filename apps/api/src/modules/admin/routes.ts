@@ -9,6 +9,7 @@ import { badRequest, conflict, forbidden, notFound } from '../../lib/errors';
 import { exposeDevSecrets } from '../../config';
 import { audit, can, guard, optionalText, parse, requirePermission, requireUser, uuidParam } from '../../lib/http';
 import { DEFAULT_SETTINGS, getOfficeSettings } from '../../services/settings';
+import { LOGO_TYPES, readUploads } from '../../services/uploads';
 import { EMAIL_CHANGED_JOB, type EmailChangedPayload } from '../auth/jobs';
 
 const settingsSchema = z
@@ -42,8 +43,7 @@ export async function adminRoutes(app: FastifyInstance) {
     const user = requireUser(req);
     const office = await db.query.offices.findFirst({ where: eq(offices.id, user.officeId) });
     if (!office) throw notFound('Escritório');
-    const { settings, ...rest } = office;
-    return canSeeSettings(user) ? { ...rest, settings: { ...DEFAULT_SETTINGS, ...settings } } : rest;
+    return officeView(user, office);
   });
 
   app.put('/office', { preHandler: guard('office.edit') }, async (req) => {
@@ -79,7 +79,8 @@ export async function adminRoutes(app: FastifyInstance) {
       .where(eq(offices.id, user.officeId))
       .returning();
     await audit(req, 'update', 'office', row.id);
-    return row;
+    // mesmo formato do GET: quem só edita os dados do escritório não recebe as preferências
+    return officeView(user, row);
   });
 
   app.put('/office/settings', { preHandler: guard('settings.edit') }, async (req) => {
@@ -94,15 +95,12 @@ export async function adminRoutes(app: FastifyInstance) {
 
   app.post('/office/logo', { preHandler: guard('office.edit') }, async (req) => {
     const user = requireUser(req);
-    const file = await req.file();
-    if (!file) throw badRequest('Envie uma imagem.');
     // os PDFs só desenham PNG/JPG; SVG ficaria de fora e ainda pode carregar script
-    if (!/^image\/(png|jpe?g)$/.test(file.mimetype)) throw badRequest('Use uma imagem PNG ou JPG.');
-    const data = await file.toBuffer();
-    if (data.length > LOGO_MAX_BYTES) throw badRequest('A imagem deve ter até 2 MB.');
-    const kind = imageKind(data);
-    if (!kind) throw badRequest('O arquivo não é uma imagem PNG ou JPG válida.');
-    const saved = await app.ctx.files.save({ officeId: user.officeId, data, filename: file.filename, mimeType: kind, userId: user.userId });
+    const {
+      files: [file],
+    } = await readUploads(req, { types: LOGO_TYPES, maxBytes: LOGO_MAX_BYTES, maxFiles: 1, accepted: 'uma imagem PNG ou JPG de até 2 MB' });
+    if (!file) throw badRequest('Envie uma imagem.');
+    const saved = await app.ctx.files.save({ officeId: user.officeId, data: file.data, filename: file.filename, mimeType: file.mimeType, userId: user.userId });
     const office = await db.query.offices.findFirst({ where: eq(offices.id, user.officeId) });
     await db.update(offices).set({ logoFileId: saved.id, updatedAt: new Date() }).where(eq(offices.id, user.officeId));
     if (office?.logoFileId) await app.ctx.files.remove(user.officeId, office.logoFileId);
@@ -416,18 +414,17 @@ export async function adminRoutes(app: FastifyInstance) {
 
 const LOGO_MAX_BYTES = 2 * 1024 * 1024;
 
-/** Tipo real da imagem pelos primeiros bytes (não confia no mimetype enviado). */
-function imageKind(data: Buffer): 'image/png' | 'image/jpeg' | null {
-  if (data.length > 8 && data.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
-  if (data.length > 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) return 'image/jpeg';
-  return null;
-}
-
 const escapeHtml = (v: string) => v.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 
 const GROUP_ADMIN = ['customer_group.list', 'customer_group.create', 'customer_group.edit', 'customer_group.delete'];
 
 const canSeeSettings = (user: AuthUser) => can(user, 'settings.view') || can(user, 'settings.edit');
+
+/** Escritório como a API devolve (GET e PUT /office): as preferências só para quem pode vê-las. */
+function officeView(user: AuthUser, office: typeof offices.$inferSelect) {
+  const { settings, ...rest } = office;
+  return canSeeSettings(user) ? { ...rest, settings: { ...DEFAULT_SETTINGS, ...settings } } : rest;
+}
 
 /**
  * Quem não é dono só concede permissões que ele mesmo tem (evita, por exemplo, que quem tem

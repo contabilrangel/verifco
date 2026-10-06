@@ -3,7 +3,7 @@ import type { AppContext } from '../../context';
 import { files, prefilledStatements } from '../../db/schema';
 import { sha256 } from '../../lib/crypto';
 import type { CustomerRow } from '../../services/customers';
-import { guessMimeType, type UploadedFile } from '../sync/multipart';
+import type { UploadedFile } from '../../services/uploads';
 
 export type PrefilledRow = typeof prefilledStatements.$inferSelect;
 
@@ -16,7 +16,7 @@ export async function savePrefilled(
   input: { officeId: string; customer: CustomerRow; year: number; file: UploadedFile; userId?: string | null },
 ): Promise<{ statement: PrefilledRow; duplicate: boolean }> {
   const { db } = ctx;
-  const hash = sha256(input.file.buffer);
+  const hash = sha256(input.file.data);
   const [dup] = await db
     .select({ p: prefilledStatements })
     .from(prefilledStatements)
@@ -26,9 +26,9 @@ export async function savePrefilled(
   if (dup) return { statement: dup.p, duplicate: true };
   const saved = await ctx.files.save({
     officeId: input.officeId,
-    data: input.file.buffer,
+    data: input.file.data,
     filename: input.file.filename,
-    mimeType: guessMimeType(input.file.filename, input.file.mimeType),
+    mimeType: input.file.mimeType,
     userId: input.userId ?? null,
   });
   const [statement] = await db

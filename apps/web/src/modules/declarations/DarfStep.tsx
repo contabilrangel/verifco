@@ -3,7 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { CalendarCheck2, CheckCircle2, FileUp, Mail, MessageCircle, MoreHorizontal, Pencil, Plus, RotateCcw, Trash2, Wand2 } from 'lucide-react';
 import { DARF_MAX_QUOTAS, brazilToday, lastBusinessDayOfMonth, planDarfQuotas } from '@verifco/shared';
 import { Alert, Button, Card, Checkbox, ConfirmDialog, EmptyState, IconButton, Input, Loading, Menu, MenuItem, Modal, MoneyInput, Select, Tag, useToast, type Tone } from '../../ds';
-import { ApiError, api } from '../../lib/api';
+import { api, errorMessage } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { useAction, useApi } from '../../lib/hooks';
 import { formatDate, formatDateTime, formatMoney } from '../../lib/format';
@@ -81,7 +81,7 @@ export function DarfStep() {
       else toast.success('PDF da guia anexado.');
       refresh();
     } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : 'Não foi possível anexar o PDF.');
+      toast.error(errorMessage(err, 'Não foi possível anexar o PDF.'));
     } finally {
       setUploading(null);
     }

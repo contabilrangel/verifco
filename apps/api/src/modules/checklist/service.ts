@@ -18,7 +18,7 @@ import { conflict } from '../../lib/errors';
 import { listItems } from '../../services/declarations';
 import { getOfficeSettings } from '../../services/settings';
 import { notify } from '../../services/notify';
-import { safeFilename } from './uploads';
+import { safeFilename, type UploadedFile } from '../../services/uploads';
 
 export type ChecklistRow = typeof checklists.$inferSelect;
 export type SectionRow = typeof checklistSections.$inferSelect;
@@ -231,7 +231,7 @@ export async function notifyOffice(db: Db, customer: CustomerRow, title: string,
 /** Grava os arquivos enviados e os vincula ao item do checklist. */
 export async function attachFiles(
   ctx: AppContext,
-  input: { officeId: string; customerId: string; declarationId: string; itemId: string; uploadedBy: 'office' | 'customer'; userId?: string | null; uploads: { filename: string; mimeType: string; data: Buffer }[] },
+  input: { officeId: string; customerId: string; declarationId: string; itemId: string; uploadedBy: 'office' | 'customer'; userId?: string | null; uploads: UploadedFile[] },
 ) {
   const created: string[] = [];
   for (const u of input.uploads) {

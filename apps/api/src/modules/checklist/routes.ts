@@ -23,7 +23,8 @@ import {
   removeDocument,
   rotateAccess,
 } from './service';
-import { readChecklistUploads, sendStoredFile } from './uploads';
+import { sendStoredFile } from '../../services/uploads';
+import { readChecklistUploads } from './uploads';
 
 const sectionEnum = z.enum(CHECKLIST_FILLABLE_SECTIONS as [ChecklistSection, ...ChecklistSection[]]);
 const itemStatusEnum = z.enum(Object.keys(CHECKLIST_ITEM_STATUS) as [ChecklistItemStatus, ...ChecklistItemStatus[]]);

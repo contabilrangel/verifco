@@ -2,7 +2,7 @@ import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { FileText, FolderOpen, Paperclip, RotateCcw, SendHorizontal, Sparkles, ThumbsDown, ThumbsUp, X } from 'lucide-react';
 import { Alert, Button, ConfirmDialog, EmptyState, IconButton, Input, Loading, Modal, Spinner, cx, useToast } from '../../ds';
-import { ApiError, api, getToken } from '../../lib/api';
+import { ApiError, api, errorMessage, getToken } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { useApi } from '../../lib/hooks';
 import { formatDate, formatDateTime } from '../../lib/format';
@@ -11,7 +11,8 @@ import './advisory.css';
 export const pct = (v: number | null | undefined, digits = 2) =>
   v === null || v === undefined ? '—' : `${v.toLocaleString('pt-BR', { minimumFractionDigits: digits, maximumFractionDigits: digits })}%`;
 
-export const errorMessage = (e: unknown) => (e instanceof ApiError ? e.message : 'Não foi possível concluir. Tente novamente.');
+/** Mensagem de erro para a interface: a de `lib/api.ts` (reexportada para as telas de consultoria). */
+export { errorMessage } from '../../lib/api';
 
 /** Selo dos recursos de IA. */
 export function AiBadge({ children = 'IA' }: { children?: ReactNode }) {

@@ -3,7 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Download, Eye, File as FileIcon, FileArchive, FileImage, FileSpreadsheet, FileText, FolderOpen, Trash2 } from 'lucide-react';
 import { DOCUMENT_CATEGORIES, DOCUMENT_CATEGORY_LIST, documentCategoryLabel, documentOriginLabel } from '@verifco/shared';
 import { Alert, Button, Card, ConfirmDialog, DropFile, EmptyState, IconButton, Loading, Select, Tag, useToast, type Tone } from '../../ds';
-import { ApiError, api, isViewableType } from '../../lib/api';
+import { api, errorMessage, isViewableType } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { useAction, useApi } from '../../lib/hooks';
 import { formatDateTime } from '../../lib/format';
@@ -60,7 +60,7 @@ export function DocumentsStep() {
       refresh();
       void qc.invalidateQueries({ queryKey: declarationKey(customer.id, year) });
     } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : 'Não foi possível enviar os arquivos.');
+      toast.error(errorMessage(err, 'Não foi possível enviar os arquivos.'));
     } finally {
       setUploading(false);
     }
@@ -72,7 +72,7 @@ export function DocumentsStep() {
     try {
       await api.download('/documents/zip', `documentos-${year}.zip`, { customerIds: [customer.id], year });
     } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : 'Não foi possível gerar o .zip.');
+      toast.error(errorMessage(err, 'Não foi possível gerar o .zip.'));
     } finally {
       setZipping(false);
     }

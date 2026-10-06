@@ -2,7 +2,7 @@ import { useRef, useState, type CSSProperties } from 'react';
 import { FileText, History, MoreHorizontal, Paperclip, Pencil, Plus, RotateCcw, Trash2, Upload } from 'lucide-react';
 import { CHECKLIST_FILLABLE_SECTIONS, CHECKLIST_ITEM_STATUS, CHECKLIST_SECTIONS, CHECKLIST_SECTION_STATUS, CHECKLIST_UPLOAD_ACCEPT } from '@verifco/shared';
 import { Button, Card, ConfirmDialog, IconButton, Input, Menu, MenuItem, Modal, Select, Tag, Textarea, useToast, type Tone } from '../../ds';
-import { ApiError, api, isViewableType } from '../../lib/api';
+import { api, errorMessage, isViewableType } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { fieldErrors, useAction } from '../../lib/hooks';
 import { formatCpfCnpj, formatDateTime } from '../../lib/format';
@@ -57,7 +57,7 @@ function SectionCard({
   const openFile = (f: ChecklistFile) => {
     const path = `/checklists/${checklistId}/files/${f.id}`;
     const p = isViewableType(f.mimeType) ? api.open(`${path}?inline=1`) : api.download(path, f.filename);
-    p.catch((e) => toast.error(e instanceof ApiError ? e.message : 'Não foi possível abrir o arquivo.'));
+    p.catch((e) => toast.error(errorMessage(e, 'Não foi possível abrir o arquivo.')));
   };
 
   const finished = section.status !== 'open';

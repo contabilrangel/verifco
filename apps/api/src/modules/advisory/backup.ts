@@ -8,6 +8,7 @@ import { jobs } from '../../db/schema';
 import { badRequest, notFound } from '../../lib/errors';
 import { audit, guard, parse, requireUser, uuidParam } from '../../lib/http';
 import { notify } from '../../services/notify';
+import { sendStoredFile } from '../../services/uploads';
 
 /** Tabelas que não entram no backup (tokens de acesso e fila interna). */
 const SKIP_TABLES = new Set(['password_resets', 'jobs']);
@@ -166,6 +167,6 @@ export async function backupRoutes(app: FastifyInstance) {
     if (job.status !== 'done' || !fileId) throw badRequest('O backup ainda não foi concluído.');
     const { row, data } = await app.ctx.files.get(user.officeId, fileId);
     await audit(req, 'download', 'backup', id);
-    return reply.header('Content-Type', 'application/zip').header('Content-Disposition', `attachment; filename="${row.filename}"`).send(data);
+    return sendStoredFile(reply, { filename: row.filename, mimeType: 'application/zip' }, data);
   });
 }

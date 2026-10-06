@@ -94,7 +94,7 @@ const FIFTEEN_MIN = 15 * 60;
 
 /**
  * Rotas sem login (ou de login) com limite por IP, somado em todas as instâncias.
- * O portal e o link do checklist têm ainda o limite por CPF/link de `portal/access.ts`.
+ * O portal e o link do checklist têm ainda o limite por CPF/link (`CUSTOMER_LOGIN_RULE`).
  * Chave: `MÉTODO /api/rota`.
  */
 export const ROUTE_LIMITS: Record<string, RouteLimit> = {
@@ -114,5 +114,12 @@ export const ROUTE_LIMITS: Record<string, RouteLimit> = {
 
 /** Login da equipe: falhas por e-mail (além do limite por IP). */
 export const LOGIN_EMAIL_RULE: RateRule = { max: 10, windowSec: FIFTEEN_MIN };
+/** Falhas seguidas que bloqueiam o CPF (portal) ou o link do checklist. */
+export const LOGIN_MAX_FAILURES = 5;
+/**
+ * Login do cliente: falhas por CPF (`portal:<cpf>`) ou por link do checklist
+ * (`checklist:<sha256 do token>`), além do limite por IP. Bloqueia até a janela acabar.
+ */
+export const CUSTOMER_LOGIN_RULE: RateRule = { max: LOGIN_MAX_FAILURES, windowSec: FIFTEEN_MIN };
 /** "Esqueci minha senha": no máximo um e-mail a cada 5 minutos por conta. */
 export const FORGOT_PER_ACCOUNT_RULE: RateRule = { max: 1, windowSec: 5 * 60 };

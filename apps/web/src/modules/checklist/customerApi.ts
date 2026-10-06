@@ -3,7 +3,7 @@
  * Usa um token próprio (não o do escritório), guardado só na aba do navegador (sessionStorage).
  */
 import { CHECKLIST_MAX_UPLOAD_BYTES, checklistUploadMime } from '@verifco/shared';
-import { ApiError, isViewableType } from '../../lib/api';
+import { ApiError, OFFLINE_MESSAGE, isViewableType } from '../../lib/api';
 
 const BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? '';
 
@@ -30,7 +30,7 @@ async function call<T>(method: string, path: string, body: unknown, token: strin
   try {
     res = await fetch(`${BASE}/api${path}`, { method, headers, body: payload });
   } catch {
-    throw new ApiError(0, 'Sem conexão com o servidor. Verifique sua internet e tente de novo.');
+    throw new ApiError(0, OFFLINE_MESSAGE);
   }
   if (res.status === 401 && token) onExpired?.();
   if (!res.ok) {

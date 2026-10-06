@@ -11,6 +11,7 @@ import { jobView, latestJob, pendingJob } from '../ecac/util';
 import { savePrefilled } from '../prefilled/service';
 import { customerByDoc, ingestSyncFile, machineAudit, resolveFileTarget } from './ingest';
 import { readMultipart } from './multipart';
+import { uploadedFromBase64 } from '../../services/uploads';
 import { PACKAGES, buildPackageZip, type PackageName } from './packages';
 import { generateMachineToken, publicToken, requireMachine } from './tokens';
 import { customerScope } from '../../services/customers';
@@ -175,7 +176,7 @@ export async function syncRoutes(app: FastifyInstance) {
   app.post('/sync/files', async (req, reply) => {
     const auth = await requireMachine(ctx, req, ['sync']);
     const { file, fields } = await readMultipart(req);
-    if (!file || !file.buffer.length) throw badRequest('Envie o arquivo no campo "file".');
+    if (!file) throw badRequest('Envie o arquivo no campo "file".');
     const result = await ingestSyncFile(ctx, auth, file, fields);
     reply.status(result.duplicate ? 200 : 201);
     return result;
@@ -197,7 +198,7 @@ export async function syncRoutes(app: FastifyInstance) {
         const input = parse(machineRecordSchema, item);
         const customer = await customerByDoc(ctx, auth.officeId, onlyDigits(input.cpf));
         const file = input.file
-          ? { buffer: Buffer.from(input.file.base64, 'base64'), filename: input.file.filename, mimeType: input.file.mimeType ?? 'application/octet-stream' }
+          ? uploadedFromBase64(input.file.filename, input.file.base64)
           : null;
         const { record, effects, duplicate } = await saveEcacRecord(ctx, { ...input, officeId: auth.officeId, customer, source: 'extension', file });
         await machineAudit(ctx, auth, 'sync_ecac_record', 'ecac_record', record.id, { kind: input.kind, customerId: customer.id });
@@ -213,7 +214,7 @@ export async function syncRoutes(app: FastifyInstance) {
   app.post('/sync/prefilled', async (req, reply) => {
     const auth = await requireMachine(ctx, req, ['extension', 'sync']);
     const { file, fields } = await readMultipart(req);
-    if (!file || !file.buffer.length) throw badRequest('Envie o arquivo no campo "file".');
+    if (!file) throw badRequest('Envie o arquivo no campo "file".');
     const { cpf, year } = resolveFileTarget(file, fields);
     const customer = await customerByDoc(ctx, auth.officeId, cpf);
     const { statement, duplicate } = await savePrefilled(ctx, { officeId: auth.officeId, customer, year, file });

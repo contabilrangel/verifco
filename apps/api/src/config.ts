@@ -1,3 +1,4 @@
+import { isIP } from 'node:net';
 import { z } from 'zod';
 
 const flag = (fallback: boolean) =>
@@ -33,12 +34,16 @@ const schema = z.object({
   API_URL: z.string().default('http://localhost:3333'),
   CORS_ORIGINS: z.string().default('http://localhost:5173'),
   /**
-   * A API está atrás de proxy reverso / balanceador? Com `true`, o IP do cliente vem do
-   * `X-Forwarded-For` (necessário para o limite de tentativas por IP não juntar todo mundo no IP do proxy).
+   * Proxies reversos / balanceadores na frente da API, para ler o IP real do cliente no
+   * `X-Forwarded-For` (sem isso o limite de tentativas por IP junta todo mundo no IP do proxy).
+   * Use o número de saltos confiáveis (`1` = um proxy na frente; o IP do cliente é o último valor
+   * que esse proxy acrescentou, e o proxy precisa conectar por rede interna, veja `lib/proxy.ts`)
+   * ou a lista de IPs/CIDRs dos proxies (`10.0.0.0/8,192.168.1.10`).
+   * `true` confia em todos os saltos: o cliente escolhe o primeiro valor do cabeçalho e escapa do
+   * limite (aceito, com aviso no console). Vazio, `0` ou `false`: desligado (API exposta direto).
    * Obrigatório atrás de proxy; em produção, a API avisa no console se receber `X-Forwarded-For` com ele desligado.
-   * Só ligue com proxy na frente: exposta direto, o cliente poderia forjar o cabeçalho e escapar do limite.
    */
-  TRUST_PROXY: flag(false),
+  TRUST_PROXY: z.string().optional(),
   /** Limite de tentativas (login, senha, cadastro e links públicos). Desligado por padrão só nos testes. */
   RATE_LIMIT: z.string().optional(),
   /**
@@ -57,14 +62,54 @@ const schema = z.object({
 });
 
 type Parsed = z.infer<typeof schema>;
-export type Config = Omit<Parsed, 'RATE_LIMIT'> & { RATE_LIMIT: boolean };
+/** Como o Fastify (`trustProxy`) entende: desligado, todos os saltos, número de saltos ou IPs/CIDRs. */
+export type TrustProxy = boolean | number | string;
+export type Config = Omit<Parsed, 'RATE_LIMIT' | 'TRUST_PROXY'> & { RATE_LIMIT: boolean; TRUST_PROXY: TrustProxy };
+
+/** Nomes de faixas que o Fastify (proxy-addr) aceita em `trustProxy`. */
+const PROXY_RANGES = new Set(['loopback', 'linklocal', 'uniquelocal']);
+
+function isProxyAddress(item: string) {
+  if (PROXY_RANGES.has(item)) return true;
+  const [ip, prefix, ...rest] = item.split('/');
+  const family = isIP(ip);
+  if (!family || rest.length) return false;
+  return prefix === undefined || (/^\d{1,3}$/.test(prefix) && Number(prefix) <= (family === 4 ? 32 : 128));
+}
+
+/** `TRUST_PROXY` do ambiente para o `trustProxy` do Fastify (veja o comentário no schema). */
+export function parseTrustProxy(raw: string | undefined): TrustProxy {
+  const v = (raw ?? '').trim();
+  const lower = v.toLowerCase();
+  if (v === '' || ['0', 'false', 'off', 'no', 'nao', 'não'].includes(lower)) return false;
+  if (['true', 'sim', 'yes', 'on'].includes(lower)) return true;
+  if (/^\d+$/.test(v)) return Number(v);
+  const list = v
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const invalid = list.filter((item) => !isProxyAddress(item));
+  if (!list.length || invalid.length) {
+    throw new Error(
+      `TRUST_PROXY inválido (${invalid.join(', ') || v}): use o número de proxies na frente da API (ex.: 1) ou os IPs/CIDRs deles separados por vírgula.`,
+    );
+  }
+  return list.join(',');
+}
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const parsed = schema.parse(env);
   const cfg: Config = {
     ...parsed,
     RATE_LIMIT: parsed.RATE_LIMIT === undefined || parsed.RATE_LIMIT === '' ? parsed.NODE_ENV !== 'test' : ['1', 'true', 'on', 'sim', 'yes'].includes(parsed.RATE_LIMIT.toLowerCase()),
+    TRUST_PROXY: parseTrustProxy(parsed.TRUST_PROXY),
   };
+  if (cfg.TRUST_PROXY === true) {
+    console.warn(
+      '[verifco] TRUST_PROXY=true confia em todos os saltos do X-Forwarded-For: o cliente pode escolher o próprio IP e escapar do limite de tentativas. ' +
+        'Use TRUST_PROXY=1 (número de proxies na frente da API) ou os IPs/CIDRs dos proxies (veja docs/ARQUITETURA.md, "Implantação").',
+    );
+  }
   if (cfg.NODE_ENV === 'production') {
     const problems: string[] = [];
     if (PLACEHOLDER_SECRETS.has(cfg.JWT_SECRET) || cfg.JWT_SECRET.startsWith('dev-only')) problems.push('defina JWT_SECRET (o valor de exemplo não vale)');

@@ -5,7 +5,7 @@ import { ChevronDown, Download, Eye, FileSpreadsheet, History, Lock } from 'luci
 import { IMPORT_KINDS, IMPORT_KIND_LIST, IMPORT_MAX_ROWS, IMPORT_STATUS, isImportKind, type ImportKindDef, type ImportRowResult } from '@verifco/shared';
 import { Alert, Button, Card, ConfirmDialog, DropFile, EmptyState, IconButton, Loading, Menu, MenuItem, Modal, Pagination, Spinner, Tabs, Tag, useToast, type Tone } from '../../ds';
 import { PageHeader } from '../../app/Shell';
-import { ApiError, api, qs } from '../../lib/api';
+import { api, errorMessage, qs } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { useApi } from '../../lib/hooks';
 import { formatDateTime } from '../../lib/format';
@@ -79,7 +79,7 @@ function ImportScreen({ def }: { def: ImportKindDef }) {
     try {
       await api.download(`/imports/${def.slug}/template`, `modelo-${def.slug}.xlsx`);
     } catch (e) {
-      toast.error(e instanceof ApiError ? e.message : 'Não foi possível baixar o modelo.');
+      toast.error(errorMessage(e, 'Não foi possível baixar o modelo.'));
     } finally {
       setDownloading(false);
     }
@@ -108,7 +108,7 @@ function ImportScreen({ def }: { def: ImportKindDef }) {
       else toast.error(`${plural(batch.failed, 'linha com erro', 'linhas com erro')}. Veja o resultado abaixo.`);
     } catch (e) {
       setPending(null);
-      toast.error(e instanceof ApiError ? e.message : 'Não foi possível enviar a planilha.');
+      toast.error(errorMessage(e, 'Não foi possível enviar a planilha.'));
     } finally {
       setSending(false);
     }

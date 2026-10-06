@@ -16,7 +16,7 @@ import { declarations, documents, files } from '../../db/schema';
 import type { CustomerRow } from '../../services/customers';
 import type { DeclarationRow } from '../../services/declarations';
 import { listItems } from '../../services/declarations';
-import { safeName } from '../sync/multipart';
+import { safeZipName } from '../../services/uploads';
 
 /** Tipos de arquivo que a IA consegue ler (PDF e imagens). Os do programa IRPF não entram. */
 const EXTRACTABLE = new Set(['application/pdf', 'image/png', 'image/jpeg', 'image/webp', 'image/gif']);
@@ -393,8 +393,8 @@ export async function buildExportPackage(ctx: AppContext, officeId: string, cust
   );
   const used = new Set<string>();
   for (const d of docs) {
-    let name = safeName(d.filename);
-    for (let n = 2; used.has(name.toLowerCase()); n++) name = safeName(d.filename).replace(/(\.[^.]*)?$/, (ext) => ` (${n})${ext}`);
+    let name = safeZipName(d.filename);
+    for (let n = 2; used.has(name.toLowerCase()); n++) name = safeZipName(d.filename).replace(/(\.[^.]*)?$/, (ext) => ` (${n})${ext}`);
     used.add(name.toLowerCase());
     const { data } = await ctx.files.get(officeId, d.fileId);
     zip.file(`documentos/${name}`, data);
@@ -402,4 +402,4 @@ export async function buildExportPackage(ctx: AppContext, officeId: string, cust
   return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
 }
 
-export const exportFileName = (customer: CustomerRow, year: number) => `conferencia-${safeName(customer.name).replace(/\s+/g, '-').toLowerCase()}-${customer.cpfCnpj}-${year}.zip`;
+export const exportFileName = (customer: CustomerRow, year: number) => `conferencia-${safeZipName(customer.name).replace(/\s+/g, '-').toLowerCase()}-${customer.cpfCnpj}-${year}.zip`;

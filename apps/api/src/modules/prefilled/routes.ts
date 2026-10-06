@@ -7,7 +7,8 @@ import { customers, files, prefilledStatements, procurators } from '../../db/sch
 import { badRequest, notFound } from '../../lib/errors';
 import { audit, guard, parse, requireUser, uuidParam, yearSchema } from '../../lib/http';
 import { customerScope, getCustomerForUser } from '../../services/customers';
-import { readMultipart, safeName } from '../sync/multipart';
+import { safeZipName, sendStoredFile } from '../../services/uploads';
+import { readMultipart } from '../sync/multipart';
 import { savePrefilled } from './service';
 
 const listQuery = z.object({
@@ -82,10 +83,7 @@ export async function prefilledRoutes(app: FastifyInstance) {
     await getCustomerForUser(app.ctx, user, st.customerId);
     const { row, data } = await app.ctx.files.get(user.officeId, st.fileId);
     if (!st.downloadedAt) await db.update(prefilledStatements).set({ downloadedAt: new Date() }).where(eq(prefilledStatements.id, st.id));
-    return reply
-      .header('Content-Type', row.mimeType)
-      .header('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(row.filename)}`)
-      .send(data);
+    return sendStoredFile(reply, row, data);
   });
 
   /**
@@ -109,9 +107,9 @@ export async function prefilledRoutes(app: FastifyInstance) {
     const used = new Set<string>();
     for (const r of rows) {
       const { row, data } = await app.ctx.files.get(user.officeId, r.st.fileId);
-      const folder = safeName(`${formatCpfCnpj(r.cpf)} - ${r.name}`);
-      let path = `${folder}/${safeName(row.filename)}`;
-      for (let n = 2; used.has(path); n++) path = `${folder}/${safeName(row.filename).replace(/(\.[^.]*)?$/, (ext) => ` (${n})${ext}`)}`;
+      const folder = safeZipName(`${formatCpfCnpj(r.cpf)} - ${r.name}`);
+      let path = `${folder}/${safeZipName(row.filename)}`;
+      for (let n = 2; used.has(path); n++) path = `${folder}/${safeZipName(row.filename).replace(/(\.[^.]*)?$/, (ext) => ` (${n})${ext}`)}`;
       used.add(path);
       zip.file(path, data);
     }
@@ -127,7 +125,7 @@ export async function prefilledRoutes(app: FastifyInstance) {
   app.post('/prefilled/upload', { preHandler: guard('ecac.sync') }, async (req, reply) => {
     const user = requireUser(req);
     const { file, fields } = await readMultipart(req);
-    if (!file || !file.buffer.length) throw badRequest('Envie o arquivo no campo "file".');
+    if (!file) throw badRequest('Envie o arquivo no campo "file".');
     const f = parse(z.object({ customerId: z.uuid(), year: yearSchema }), fields);
     const customer = await getCustomerForUser(app.ctx, user, f.customerId);
     const { statement, duplicate } = await savePrefilled(app.ctx, { officeId: user.officeId, customer, year: f.year, file, userId: user.userId });

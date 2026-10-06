@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { ImageIcon, Save, Trash2, Upload } from 'lucide-react';
 import { isValidCpfCnpj, isValidEmail } from '@verifco/shared';
 import { Alert, Button, Card, ConfirmDialog, DropFile, Input, Loading, useToast } from '../../ds';
-import { ApiError, api } from '../../lib/api';
+import { api, errorMessage } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { useAction, useApi } from '../../lib/hooks';
 import { formatCpfCnpj, formatPhone } from '../../lib/format';
@@ -74,7 +74,7 @@ export function OfficeTab() {
       await office.refetch();
       void refresh();
     } catch (e) {
-      toast.error(e instanceof ApiError ? e.message : 'Não foi possível enviar o logo.');
+      toast.error(errorMessage(e, 'Não foi possível enviar o logo.'));
     } finally {
       setUploading(false);
     }

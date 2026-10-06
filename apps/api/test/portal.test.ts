@@ -39,7 +39,7 @@ async function shareDoc(officeId: string, customerId: string, filename: string, 
 }
 
 describe('login do portal', () => {
-  it('entra com CPF e código, recusa erros e limita tentativas', async () => {
+  it('entra com CPF e código e recusa erros', async () => {
     const o = await officeWithCustomer(env, VALID_CPFS[0], 'Carla Mendes');
     const access = await o.api.post(`/api/customers/${o.customerId}/portal-access`);
     const code = access.body.code as string;
@@ -53,10 +53,8 @@ describe('login do portal', () => {
     const me = await client(env, ok.body.token).get('/api/portal/me');
     expect(me.body.customer.cpf).toBe('***.982.247-**');
 
-    for (let i = 0; i < 5; i++) expect((await portalLogin(VALID_CPFS[0], wrong)).status).toBe(401);
-    const blocked = await portalLogin(VALID_CPFS[0], code);
-    expect(blocked.status).toBe(429);
-    expect(blocked.body.error).toMatch(/Aguarde/);
+    // o limite de falhas por CPF (no banco, entre instâncias) é testado em security-auth.test.ts
+    expect((await portalLogin(VALID_CPFS[0], wrong)).status).toBe(401);
 
     // cliente sem acesso liberado não entra
     const o2 = await officeWithCustomer(env, VALID_CPFS[1]);
