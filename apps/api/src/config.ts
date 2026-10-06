@@ -1,3 +1,4 @@
+import { resolve } from 'node:path';
 import { isIP } from 'node:net';
 import { z } from 'zod';
 
@@ -22,6 +23,8 @@ const schema = z.object({
   HOST: z.string().default('0.0.0.0'),
   /** `postgres://...` para PostgreSQL; vazio ou `pglite:<pasta>` usa o PGlite embutido (só desenvolvimento e testes). */
   DATABASE_URL: z.string().default('pglite:.data/pglite'),
+  /** Banco exclusivo de identidades, chaves de IA, configuração e auditoria da plataforma. */
+  PLATFORM_DATABASE_URL: z.string().default('pglite:.data/platform'),
   /** Permite o PGlite com NODE_ENV=production (instalação de uma instância só, por sua conta). */
   ALLOW_PGLITE: flag(false),
   /** Como preparar o banco: `migrate` (arquivos em drizzle/) ou `push` (direto do schema.ts). */
@@ -123,11 +126,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     if (!/^postgres(ql)?:\/\//i.test(cfg.DATABASE_URL) && !cfg.ALLOW_PGLITE) {
       problems.push('defina DATABASE_URL=postgres://... (o PGlite embutido é só para desenvolvimento; use ALLOW_PGLITE=true para assumir o risco)');
     }
+    if (!/^postgres(ql)?:\/\//i.test(cfg.PLATFORM_DATABASE_URL) && !cfg.ALLOW_PGLITE) problems.push('defina PLATFORM_DATABASE_URL=postgres://... para um banco separado');
     if (cfg.DEV_SHOW_ACCESS_CODES) problems.push('DEV_SHOW_ACCESS_CODES não pode ser usado em produção');
     if (problems.length) throw new Error(`Configuração inválida para produção: ${problems.join('; ')}.`);
   } else if (cfg.NODE_ENV === 'development' && env.NODE_ENV === undefined && env.VITEST === undefined) {
     console.warn('[verifco] NODE_ENV não definido: a API está em modo de desenvolvimento. Em produção use NODE_ENV=production (o "pnpm start" já define).');
   }
+  assertSeparateDatabases(cfg);
   return cfg;
 }
 
@@ -137,4 +142,24 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
  */
 export function exposeDevSecrets(cfg: Pick<Config, 'NODE_ENV' | 'DEV_SHOW_ACCESS_CODES'>): boolean {
   return cfg.NODE_ENV === 'test' || (cfg.NODE_ENV === 'development' && cfg.DEV_SHOW_ACCESS_CODES);
+}
+
+/** Não basta trocar de usuário ou schema: a administração exige outro database. Nunca imprime URLs com senhas. */
+export function assertSeparateDatabases(cfg: Pick<Config, 'DATABASE_URL' | 'PLATFORM_DATABASE_URL'>) {
+  function identity(raw: string) {
+    if (/^postgres(ql)?:\/\//i.test(raw)) {
+      const url = new URL(raw);
+      if (['host', 'port', 'database', 'dbname', 'user'].some((key) => url.searchParams.has(key))) throw new Error('Use host, porta, usuário e banco diretamente na URL.');
+      let host = url.hostname.toLowerCase().replace(/\.$/, '');
+      if (['localhost', '127.0.0.1', '[::1]'].includes(host)) host = 'loopback';
+      // PostgreSQL sem pathname usa o nome do usuário como database.
+      return `pg:${host}:${url.port || '5432'}:${decodeURIComponent(url.pathname.slice(1) || url.username)}`;
+    }
+    const target = raw.replace(/^pglite:/, '');
+    return !target || target === 'memory' ? null : `file:${resolve(target).toLowerCase()}`;
+  }
+  let office: string | null; let platform: string | null;
+  try { office = identity(cfg.DATABASE_URL); platform = identity(cfg.PLATFORM_DATABASE_URL); }
+  catch { throw new Error('DATABASE_URL ou PLATFORM_DATABASE_URL inválida. Confira as conexões, sem compartilhar as senhas.'); }
+  if (office && office === platform) throw new Error('DATABASE_URL e PLATFORM_DATABASE_URL devem apontar para bancos diferentes, mesmo com usuários ou schemas diferentes.');
 }

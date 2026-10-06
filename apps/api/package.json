@@ -12,7 +12,8 @@
     "platform:owner": "tsx --env-file-if-exists=.env src/db/platform-owner.ts",
     "db:generate": "drizzle-kit generate",
     "db:seed": "tsx --env-file-if-exists=.env src/db/seed.ts",
-    "db:check": "drizzle-kit generate --name verificacao && node -e \"const o=require('child_process').execSync('git status --porcelain drizzle').toString();if(o.trim()){console.error('O schema.ts mudou sem migração. Rode pnpm db:generate e faça commit de apps/api/drizzle.\\n'+o);process.exit(1)}\""
+    "db:check": "drizzle-kit generate --name verificacao && drizzle-kit generate --config drizzle.platform.config.ts --name verificacao && node -e \"const o=require('child_process').execSync('git status --porcelain drizzle drizzle-platform').toString();if(o.trim()){console.error('Um schema mudou sem migração. Rode pnpm db:generate e faça commit de apps/api/drizzle.\\n'+o);process.exit(1)}\"",
+    "db:generate:platform": "drizzle-kit generate --config drizzle.platform.config.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.131.0",

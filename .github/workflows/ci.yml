@@ -37,6 +37,9 @@ jobs:
     env:
       APP_URL: http://localhost
       POSTGRES_PASSWORD: ci-only-postgres-password
+      PLATFORM_POSTGRES_PASSWORD: ci-only-platform-password
+      DATABASE_URL: postgres://verifco:ci-only-postgres-password@postgres:5432/verifco
+      PLATFORM_DATABASE_URL: postgres://verifco_platform:ci-only-platform-password@postgres-platform:5432/verifco_platform
       JWT_SECRET: ci-only-jwt-secret-at-least-32-characters
       ENCRYPTION_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
     steps:
@@ -45,7 +48,7 @@ jobs:
         run: docker compose -f compose.dokploy.yml config --quiet
       - name: Constrói imagens de produção
         run: docker compose -f compose.dokploy.yml build
-      - name: Inicia PostgreSQL, API, worker e web
+      - name: Inicia os dois bancos PostgreSQL, API, worker e web
         run: docker compose -f compose.dokploy.yml up -d --wait --wait-timeout 180
       - name: Confere painéis e encaminhamento da API
         run: |
@@ -53,6 +56,9 @@ jobs:
           docker compose -f compose.dokploy.yml exec -T web wget -q -O - http://127.0.0.1/sistema | grep -q '<div id="root">'
           docker compose -f compose.dokploy.yml exec -T api node -e "fetch('http://web/api/platform/me').then(r=>{if(r.status!==401)throw Error('API não encaminhada: '+r.status)}).catch(e=>{console.error(e);process.exit(1)})"
           docker compose -f compose.dokploy.yml exec -T api node --input-type=module -e "import http from 'node:http'; http.get('http://web/',{headers:{Host:'painel.verifco.com.br'}},r=>{r.resume();if(r.statusCode!==302||r.headers.location!=='/sistema'){console.error('Entrada do painel incorreta: '+r.statusCode+' '+r.headers.location);process.exitCode=1}}).on('error',e=>{console.error(e);process.exitCode=1})"
+      - name: Confere separação real dos bancos PostgreSQL
+        run: |
+          docker compose -f compose.dokploy.yml exec -T api node --import tsx --input-type=module < .github/scripts/check-databases.mjs
       - name: Diagnóstico de falhas
         if: failure()
         run: docker compose -f compose.dokploy.yml logs --tail 100

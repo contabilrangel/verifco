@@ -6,6 +6,8 @@
  */
 import { sql } from 'drizzle-orm';
 import type { AppContext } from '../context';
+import type { Db, PlatformDb } from '../db/client';
+type RateContext = Pick<AppContext, 'config'> & { db: Db | PlatformDb };
 import { HttpError } from '../lib/errors';
 
 export interface RateRule {
@@ -28,7 +30,7 @@ export function tooManyAttempts(retryAfterSec: number, message?: string) {
 const retryAfter = (row: Row, windowSec: number) => Math.max(1, windowSec - (Date.now() - new Date(row.window_started_at).getTime()) / 1000);
 
 /** Soma um evento à chave e devolve o total na janela atual (e quando ela termina). */
-export async function hit(ctx: AppContext, key: string, windowSec: number): Promise<{ count: number; retryAfterSec: number }> {
+export async function hit(ctx: RateContext, key: string, windowSec: number): Promise<{ count: number; retryAfterSec: number }> {
   const res = await ctx.db.execute(sql`
     insert into rate_limits (key, count, window_started_at) values (${key}, 1, now())
     on conflict (key) do update set
@@ -42,7 +44,7 @@ export async function hit(ctx: AppContext, key: string, windowSec: number): Prom
 }
 
 /** Eventos já registrados na janela atual (sem somar). */
-export async function peek(ctx: AppContext, key: string, windowSec: number): Promise<{ count: number; retryAfterSec: number }> {
+export async function peek(ctx: RateContext, key: string, windowSec: number): Promise<{ count: number; retryAfterSec: number }> {
   const res = await ctx.db.execute(
     sql`select count, window_started_at from rate_limits where key = ${key} and window_started_at > now() - ${windowSec}::int * interval '1 second'`,
   );
@@ -50,32 +52,32 @@ export async function peek(ctx: AppContext, key: string, windowSec: number): Pro
   return row ? { count: Number(row.count), retryAfterSec: retryAfter(row, windowSec) } : { count: 0, retryAfterSec: 0 };
 }
 
-export async function resetLimit(ctx: AppContext, key: string) {
+export async function resetLimit(ctx: RateContext, key: string) {
   await ctx.db.execute(sql`delete from rate_limits where key = ${key}`);
 }
 
 /** Soma uma tentativa e lança 429 se passou do limite. */
-export async function consume(ctx: AppContext, key: string, rule: RateRule, message?: string) {
+export async function consume(ctx: RateContext, key: string, rule: RateRule, message?: string) {
   if (!ctx.config.RATE_LIMIT) return;
   const r = await hit(ctx, key, rule.windowSec);
   if (r.count > rule.max) throw tooManyAttempts(r.retryAfterSec, message);
 }
 
 /** Lança 429 se a chave já atingiu o limite (sem somar; use `hit` ao registrar a falha). */
-export async function check(ctx: AppContext, key: string, rule: RateRule, message?: string) {
+export async function check(ctx: RateContext, key: string, rule: RateRule, message?: string) {
   if (!ctx.config.RATE_LIMIT) return;
   const r = await peek(ctx, key, rule.windowSec);
   if (r.count >= rule.max) throw tooManyAttempts(r.retryAfterSec, message);
 }
 
 /** Registra uma falha; devolve o total na janela (0 com o limite desligado). */
-export async function fail(ctx: AppContext, key: string, rule: RateRule): Promise<number> {
+export async function fail(ctx: RateContext, key: string, rule: RateRule): Promise<number> {
   if (!ctx.config.RATE_LIMIT) return 0;
   return (await hit(ctx, key, rule.windowSec)).count;
 }
 
 /** Tenta reservar um evento: `false` se a janela já está cheia (para limitar sem revelar nada a quem chama). */
-export async function allow(ctx: AppContext, key: string, rule: RateRule): Promise<boolean> {
+export async function allow(ctx: RateContext, key: string, rule: RateRule): Promise<boolean> {
   if (!ctx.config.RATE_LIMIT) return true;
   return (await hit(ctx, key, rule.windowSec)).count <= rule.max;
 }

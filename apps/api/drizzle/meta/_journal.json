@@ -50,6 +50,20 @@
       "when": 1791296515976,
       "tag": "0006_plataforma_ia",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1791305060657,
+      "tag": "0007_preservar_plataforma",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1791305065546,
+      "tag": "0008_separar_plataforma",
+      "breakpoints": true
     }
   ]
 }

@@ -2,7 +2,8 @@ import { beforeAll, afterAll, describe, expect, it } from 'vitest';
 import bcrypt from 'bcryptjs';
 import { eq } from 'drizzle-orm';
 import { AI_PROVIDERS } from '@verifco/shared';
-import { platformUsers, platformAiConnections, platformSettings, integrations, platformAuditLogs } from '../src/db/schema';
+import { integrations } from '../src/db/schema';
+import { platformUsers, platformAiConnections, platformSettings, platformAuditLogs } from '../src/db/platform-schema';
 import { createProviders } from '../src/integrations';
 import { completeConnection, requestFor } from '../src/integrations/multi-ai';
 import type { ResolvedConnection } from '../src/integrations/platform-ai-store';
@@ -13,7 +14,7 @@ let ownerId: string; let developerId: string;
 beforeAll(async () => {
   env = await createTestEnv();
   const hash = await bcrypt.hash('senha-sistema-123', 10);
-  const accounts = await env.ctx.db.insert(platformUsers).values([
+  const accounts = await env.ctx.platformDb.insert(platformUsers).values([
     { name: 'Proprietário', email: 'owner@teste.com', passwordHash: hash, role: 'owner' },
     { name: 'Desenvolvedor', email: 'developer@teste.com', passwordHash: hash, role: 'developer' },
   ]).returning();
@@ -82,7 +83,7 @@ describe('administração global separada', () => {
     const secret = 'chave-realista-super-secreta';
     const saved = await owner.post('/api/platform/ai', { provider: 'openai', name: 'IA global', model: 'modelo-teste', apiKey: secret, supportsImages: true });
     expect(saved.status).toBe(201); expect(saved.body.keyConfigured).toBe(true);
-    const row = await env.ctx.db.query.platformAiConnections.findFirst({ where: eq(platformAiConnections.id, saved.body.id) });
+    const row = await env.ctx.platformDb.query.platformAiConnections.findFirst({ where: eq(platformAiConnections.id, saved.body.id) });
     expect(row!.secretsEnc).not.toContain(secret);
     expect(env.ctx.secrets.decryptJson<any>(row!.secretsEnc).apiKey).toBe(secret);
     expect((await owner.put('/api/platform/ai-default', { id: saved.body.id })).status).toBe(200);
@@ -99,7 +100,7 @@ describe('administração global separada', () => {
     expect(JSON.stringify((await owner.get('/api/platform/ai')).body)).not.toContain(secret);
     expect(JSON.stringify((await owner.get('/api/platform/audit')).body)).not.toContain(secret);
     await owner.put('/api/platform/ai/' + saved.body.id, { provider: 'openai', name: 'IA global', model: 'modelo-teste', apiKey: '', supportsImages: true });
-    expect((await env.ctx.db.query.platformAiConnections.findFirst({ where: eq(platformAiConnections.id, saved.body.id) }))!.secretsEnc).toBe(row!.secretsEnc);
+    expect((await env.ctx.platformDb.query.platformAiConnections.findFirst({ where: eq(platformAiConnections.id, saved.body.id) }))!.secretsEnc).toBe(row!.secretsEnc);
     expect((await owner.del('/api/platform/ai/' + saved.body.id)).status).toBe(409);
     await owner.put('/api/platform/ai/' + saved.body.id, { provider: 'openai', name: 'IA global', model: 'modelo-teste', enabled: false });
     await expect(providers.ai.complete(office.officeId, { system: 's', messages: [] })).rejects.toThrow(/desativada/);
@@ -123,10 +124,10 @@ describe('administração global separada', () => {
     }) as typeof fetch;
     const test = await owner.post('/api/platform/ai/' + c.body.id + '/test');
     expect(test.body.ok).toBe(true);
-    expect((await env.ctx.db.query.platformAiConnections.findFirst({ where: eq(platformAiConnections.id, c.body.id) }))?.status).toBe('connected');
+    expect((await env.ctx.platformDb.query.platformAiConnections.findFirst({ where: eq(platformAiConnections.id, c.body.id) }))?.status).toBe('connected');
     env.providers.fetch = (async () => Response.json({ error: 'google-secret' }, { status: 401 })) as typeof fetch;
     expect((await owner.post('/api/platform/ai/' + c.body.id + '/test')).body).toMatchObject({ ok: false });
-    expect(JSON.stringify(await env.ctx.db.select().from(platformAuditLogs))).not.toContain('google-secret');
+    expect(JSON.stringify(await env.ctx.platformDb.select().from(platformAuditLogs))).not.toContain('google-secret');
   });
   it('revoga sessões imediatamente ao desativar uma conta ou sair', async () => {
     expect((await owner.put('/api/platform/users/' + ownerId + '/active', { isActive: false })).status).toBe(400);

@@ -15,7 +15,7 @@ export interface TestEnv {
 export async function createTestEnv(): Promise<TestEnv> {
   const providers = new MemoryProviders();
   const { ctx, close } = await createContext(
-    { DATABASE_URL: 'pglite:memory', NODE_ENV: 'test', RUN_WORKER: false },
+    { DATABASE_URL: 'pglite:memory', PLATFORM_DATABASE_URL: 'pglite:memory', NODE_ENV: 'test', RUN_WORKER: false },
     { providers, memoryStorage: true },
   );
   const app = await buildApp(ctx);

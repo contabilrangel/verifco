@@ -1,5 +1,5 @@
 import type { Config } from './config';
-import type { Db } from './db/client';
+import type { Db, PlatformDb } from './db/client';
 import type { JobQueue } from './jobs/queue';
 import type { Secrets } from './lib/crypto';
 import type { FileService } from './storage';
@@ -9,6 +9,7 @@ import type { Providers } from './integrations/providers';
 export interface AppContext {
   config: Config;
   db: Db;
+  platformDb: PlatformDb;
   secrets: Secrets;
   files: FileService;
   jobs: JobQueue;

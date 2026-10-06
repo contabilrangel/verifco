@@ -17,7 +17,7 @@ import { issueAccess, officeWithCustomer } from './portal-helpers';
 /** Ambiente de teste com configuração própria (ex.: limite de tentativas ligado). */
 async function envWith(overrides: Partial<Config>): Promise<TestEnv> {
   const providers = new MemoryProviders();
-  const { ctx, close } = await createContext({ DATABASE_URL: 'pglite:memory', NODE_ENV: 'test', RUN_WORKER: false, ...overrides }, { providers, memoryStorage: true });
+  const { ctx, close } = await createContext({ DATABASE_URL: 'pglite:memory', PLATFORM_DATABASE_URL: 'pglite:memory', NODE_ENV: 'test', RUN_WORKER: false, ...overrides }, { providers, memoryStorage: true });
   const app = await buildApp(ctx);
   await app.ready();
   return {
@@ -170,6 +170,7 @@ describe('configuração de produção (SEG-11, DAD-15)', () => {
     JWT_SECRET: 'k'.repeat(48),
     ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'),
     DATABASE_URL: 'postgres://u:p@db:5432/verifco',
+    PLATFORM_DATABASE_URL: 'postgres://admin:p@db:5432/verifco_platform',
   };
 
   it('recusa segredo de exemplo, segredo curto e PGlite', () => {
