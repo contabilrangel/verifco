@@ -1,8 +1,9 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { Link, NavLink, useLocation } from 'react-router';
-import { Building2, FileCheck2, LayoutDashboard, LogOut, Plus, ShieldCheck, Sparkles, Users, History, Check, PlugZap } from 'lucide-react';
+import { Building2, FileCheck2, LayoutDashboard, Lock, LogOut, Mail, Plus, ShieldCheck, Sparkles, Users, History, Check, PlugZap } from 'lucide-react';
 import { AI_PROVIDERS, aiProviderDef, todayIso, formatDateTimeBr, type AiProviderKey } from '@verifco/shared';
-import { Alert, Button, Card, Checkbox, ConfirmDialog, Input, Loading, Select, Tag } from '../../ds';
+import { Alert, Button, Card, Checkbox, ConfirmDialog, Input, Loading, PasswordInput, Select, Tag } from '../../ds';
+import { AuthFooter, AuthHeading, AuthLayout } from '../../app/AuthLayout';
 import { ApiError, errorMessage } from '../../lib/api';
 import { platformRequest as request, platformToken, savePlatformToken } from './client';
 import './platform.css';
@@ -52,21 +53,29 @@ function PlatformLogin({ onLogin, error }: { onLogin: (token: string) => void; e
     try { onLogin((await request<{ token: string }>('/login', 'POST', { email, password })).token); }
     catch (e) { setFailure(errorMessage(e)); } finally { setBusy(false); }
   }
-  return <main className="vf-platform-login">
-    <div className="vf-platform-login__intro"><div className="vf-platform-brand"><img className="vf-platform-brand__logo" src="/verifco-logo.svg" alt="Verifco" /><Tag tone="primary">Sistema</Tag></div>
-      <h1>Um lugar para<br />administrar a plataforma.</h1><p>Escritórios, contratos, inteligência artificial e operação do Verifco.</p>
-      <div className="vf-platform-login__features"><span><Building2 /> Administração global</span><span><Sparkles /> Conexões de IA</span><span><ShieldCheck /> Acesso exclusivo da equipe do sistema</span></div>
-    </div>
-    <Card className="vf-platform-login__form" title="Entrar na administração">
-      <p className="vf-muted">Use sua conta de proprietário ou desenvolvedor do sistema.</p>
-      <form className="vf-stack" onSubmit={submit}>
-        {(failure || error) && <Alert tone="danger" title={failure || error} />}
-        <Input label="E-mail do sistema" type="email" autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)} />
-        <Input label="Senha" type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
-        <Button type="submit" loading={busy} block>Entrar no sistema</Button>
-      </form><Link to="/entrar">Acessar o painel do contador</Link>
-    </Card>
-  </main>;
+  return <AuthLayout
+    variant="system"
+    badge={<><ShieldCheck aria-hidden /> Administração do sistema</>}
+    eyebrow="Painel global da equipe Verifco"
+    title="Um lugar para administrar a plataforma."
+    lead="Escritórios, contratos, inteligência artificial e operação do Verifco."
+    features={[
+      { icon: <Building2 />, title: 'Administração global', text: 'Escritórios, planos e contratos.' },
+      { icon: <Sparkles />, title: 'Conexões de IA', text: 'Provedores e modelos usados pelos escritórios.' },
+      { icon: <ShieldCheck />, title: 'Acesso restrito', text: 'Exclusivo da equipe do sistema.' },
+    ]}
+  >
+    <form className="auth-page__form" onSubmit={submit}>
+      <AuthHeading icon={<ShieldCheck />} title="Entrar na administração" subtitle="Use sua conta de proprietário ou desenvolvedor do sistema." />
+      {(failure || error) && <Alert tone="danger" title={failure || error} />}
+      <div className="auth-page__fields">
+        <Input label="E-mail do sistema" type="email" autoComplete="username" required icon={<Mail />} value={email} onChange={(e) => setEmail(e.target.value)} />
+        <PasswordInput label="Senha" autoComplete="current-password" required icon={<Lock />} value={password} onChange={(e) => setPassword(e.target.value)} />
+      </div>
+      <Button type="submit" loading={busy} block>Entrar no sistema</Button>
+      <AuthFooter><span>É do escritório? <Link to="/entrar">Acessar o painel do contador</Link></span></AuthFooter>
+    </form>
+  </AuthLayout>;
 }
 
 const TABS = [

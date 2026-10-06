@@ -1,33 +1,34 @@
 import { useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
-import { CheckCircle2, Lock, Mail } from 'lucide-react';
-import { Alert, Button, Input } from '../../ds';
+import { ArrowLeft, ChartLine, ClipboardCheck, KeyRound, Lock, Mail, MailCheck, ReceiptText, SquareKanban } from 'lucide-react';
+import { Alert, Button, Input, PasswordInput } from '../../ds';
 import { ApiError, api } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
+import { AuthFooter, AuthHeading, AuthLayout as Frame, type AuthFeature } from '../../app/AuthLayout';
+
+const FEATURES: AuthFeature[] = [
+  { icon: <ClipboardCheck />, title: 'Checklist digital', text: 'O cliente envia os documentos por um link.' },
+  { icon: <SquareKanban />, title: 'Kanban das declarações', text: 'O status de cada declaração à vista.' },
+  { icon: <ReceiptText />, title: 'Orçamentos e cobrança', text: 'Propostas, cobranças e recibos integrados.' },
+  { icon: <ChartLine />, title: 'Análises tributárias', text: 'Caixa, patrimônio, IRPFM e holding.' },
+];
 
 function AuthLayout({ children }: { children: ReactNode }) {
   return (
-    <div className="auth-page">
-      <aside className="auth-page__aside">
-        <img src="/verifco-logo-negativo.svg" alt="Verifco" style={{ height: 36, alignSelf: 'flex-start', position: 'relative', zIndex: 1 }} />
-        <div>
-          <h1>A temporada de IR organizada, do orçamento ao kit pós-declaração.</h1>
-          <p>Clientes, documentos, procurações, cobranças e relatórios do Imposto de Renda num só lugar.</p>
-          <ul>
-            <li><CheckCircle2 /> Checklist digital para o cliente enviar documentos</li>
-            <li><CheckCircle2 /> Kanban com o status de cada declaração</li>
-            <li><CheckCircle2 /> Orçamentos, cobrança e recibos integrados</li>
-            <li><CheckCircle2 /> Análises de caixa, patrimônio, IRPFM e holding</li>
-          </ul>
-        </div>
-        <small style={{ color: '#7f93c9', position: 'relative', zIndex: 1 }}>© {new Date().getFullYear()} Verifco</small>
-      </aside>
-      <main className="auth-page__main">
-        <div className="auth-page__form">{children}</div>
-      </main>
-    </div>
+    <Frame
+      eyebrow="Gestão de IRPF para escritórios contábeis"
+      title={<>A temporada de IR organizada, <span className="auth-page__accent">do orçamento ao kit pós-declaração.</span></>}
+      lead="Clientes, documentos, procurações, cobranças e relatórios do Imposto de Renda num só lugar."
+      features={FEATURES}
+    >
+      {children}
+    </Frame>
   );
 }
+
+const BackToLogin = () => (
+  <Link to="/entrar" className="auth-page__back"><ArrowLeft aria-hidden /> Voltar para o login</Link>
+);
 
 export function LoginPage() {
   const { login } = useAuth();
@@ -53,21 +54,20 @@ export function LoginPage() {
 
   return (
     <AuthLayout>
-      <form className="vf-stack" style={{ '--gap': '20px' } as React.CSSProperties} onSubmit={submit}>
-        <div>
-          <h2 className="vf-text-xl">Entrar</h2>
-          <p className="vf-muted" style={{ marginTop: 4 }}>Acesse a conta do seu escritório.</p>
-        </div>
+      <form className="auth-page__form" onSubmit={submit}>
+        <AuthHeading title="Entrar" subtitle="Acesse a conta do seu escritório." />
         {error && <Alert tone="danger">{error}</Alert>}
-        <Input label="E-mail" type="email" autoComplete="email" required icon={<Mail />} value={email} onChange={(e) => setEmail(e.target.value)} />
-        <Input label="Senha" type="password" autoComplete="current-password" required icon={<Lock />} value={password} onChange={(e) => setPassword(e.target.value)} />
-        <div className="vf-inline vf-between">
-          <Link to="/esqueci-senha">Esqueci minha senha</Link>
+        <div className="auth-page__fields">
+          <Input label="E-mail" type="email" autoComplete="email" required icon={<Mail />} value={email} onChange={(e) => setEmail(e.target.value)} />
+          <div className="auth-page__password">
+            <PasswordInput label="Senha" autoComplete="current-password" required icon={<Lock />} value={password} onChange={(e) => setPassword(e.target.value)} />
+            <Link to="/esqueci-senha" className="auth-page__forgot">Esqueci minha senha</Link>
+          </div>
         </div>
         <Button type="submit" block loading={loading}>Entrar</Button>
-        <p className="vf-muted" style={{ textAlign: 'center' }}>
-          Ainda não usa o Verifco? <Link to="/cadastro">Crie a conta do escritório</Link>
-        </p>
+        <AuthFooter>
+          <span>Ainda não usa o Verifco? <Link to="/cadastro">Crie a conta do escritório</Link></span>
+        </AuthFooter>
       </form>
     </AuthLayout>
   );
@@ -97,21 +97,20 @@ export function RegisterPage() {
 
   return (
     <AuthLayout>
-      <form className="vf-stack" onSubmit={submit}>
-        <div>
-          <h2 className="vf-text-xl">Criar conta do escritório</h2>
-          <p className="vf-muted" style={{ marginTop: 4 }}>30 dias de avaliação, sem cartão de crédito.</p>
-        </div>
+      <form className="auth-page__form" onSubmit={submit}>
+        <AuthHeading title="Criar conta do escritório" subtitle="30 dias de avaliação, sem cartão de crédito." />
         {error && <Alert tone="danger">{error}</Alert>}
-        <Input label="Nome do escritório" required value={form.officeName} onChange={set('officeName')} />
-        <Input label="CNPJ ou CPF do escritório" help="Opcional" value={form.officeDocument} onChange={set('officeDocument')} />
-        <Input label="Seu nome" required autoComplete="name" value={form.name} onChange={set('name')} />
-        <Input label="E-mail" type="email" required autoComplete="email" value={form.email} onChange={set('email')} />
-        <Input label="Senha" type="password" required minLength={8} autoComplete="new-password" help="Mínimo de 8 caracteres" value={form.password} onChange={set('password')} />
+        <div className="auth-page__fields">
+          <Input label="Nome do escritório" required autoComplete="organization" value={form.officeName} onChange={set('officeName')} />
+          <Input label="CNPJ ou CPF do escritório" help="Opcional" value={form.officeDocument} onChange={set('officeDocument')} />
+          <Input label="Seu nome" required autoComplete="name" value={form.name} onChange={set('name')} />
+          <Input label="E-mail" type="email" required autoComplete="email" value={form.email} onChange={set('email')} />
+          <PasswordInput label="Senha" required minLength={8} autoComplete="new-password" help="Mínimo de 8 caracteres" value={form.password} onChange={set('password')} />
+        </div>
         <Button type="submit" block loading={loading}>Criar conta</Button>
-        <p className="vf-muted" style={{ textAlign: 'center' }}>
-          Já tem conta? <Link to="/entrar">Entrar</Link>
-        </p>
+        <AuthFooter>
+          <span>Já tem conta? <Link to="/entrar">Entrar</Link></span>
+        </AuthFooter>
       </form>
     </AuthLayout>
   );
@@ -125,7 +124,7 @@ export function ForgotPasswordPage() {
   return (
     <AuthLayout>
       <form
-        className="vf-stack"
+        className="auth-page__form"
         onSubmit={async (e) => {
           e.preventDefault();
           setLoading(true);
@@ -142,18 +141,23 @@ export function ForgotPasswordPage() {
           }
         }}
       >
-        <h2 className="vf-text-xl">Esqueci minha senha</h2>
+        <AuthHeading
+          icon={sent ? <MailCheck /> : <KeyRound />}
+          title={sent ? 'Verifique seu e-mail' : 'Esqueci minha senha'}
+          subtitle={sent ? undefined : 'Informe seu e-mail e enviaremos um link para criar uma nova senha.'}
+        />
         {error && <Alert tone="danger">{error}</Alert>}
         {sent ? (
           <Alert tone="success">Se houver uma conta com este e-mail, você vai receber um link para criar uma nova senha.</Alert>
         ) : (
           <>
-            <p className="vf-muted">Informe seu e-mail e enviaremos um link para redefinir a senha.</p>
-            <Input label="E-mail" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
+            <Input label="E-mail" type="email" autoComplete="email" required icon={<Mail />} value={email} onChange={(e) => setEmail(e.target.value)} />
             <Button type="submit" block loading={loading}>Enviar link</Button>
           </>
         )}
-        <Link to="/entrar">Voltar para o login</Link>
+        <AuthFooter>
+          <BackToLogin />
+        </AuthFooter>
       </form>
     </AuthLayout>
   );
@@ -172,11 +176,13 @@ export function ResetPasswordPage() {
   if (!token) {
     return (
       <AuthLayout>
-        <div className="vf-stack">
-          <h2 className="vf-text-xl">Link inválido ou expirado</h2>
+        <div className="auth-page__form">
+          <AuthHeading icon={<KeyRound />} title="Link inválido ou expirado" />
           <Alert tone="danger">Este endereço não tem o código de redefinição. Abra o link completo que chegou por e-mail ou peça um novo.</Alert>
-          <Link to="/esqueci-senha">Pedir um novo link</Link>
-          <Link to="/entrar">Voltar para o login</Link>
+          <AuthFooter>
+            <Link to="/esqueci-senha">Pedir um novo link</Link>
+            <BackToLogin />
+          </AuthFooter>
         </div>
       </AuthLayout>
     );
@@ -184,7 +190,7 @@ export function ResetPasswordPage() {
   return (
     <AuthLayout>
       <form
-        className="vf-stack"
+        className="auth-page__form"
         onSubmit={async (e) => {
           e.preventDefault();
           if (password !== confirm) return setError('As senhas não conferem.');
@@ -200,11 +206,20 @@ export function ResetPasswordPage() {
           }
         }}
       >
-        <h2 className="vf-text-xl">{invite ? 'Defina sua senha' : 'Nova senha'}</h2>
+        <AuthHeading
+          icon={<KeyRound />}
+          title={invite ? 'Defina sua senha' : 'Nova senha'}
+          subtitle={invite ? 'Crie a senha de acesso à sua conta no Verifco.' : 'Escolha uma nova senha para a sua conta.'}
+        />
         {error && <Alert tone="danger">{error}</Alert>}
-        <Input label="Senha" type="password" required minLength={8} autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} />
-        <Input label="Confirme a senha" type="password" required minLength={8} autoComplete="new-password" value={confirm} onChange={(e) => setConfirm(e.target.value)} />
+        <div className="auth-page__fields">
+          <PasswordInput label="Senha" required minLength={8} autoComplete="new-password" help="Mínimo de 8 caracteres" value={password} onChange={(e) => setPassword(e.target.value)} />
+          <PasswordInput label="Confirme a senha" required minLength={8} autoComplete="new-password" value={confirm} onChange={(e) => setConfirm(e.target.value)} />
+        </div>
         <Button type="submit" block loading={loading}>Salvar senha</Button>
+        <AuthFooter>
+          <BackToLogin />
+        </AuthFooter>
       </form>
     </AuthLayout>
   );

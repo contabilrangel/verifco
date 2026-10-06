@@ -79,28 +79,7 @@
   .topbar__search { min-width: 40px; }
 }
 
-/* ---------- Telas públicas (login, cadastro, portal do cliente) ---------- */
-.auth-page { min-height: 100vh; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); background: var(--color-surface); }
-.auth-page__aside {
-  background: var(--color-primary-100); color: #fff; padding: var(--size-spacing-08); display: flex; flex-direction: column; justify-content: space-between;
-  position: relative; overflow: hidden;
-}
-.auth-page__aside::after {
-  content: ''; position: absolute; right: -120px; bottom: -120px; width: 420px; height: 420px; border-radius: 48px; transform: rotate(45deg);
-  background: linear-gradient(135deg, rgba(52, 104, 230, 0.55), rgba(20, 184, 138, 0.35));
-}
-.auth-page__aside h1 { font: var(--text-xxl-bold); letter-spacing: -0.02em; max-width: 460px; position: relative; z-index: 1; }
-.auth-page__aside p { color: #c9d4f2; font: var(--text-md-regular); max-width: 440px; margin-top: var(--size-spacing-04); position: relative; z-index: 1; }
-.auth-page__aside ul { list-style: none; padding: 0; margin: var(--size-spacing-06) 0 0; display: flex; flex-direction: column; gap: var(--size-spacing-03); position: relative; z-index: 1; }
-.auth-page__aside li { display: flex; gap: var(--size-spacing-03); align-items: center; color: #e3e9fa; }
-.auth-page__aside li svg { color: var(--color-brand-green); width: 20px; height: 20px; }
-.auth-page__main { display: flex; align-items: center; justify-content: center; padding: var(--size-spacing-06); }
-.auth-page__form { width: 100%; max-width: 420px; }
-@media (max-width: 900px) {
-  .auth-page { grid-template-columns: minmax(0, 1fr); }
-  .auth-page__aside { display: none; }
-}
-
+/* ---------- Telas públicas (portal do cliente); as de acesso ficam em auth.css ---------- */
 .public-page { min-height: 100vh; background: var(--color-background); }
 .public-page__header { background: var(--color-surface); border-bottom: 1px solid var(--color-border); padding: var(--size-spacing-04) var(--size-spacing-05); display: flex; align-items: center; justify-content: space-between; gap: var(--size-spacing-04); }
 .public-page__body { max-width: 920px; margin: 0 auto; padding: var(--size-spacing-05) var(--size-spacing-04) var(--size-spacing-08); }
