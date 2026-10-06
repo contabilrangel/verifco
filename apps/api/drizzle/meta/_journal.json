@@ -43,6 +43,13 @@
       "when": 1791291897404,
       "tag": "0005_remove_senha_inss",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791296515976,
+      "tag": "0006_plataforma_ia",
+      "breakpoints": true
     }
   ]
 }

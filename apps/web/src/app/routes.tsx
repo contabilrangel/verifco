@@ -24,7 +24,7 @@ export const APP_ROUTES: RouteObject[] = [
   },
   {
     path: 'admin',
-    element: <TabbedPage title="Administração" description="Dados do escritório, equipe, permissões, preferências e integrações." base="/admin" tabs={ADMIN_TABS} />,
+    element: <TabbedPage title="Meu escritório" description="Dados do escritório, equipe, permissões, preferências e integrações." base="/admin" tabs={ADMIN_TABS} />,
     children: tabChildren(ADMIN_TABS),
   },
   {

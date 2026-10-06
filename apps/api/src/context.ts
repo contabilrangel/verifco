@@ -39,6 +39,7 @@ declare module 'fastify' {
     ctx: AppContext;
   }
   interface FastifyRequest {
+    platformAuth: { id: string; name: string; email: string; role: 'owner' | 'developer' } | null;
     auth: AuthUser | null;
     customerAuth: AuthCustomer | null;
   }

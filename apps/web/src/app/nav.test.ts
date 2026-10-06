@@ -3,7 +3,7 @@ import { ADMIN_TABS } from './modules';
 import { NAV, tabsPerms } from './nav';
 
 describe('menu lateral (INT-17)', () => {
-  it('Administração usa a união das permissões das abas registradas pelos módulos', () => {
+  it('Meu escritório usa a união das permissões das abas registradas pelos módulos', () => {
     const admin = NAV.find((g) => g.id === 'admin')!;
     const fromTabs = new Set(ADMIN_TABS.flatMap((t) => t.perms ?? []));
     expect(new Set(admin.perms)).toEqual(fromTabs);

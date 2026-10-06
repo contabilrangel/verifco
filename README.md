@@ -39,3 +39,10 @@ pnpm typecheck   # tipagem
 - [Arquitetura e convenções](docs/ARQUITETURA.md)
 - [Mapeamento funcional](docs/mapeamento-conferir.md) e [levantamento das telas](docs/especificacao-levantamento.md)
 - Marca: `brand/` (logo, símbolo, ícone e o gerador `gerar-logo.mjs`)
+
+## Administração do sistema e IA
+
+O painel do proprietário e desenvolvedor fica em `/sistema`, com contas separadas do
+painel do contador. Conexões e chaves de IA são gerenciadas globalmente pelo proprietário.
+Consulte [Administração global e inteligência artificial](docs/PLATAFORMA-IA.md) para
+criar o primeiro acesso e configurar os serviços.

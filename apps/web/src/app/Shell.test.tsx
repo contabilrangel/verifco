@@ -87,13 +87,13 @@ describe('Shell', () => {
     expect(calls.post).toEqual(['/robot/sync-office']);
   });
 
-  it('sem o SERPRO configurado não enfileira: avisa e leva a Administração › Integrações', async () => {
+  it('sem o SERPRO configurado não enfileira: avisa e leva a Meu escritório › Integrações', async () => {
     robot.serpro = 'not_configured';
     auth.perms = ['ecac.sync', 'integrations.manage'];
     renderShell();
     fireEvent.click(screen.getByRole('button', { name: 'Sincronizar eCAC' }));
     expect(await screen.findByText('Integração SERPRO não configurada')).toBeTruthy();
-    const link = screen.getByRole('link', { name: 'Administração › Integrações' });
+    const link = screen.getByRole('link', { name: 'Meu escritório › Integrações' });
     expect(link.getAttribute('href')).toBe('/admin/integracoes');
     expect(screen.queryByRole('button', { name: 'Sincronizar' })).toBeNull();
     expect(screen.queryByText(/você recebe uma notificação/)).toBeNull();
@@ -108,32 +108,32 @@ describe('Shell', () => {
     renderShell();
     fireEvent.click(screen.getByRole('button', { name: 'Sincronizar eCAC' }));
     expect(await screen.findByText(/peça a quem administra o escritório/)).toBeTruthy();
-    expect(screen.queryByRole('link', { name: 'Administração › Integrações' })).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Meu escritório › Integrações' })).toBeNull();
     // o X do cabeçalho e o botão do rodapé fecham; usa o do rodapé
     fireEvent.click(screen.getAllByRole('button', { name: 'Fechar' }).at(-1)!);
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(calls.post).toEqual([]);
   });
 
-  it('menu: Elaboração para quem só processa e Administração para quem abre ao menos uma aba (INT-17)', () => {
+  it('menu: Elaboração para quem só processa e Meu escritório para quem abre ao menos uma aba (INT-17)', () => {
     const sidebarLink = (name: string) => within(screen.getByRole('navigation', { name: 'Menu principal' })).queryByRole('link', { name });
     auth.perms = ['elaboration.process'];
     renderShell();
     expect(sidebarLink('Elaboração')?.getAttribute('href')).toBe('/elaboracao');
-    expect(sidebarLink('Administração')).toBeNull();
-    // cada permissão que abre só uma aba (Robô, Grupos, Preferências) basta para ver Administração
+    expect(sidebarLink('Meu escritório')).toBeNull();
+    // cada permissão que abre só uma aba (Robô, Grupos, Preferências) basta para ver Meu escritório
     for (const perm of ['ecac.robot', 'ecac.sync', 'customer_group.create', 'settings.edit', 'copilot.manage']) {
       cleanup();
       auth.perms = [perm];
       renderShell();
-      expect(sidebarLink('Administração')?.getAttribute('href'), perm).toBe('/admin');
+      expect(sidebarLink('Meu escritório')?.getAttribute('href'), perm).toBe('/admin');
       expect(sidebarLink('Elaboração'), perm).toBeNull();
     }
   });
 
   it('mostra os favoritos no menu lateral e remove pelo X', async () => {
     auth.favorites = [
-      { path: '/admin/colaboradores', label: 'Administração › Colaboradores' },
+      { path: '/admin/colaboradores', label: 'Meu escritório › Colaboradores' },
       { path: '/kanban', label: 'Kanban' },
     ];
     renderShell();

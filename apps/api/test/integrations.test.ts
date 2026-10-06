@@ -87,7 +87,7 @@ describe('configuração das integrações', () => {
     const { api, officeId } = await registerOffice(env);
     const list = await api.get('/api/integrations');
     expect(list.status).toBe(200);
-    expect(list.body.map((i: any) => i.provider).sort()).toEqual(['ai', 'asaas', 'omie', 'serpro', 'smtp', 'whatsapp']);
+    expect(list.body.map((i: any) => i.provider).sort()).toEqual(['asaas', 'omie', 'serpro', 'smtp', 'whatsapp']);
     expect(list.body.every((i: any) => i.status === 'not_configured' && !i.enabled)).toBe(true);
 
     const apiKey = '$aact_hmlg_000MzkwODA2MWY2OGM3MWRlNTZjYTI5ZjQ6OjAwMDAwMDAwMDAwMDAwNjY1Nzc6OiRhYWNoX2Y0ZGFiMWI4';
@@ -584,11 +584,11 @@ describe('IA (Anthropic)', () => {
     usage: { input_tokens: 120, output_tokens: 8 },
   });
 
-  it('envia PDF como documento e imagem como imagem, com a chave do escritório', async () => {
+  it('envia PDF como documento e imagem como imagem, com a chave da plataforma', async () => {
     const { api, officeId } = await registerOffice(env);
-    await api.put('/api/integrations/ai', { enabled: true, config: { effort: 'high' }, secrets: { apiKey: 'sk-ant-api03-chave-do-escritorio' } });
+    expect((await api.put('/api/integrations/ai', { secrets: { apiKey: 'chave-do-escritorio' } })).status).toBe(403);
     const m = mockFetch(() => ({ json: message('Documento lido.') }));
-    const providers = createProviders(withConfig({ ANTHROPIC_API_KEY: undefined, AI_MODEL: 'claude-opus-5-5' }), { fetch: m.fn });
+    const providers = createProviders(withConfig({ ANTHROPIC_API_KEY: 'sk-ant-api03-chave-da-plataforma', AI_MODEL: 'claude-opus-5-5' }), { fetch: m.fn });
     const pdf = Buffer.from('%PDF-1.7 informe de rendimentos');
     const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
     const r = await providers.ai.complete(officeId, {
@@ -598,7 +598,7 @@ describe('IA (Anthropic)', () => {
     expect(r).toEqual({ text: 'Documento lido.', inputTokens: 120, outputTokens: 8 });
     const call = m.calls[0];
     expect(call.url).toContain('/v1/messages');
-    expect(call.headers['x-api-key']).toBe('sk-ant-api03-chave-do-escritorio');
+    expect(call.headers['x-api-key']).toBe('sk-ant-api03-chave-da-plataforma');
     expect(call.headers['anthropic-beta']).toContain('server-side-fallback-2026-07-01');
     expect(call.body).toMatchObject({ model: 'claude-opus-5-5', max_tokens: 16000, system: 'Você confere documentos de IRPF.', fallbacks: 'default', output_config: { effort: 'high' } });
     const content = call.body.messages[0].content;
@@ -610,11 +610,11 @@ describe('IA (Anthropic)', () => {
   it('traduz erros e exige uma chave', async () => {
     const { api, officeId } = await registerOffice(env);
     const noKey = withConfig({ ANTHROPIC_API_KEY: undefined });
-    await expect(createProviders(noKey).ai.complete(officeId, { system: 's', messages: [{ role: 'user', content: 'oi' }] })).rejects.toThrow('Configure a chave da IA em Administração › Integrações.');
+    await expect(createProviders(noKey).ai.complete(officeId, { system: 's', messages: [{ role: 'user', content: 'oi' }] })).rejects.toThrow('A IA da plataforma não está configurada. Contate o suporte do Verifco.');
 
-    await api.put('/api/integrations/ai', { enabled: true, config: { model: 'claude-haiku-4-5' }, secrets: { apiKey: 'sk-ant-api03-chave-invalida' } });
+    const platformConfig = withConfig({ ANTHROPIC_API_KEY: 'sk-ant-api03-chave-invalida', AI_MODEL: 'claude-haiku-4-5' });
     const denied = mockFetch(() => ({ status: 401, json: { type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } } }));
-    await expect(createProviders(noKey, { fetch: denied.fn }).ai.complete(officeId, { system: 's', messages: [{ role: 'user', content: 'oi' }] })).rejects.toThrow(
+    await expect(createProviders(platformConfig, { fetch: denied.fn }).ai.complete(officeId, { system: 's', messages: [{ role: 'user', content: 'oi' }] })).rejects.toThrow(
       'Chave de API da Anthropic inválida ou revogada.',
     );
     // Haiku não recebe effort nem fallback
@@ -623,23 +623,16 @@ describe('IA (Anthropic)', () => {
     expect(denied.calls[0].body.fallbacks).toBeUndefined();
 
     const refused = mockFetch(() => ({ json: { ...message(''), content: [], stop_reason: 'refusal' } }));
-    await expect(createProviders(noKey, { fetch: refused.fn }).ai.complete(officeId, { system: 's', messages: [{ role: 'user', content: 'oi' }] })).rejects.toThrow(/não pôde atender/);
+    await expect(createProviders(platformConfig, { fetch: refused.fn }).ai.complete(officeId, { system: 's', messages: [{ role: 'user', content: 'oi' }] })).rejects.toThrow(/não pôde atender/);
 
     await expect(
-      createProviders(noKey, { fetch: refused.fn }).ai.complete(officeId, { system: 's', messages: [{ role: 'user', content: 'x', files: [{ filename: 'a.zip', mimeType: 'application/zip', data: Buffer.from('z') }] }] }),
-    ).rejects.toThrow(/não lê arquivos do tipo application\/zip/);
+      createProviders(platformConfig, { fetch: refused.fn }).ai.complete(officeId, { system: 's', messages: [{ role: 'user', content: 'x', files: [{ filename: 'a.zip', mimeType: 'application/zip', data: Buffer.from('z') }] }] }),
+    ).rejects.toThrow(/não lê este anexo/);
   });
 
-  it('teste consulta o modelo sem gerar texto', async () => {
+  it('o contador não pode testar a conexão global pelo endpoint antigo', async () => {
     const { api } = await registerOffice(env);
-    await api.put('/api/integrations/ai', { enabled: true, config: { model: 'claude-opus-5-5' }, secrets: { apiKey: 'sk-ant-api03-teste-modelo' } });
-    const m = mockFetch(() => ({ json: { type: 'model', id: 'claude-opus-5-5', display_name: 'Claude Opus 5.5', created_at: '2026-09-01T00:00:00Z' } }));
-    env.providers.fetch = m.fn;
-    const r = await api.post('/api/integrations/ai/test');
-    expect(r.body).toMatchObject({ ok: true });
-    expect(r.body.message).toContain('Claude Opus 5.5');
-    expect(m.calls[0].url).toContain('/v1/models/claude-opus-5-5');
-    expect(m.calls[0].method).toBe('GET');
+    expect((await api.post('/api/integrations/ai/test')).status).toBe(403);
   });
 });
 

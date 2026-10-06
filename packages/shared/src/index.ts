@@ -25,3 +25,4 @@ export * from './tax/holding';
 export * from './cashbook';
 export * from './radar';
 export * from './copilot';
+export * from './ai-providers';
