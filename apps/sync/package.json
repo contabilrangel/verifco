@@ -1,6 +1,6 @@
 {
   "name": "@verifco/sync",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Sincronizador Verifco: envia ao Verifco os arquivos do programa IRPF (.DEC, .REC, .DBK) e das pré-preenchidas.",
   "type": "module",
@@ -12,7 +12,7 @@
     "pastas": "tsx src/cli.ts pastas",
     "testar": "tsx src/cli.ts testar",
     "status": "tsx src/cli.ts status",
-    "test": "tsx --test test/identify.test.ts",
+    "test": "tsx --test test/identify.test.ts test/api.test.ts",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {

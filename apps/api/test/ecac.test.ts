@@ -1,7 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
-import { apiTokens, darfs, declarations, documents, jobs } from '../src/db/schema';
+import { and, eq } from 'drizzle-orm';
+import { todayIso } from '@verifco/shared';
+import { apiTokens, auditLogs, darfs, declarations, documents, jobs } from '../src/db/schema';
 import { syncCustomerViaSerpro } from '../src/modules/ecac/jobs';
+import { FILE_DATE_CLOCK_SKEW_MS, fileModifiedAt, isRectificationReceiptName } from '../src/modules/sync/ingest';
 import { interpretMailbox, interpretProcuration } from '../src/modules/ecac/serpro';
 import { VALID_CPFS, createEmployee, createTestEnv, registerOffice, type TestEnv } from './helpers';
 import { fakePdf, multipart, send } from './robot-helpers';
@@ -172,6 +174,178 @@ describe('arquivos do sincronizador', () => {
     const finished = await decl(c.body.id);
     expect(finished).toMatchObject({ stage: 'finished', substatus: 'finished' });
     expect(finished.transmittedAt.slice(0, 10)).toBe('2026-05-20');
+  });
+});
+
+describe('recibo (.REC) do sincronizador: data do arquivo, retificadora e link no resumo', () => {
+  const recName = (cpf: string, kind = 'ORIGI') => `${cpf}-IRPF-A-2026-2025-${kind}.REC`;
+  const sendRec = (token: string, name: string, content: string, fields: Record<string, string> = {}) =>
+    send(env, token, 'POST', '/api/sync/files', { multipart: multipart(fields, { name, content }) });
+  /** Dia (Brasília) da data de transmissão gravada. */
+  const transmittedDay = (d: { transmittedAt: string | null }) => (d.transmittedAt ? todayIso(new Date(d.transmittedAt)) : null);
+  const auditOf = (documentId: string) =>
+    env.ctx.db.query.auditLogs.findFirst({ where: and(eq(auditLogs.entity, 'document'), eq(auditLogs.entityId, documentId)) });
+
+  it('usa a data do arquivo (modificadoEm) no dia de Brasília; sem ela (sincronizador antigo), o dia do recebimento', async () => {
+    const { api, token } = await officeWithToken('sync');
+    const decl = async (id: string) => (await api.get(`/api/customers/${id}/declarations/2026`)).body;
+
+    // 01:30 UTC de 20/05 ainda é 19/05 em Brasília (22:30)
+    const a = await api.post('/api/customers', { name: 'Ana', cpfCnpj: VALID_CPFS[0] });
+    const up = await sendRec(token, recName(VALID_CPFS[0]), 'rec-ana', { modificadoEm: '2026-05-20T01:30:00.000Z' });
+    expect(up.status).toBe(201);
+    const da = await decl(a.body.id);
+    expect(da).toMatchObject({ stage: 'transmitted', substatus: 'ecac_unknown' });
+    expect(da.transmittedAt).toBe(new Date('2026-05-19T12:00:00-03:00').toISOString());
+    // a auditoria registra de onde veio a data
+    expect((await auditOf(up.body.documentId))!.data).toMatchObject({ transmitted: true, transmittedAtFrom: 'file' });
+
+    // com fuso explícito
+    const b = await api.post('/api/customers', { name: 'Bia', cpfCnpj: VALID_CPFS[1] });
+    expect((await sendRec(token, recName(VALID_CPFS[1]), 'rec-bia', { modificadoEm: '2026-04-30T23:10:00-03:00' })).status).toBe(201);
+    expect(transmittedDay(await decl(b.body.id))).toBe('2026-04-30');
+
+    // sincronizador antigo (sem o campo): continua aceito, com o dia do recebimento em Brasília
+    const c = await api.post('/api/customers', { name: 'Caio', cpfCnpj: VALID_CPFS[2] });
+    const before = todayIso();
+    const old = await sendRec(token, recName(VALID_CPFS[2]), 'rec-caio');
+    expect(old.status).toBe(201);
+    const dc = await decl(c.body.id);
+    expect(dc.stage).toBe('transmitted');
+    expect([before, todayIso()]).toContain(transmittedDay(dc));
+    expect((await auditOf(old.body.documentId))!.data).toMatchObject({ transmittedAtFrom: 'received' });
+
+    // data já gravada (digitada no resumo) não é trocada pela do arquivo
+    const d = await api.post('/api/customers', { name: 'Davi', cpfCnpj: VALID_CPFS[3] });
+    await api.put(`/api/customers/${d.body.id}/declarations/2026`, { transmittedAt: '2026-05-02' });
+    expect((await sendRec(token, recName(VALID_CPFS[3]), 'rec-davi', { modificadoEm: '2026-05-25T15:00:00.000Z' })).status).toBe(201);
+    expect(transmittedDay(await decl(d.body.id))).toBe('2026-05-02');
+  });
+
+  it('data do arquivo no futuro, inválida ou anterior ao exercício é ignorada (vale o recebimento)', async () => {
+    const { api, token } = await officeWithToken('sync');
+    const cases = [
+      new Date(Date.now() + 2 * 86_400_000).toISOString(), // futuro
+      '20/05/2026',
+      '2026-05-20', // sem hora
+      '2026-05-20T10:00:00', // sem fuso
+      '2025-12-31T12:00:00.000Z', // antes do exercício 2026
+      'x'.repeat(200),
+    ];
+    for (const [i, modificadoEm] of cases.entries()) {
+      const c = await api.post('/api/customers', { name: `Cliente ${i}`, cpfCnpj: VALID_CPFS[i] });
+      const before = todayIso();
+      const up = await sendRec(token, recName(VALID_CPFS[i]), `rec-${i}`, { modificadoEm });
+      expect(up.status, modificadoEm).toBe(201);
+      const d = (await api.get(`/api/customers/${c.body.id}/declarations/2026`)).body;
+      expect(d.stage).toBe('transmitted');
+      expect([before, todayIso()], modificadoEm).toContain(transmittedDay(d));
+      expect((await auditOf(up.body.documentId))!.data).toMatchObject({ transmittedAtFrom: 'received' });
+    }
+  });
+
+  it('fileModifiedAt: folga de relógio, limite do exercício e dia de Brasília', () => {
+    const now = new Date('2026-05-20T02:59:00.000Z'); // 23:59 de 19/05 em Brasília
+    // adiantado dentro da folga: vale o agora (nunca uma transmissão no futuro)
+    const skewed = new Date(now.getTime() + FILE_DATE_CLOCK_SKEW_MS - 1000).toISOString();
+    expect(fileModifiedAt({ modificadoEm: skewed }, 2026, now)).toEqual(now);
+    expect(todayIso(fileModifiedAt({ modificadoEm: skewed }, 2026, now)!)).toBe('2026-05-19');
+    expect(fileModifiedAt({ modificadoEm: new Date(now.getTime() + FILE_DATE_CLOCK_SKEW_MS + 1000).toISOString() }, 2026, now)).toBeNull();
+    // 1º de janeiro do exercício em Brasília vale; 31/12 às 23h de Brasília (02h UTC de 01/01) não
+    expect(fileModifiedAt({ modificadoEm: '2026-01-01T03:00:00.000Z' }, 2026, now)).toEqual(new Date('2026-01-01T03:00:00.000Z'));
+    expect(fileModifiedAt({ modificadoEm: '2026-01-01T02:00:00.000Z' }, 2026, now)).toBeNull();
+    // retificadora de exercício antigo transmitida neste ano
+    expect(fileModifiedAt({ modificadoEm: '2026-03-10T12:00:00+00:00' }, 2022, now)).toEqual(new Date('2026-03-10T12:00:00Z'));
+    expect(fileModifiedAt({}, 2026, now)).toBeNull();
+    expect(fileModifiedAt({ modificadoEm: '' }, 2026, now)).toBeNull();
+    expect(fileModifiedAt({ modificadoEm: '2026-02-30T10:00:00Z' }, 2026, now)).toBeNull();
+  });
+
+  it('retificadora pelo nome RETIF, sem desmarcar com recibo original', async () => {
+    expect(isRectificationReceiptName('52998224725-IRPF-A-2026-2025-RETIF.REC', { rectification: true })).toBe(true);
+    expect(isRectificationReceiptName('52998224725-IRPF-A-2026-2025-ORIGI.REC', { rectification: false })).toBe(false);
+    expect(isRectificationReceiptName('529.982.247-25 recibo retificadora 2026.rec', { rectification: null })).toBe(true);
+    expect(isRectificationReceiptName('529.982.247-25 recibo_RETIF.rec', { rectification: null })).toBe(true);
+    expect(isRectificationReceiptName('529.982.247-25 PRETIFICADO.rec', { rectification: null })).toBe(false);
+    expect(isRectificationReceiptName('529.982.247-25 recibo 2026.rec', { rectification: null })).toBe(false);
+    expect(isRectificationReceiptName('C:\\RETIF\\529.982.247-25 recibo.rec', { rectification: null })).toBe(false);
+
+    const { api, token } = await officeWithToken('sync');
+    const decl = async (id: string) => (await api.get(`/api/customers/${id}/declarations/2026`)).body;
+    // original: não marca
+    const a = await api.post('/api/customers', { name: 'Original', cpfCnpj: VALID_CPFS[0] });
+    await sendRec(token, recName(VALID_CPFS[0], 'ORIGI'), 'orig-a', { modificadoEm: '2026-05-10T15:00:00Z' });
+    expect((await decl(a.body.id)).isRectification).toBe(false);
+    // retificadora (minúsculas também): marca; a data da transmissão já gravada (a da original) fica
+    const up = await sendRec(token, recName(VALID_CPFS[0], 'RETIF').toLowerCase(), 'retif-a', { modificadoEm: '2026-06-01T15:00:00Z' });
+    expect(up.status).toBe(201);
+    const da = await decl(a.body.id);
+    expect(da.isRectification).toBe(true);
+    expect(transmittedDay(da)).toBe('2026-05-10');
+    expect((await auditOf(up.body.documentId))!.data).toMatchObject({ rectification: true });
+    // o .REC original que chega depois não desmarca
+    await sendRec(token, recName(VALID_CPFS[0], 'ORIGI'), 'orig-a-copia', { modificadoEm: '2026-05-10T16:00:00Z' });
+    expect((await decl(a.body.id)).isRectification).toBe(true);
+    // marcada à mão como retificadora: recibo original não desmarca
+    const b = await api.post('/api/customers', { name: 'Manual', cpfCnpj: VALID_CPFS[1] });
+    await api.put(`/api/customers/${b.body.id}/declarations/2026`, { isRectification: true });
+    await sendRec(token, recName(VALID_CPFS[1], 'ORIGI'), 'orig-b');
+    expect((await decl(b.body.id)).isRectification).toBe(true);
+    // finalizada: RETIF marca a retificadora sem mudar a etapa
+    const c = await api.post('/api/customers', { name: 'Finalizada', cpfCnpj: VALID_CPFS[2] });
+    const dc = (await api.put(`/api/customers/${c.body.id}/declarations/2026`, { transmittedAt: '2026-05-05' })).body;
+    await api.post(`/api/declarations/${dc.id}/finish`);
+    await sendRec(token, recName(VALID_CPFS[2], 'RETIF'), 'retif-c', { modificadoEm: '2026-07-01T15:00:00Z' });
+    expect(await decl(c.body.id)).toMatchObject({ stage: 'finished', isRectification: true });
+  });
+
+  it('o GET da declaração devolve o recibo guardado só para quem pode ver a declaração', async () => {
+    const { api, token } = await officeWithToken('sync');
+    const c = await api.post('/api/customers', { name: 'Rui', cpfCnpj: VALID_CPFS[4] });
+    const url = `/api/customers/${c.body.id}/declarations/2026`;
+
+    // sem recibo: null (também na declaração ainda não criada)
+    expect((await api.get(url)).body.receiptFile).toBeNull();
+    const first = await sendRec(token, recName(VALID_CPFS[4]), 'recibo-1', { modificadoEm: '2026-05-20T15:00:00Z' });
+    const second = await sendRec(token, recName(VALID_CPFS[4], 'RETIF'), 'recibo-2', { modificadoEm: '2026-06-20T15:00:00Z' });
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(201);
+    // outro documento da declaração (o .DEC) não conta
+    expect((await sendRec(token, `${VALID_CPFS[4]}-IRPF-A-2026-2025-RETIF.DEC`, 'dec')).status).toBe(201);
+
+    const got = await api.get(url);
+    expect(got.status).toBe(200);
+    // o mais recente
+    expect(got.body.receiptFile).toMatchObject({ documentId: second.body.documentId, filename: recName(VALID_CPFS[4], 'RETIF'), uploadedBy: 'sync' });
+    expect(got.body.receiptFile.receivedAt).toBeTruthy();
+    // o link usa a rota do documento, com as regras de sempre
+    const file = await api.get(`/api/documents/${second.body.documentId}/file`);
+    expect(file.status).toBe(200);
+
+    // só darf.view: visão reduzida, sem o recibo, e sem acesso ao arquivo
+    const darfOnly = await createEmployee(env, api, ['customer.list', 'darf.view']);
+    const reduced = await darfOnly.api.get(url);
+    expect(reduced.status).toBe(200);
+    expect(reduced.body).not.toHaveProperty('receiptFile');
+    expect((await darfOnly.api.get(`/api/documents/${second.body.documentId}/file`)).status).toBe(403);
+
+    // declaration.view: recebe o recibo e baixa o arquivo
+    const viewer = await createEmployee(env, api, ['customer.list', 'declaration.view']);
+    expect((await viewer.api.get(url)).body.receiptFile).toMatchObject({ documentId: second.body.documentId });
+    expect((await viewer.api.get(`/api/documents/${second.body.documentId}/file`)).status).toBe(200);
+
+    // escritório que restringe clientes ao responsável: quem não é responsável não vê
+    await api.put('/api/office/settings', { restrictCustomersToResponsible: true });
+    expect((await viewer.api.get(url)).status).toBe(404);
+    expect((await viewer.api.get(`/api/documents/${second.body.documentId}/file`)).status).toBe(404);
+    await api.put('/api/office/settings', { restrictCustomersToResponsible: false });
+
+    // outro escritório: nem a declaração nem o arquivo; o cliente de mesmo CPF lá não traz este recibo
+    const other = await registerOffice(env);
+    expect((await other.api.get(url)).status).toBe(404);
+    expect((await other.api.get(`/api/documents/${second.body.documentId}/file`)).status).toBe(404);
+    const twin = await other.api.post('/api/customers', { name: 'Rui (outro)', cpfCnpj: VALID_CPFS[4] });
+    expect((await other.api.get(`/api/customers/${twin.body.id}/declarations/2026`)).body.receiptFile).toBeNull();
   });
 });
 

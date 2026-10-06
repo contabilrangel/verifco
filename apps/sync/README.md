@@ -10,7 +10,16 @@ computador onde o **programa IRPF** é usado. Ele observa as pastas do programa 
 Cada arquivo é vinculado ao **cliente pelo CPF** e ao **exercício**, ambos lidos do nome do arquivo
 (e, se preciso, da pasta `IRPF<ano>`). No Verifco, o arquivo vira um documento do cliente
 (origem “sincronizador”); o `.DEC` passa a ser o arquivo de origem da declaração do ano, e a
-chegada do `.REC` (recibo de entrega) marca a declaração como transmitida.
+chegada do `.REC` (recibo de entrega) marca a declaração como transmitida:
+
+- a **data da transmissão** é o dia (em Brasília) da data de modificação do `.REC`, que o programa
+  grava ao transmitir — enviada pelo sincronizador a partir da versão 0.2.0. Uma data já informada
+  no Verifco (no resumo da declaração ou vinda do eCAC) não é trocada. Datas no futuro ou anteriores
+  ao ano-exercício são desconsideradas e vale o dia do recebimento (como nas versões anteriores);
+- um recibo com `RETIF` no nome (ex.: `...-2026-2025-RETIF.REC`) marca a declaração como
+  **retificadora**; um recibo original não desmarca;
+- o recibo fica guardado como documento da declaração e o resumo da declaração mostra o link para
+  baixá-lo. O número do recibo continua vindo do eCAC ou da digitação no resumo.
 
 > O conteúdo dos arquivos do programa IRPF **não é lido**: o layout deles não é público. O
 > sincronizador só usa o nome, a pasta e o hash do conteúdo.
@@ -121,13 +130,23 @@ outro escopo) encerra o sincronizador com a orientação para gerar outro.
 
   `systemctl --user enable --now verifco-sync`.
 
+## Versões
+
+A versão está no `package.json`. Para atualizar, baixe o pacote de novo na Central de downloads e
+descompacte por cima da pasta atual, rodando `npm install` de novo (a configuração e o controle de
+envios ficam na pasta de dados, fora dela). A API continua aceitando as versões anteriores.
+
+- **0.2.0** — envia a data de modificação do arquivo (`modificadoEm`); no `.REC`, ela vira a data
+  da transmissão da declaração.
+- **0.1.0** — primeira versão.
+
 ## Desenvolvimento
 
 ```bash
-npm test          # testes do identificador de CPF/ano (node:test via tsx)
+npm test          # testes do identificador de CPF/ano e do envio (node:test via tsx)
 npm run typecheck
 ```
 
 API usada: `GET /api/sync/whoami`, `POST /api/sync/files` (multipart: `file`, `cpf`, `ano`, `tipo`,
-`caminho`) e `POST /api/sync/prefilled` (multipart: `file`, `cpf`, `ano`), sempre com
+`caminho`, `modificadoEm` — data de modificação do arquivo em ISO 8601, desde a 0.2.0) e `POST /api/sync/prefilled` (multipart: `file`, `cpf`, `ano`), sempre com
 `Authorization: Bearer vfk_...`.

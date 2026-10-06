@@ -34,6 +34,19 @@ export interface Declaration {
   cashBalanceCents: number | null;
   otherExpenses: Record<string, number | undefined>;
   finishedAt: string | null;
+  /**
+   * Recibo de entrega (.REC) mais recente guardado na declaração (só no GET, com
+   * `declaration.view`). O arquivo sai por `/documents/:documentId/file`.
+   */
+  receiptFile?: ReceiptFile | null;
+}
+
+export interface ReceiptFile {
+  documentId: string;
+  filename: string;
+  /** `sync` quando veio do sincronizador. */
+  uploadedBy: string;
+  receivedAt: string;
 }
 
 export type ItemRow = DeclarationItem & { id: string; kind: ItemKind; createdAt: string; source: string };

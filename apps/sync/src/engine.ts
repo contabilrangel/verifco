@@ -82,10 +82,12 @@ export class Syncer {
 
   private async process(path: string) {
     let size: number;
+    let modifiedAt: Date;
     try {
       const st = await stat(path);
       if (!st.isFile()) return;
       size = st.size;
+      modifiedAt = st.mtime;
     } catch {
       return; // apagado ou movido antes do envio
     }
@@ -109,7 +111,7 @@ export class Syncer {
       return;
     }
     try {
-      const res = await upload(this.cfg, { destination: c.destination, data, name, path, cpf: c.cpf, year: c.year, type: c.type });
+      const res = await upload(this.cfg, { destination: c.destination, data, name, path, cpf: c.cpf, year: c.year, type: c.type, modifiedAt });
       const dup = res.body.duplicate;
       this.state.mark(hash, { path, sentAt: new Date().toISOString(), result: dup ? 'já existia' : 'enviado', customer: res.body.customer?.name, year: res.body.year });
       this.retry.delete(path);

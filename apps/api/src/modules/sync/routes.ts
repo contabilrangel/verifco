@@ -175,7 +175,9 @@ export async function syncRoutes(app: FastifyInstance) {
 
   /**
    * Arquivo do programa IRPF (multipart): `file` + `cpf` (opcional) + `ano` (opcional) +
-   * `tipo` (dec|rec|dbk|xml|pdf|other, opcional) + `caminho` (caminho original, opcional).
+   * `tipo` (dec|rec|dbk|xml|pdf|other, opcional) + `caminho` (caminho original, opcional) +
+   * `modificadoEm` (data e hora do arquivo em ISO 8601 com fuso, opcional: no .REC vira o dia da
+   * transmissão; sincronizadores anteriores à 0.2.0 não enviam e vale o dia do recebimento).
    */
   app.post('/sync/files', async (req, reply) => {
     const auth = await requireMachine(ctx, req, ['sync']);

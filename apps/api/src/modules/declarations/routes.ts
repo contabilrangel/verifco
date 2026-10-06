@@ -1,4 +1,4 @@
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
@@ -9,6 +9,7 @@ import {
   INCOME_NATURES,
   ITEM_KIND_LIST,
   PAYMENT_NATURES,
+  SYNC_FILE_CATEGORY,
   isValidCpf,
   isValidCpfCnpj,
   onlyDigits,
@@ -16,7 +17,7 @@ import {
   type EcacDeclarationStatus,
   type ItemKind,
 } from '@verifco/shared';
-import { declarationItems, declarations } from '../../db/schema';
+import { declarationItems, declarations, documents, files } from '../../db/schema';
 import { badRequest, conflict, notFound } from '../../lib/errors';
 import { audit, can, dateStr, guard, optionalText, parse, requireUser, uuidParam, yearSchema } from '../../lib/http';
 import { getCustomerForUser } from '../../services/customers';
@@ -27,6 +28,7 @@ import {
   refreshDeclaration,
   setDeclarationSubstatus,
   syncDeclarationStage,
+  transmittedAtOfDay,
 } from '../../services/declarations';
 import { emptyDeclaration, getDeclarationForUser, presentDeclaration } from './access';
 import { backlogRoutes } from './backlogs';
@@ -125,8 +127,25 @@ export async function declarationRoutes(app: FastifyInstance) {
 
   // ------------------------------------------------------------ declaração por cliente e ano
   /**
+   * Recibo de entrega (.REC) mais recente da declaração (documento da categoria `irpf_receipt`,
+   * gravado pelo sincronizador). O arquivo sai pela rota do documento (`/documents/:id/file`),
+   * com as mesmas regras de permissão e escopo de cliente.
+   */
+  const receiptFileOf = async (officeId: string, declarationId: string) => {
+    const [r] = await db
+      .select({ documentId: documents.id, filename: files.filename, uploadedBy: documents.uploadedBy, receivedAt: documents.createdAt })
+      .from(documents)
+      .innerJoin(files, eq(files.id, documents.fileId))
+      .where(and(eq(documents.officeId, officeId), eq(documents.declarationId, declarationId), eq(documents.category, SYNC_FILE_CATEGORY.rec)))
+      .orderBy(desc(documents.createdAt))
+      .limit(1);
+    return r ?? null;
+  };
+
+  /**
    * Declaração do cliente no exercício. Quem tem só `darf.view` (etapa DARF) recebe apenas o que a
    * etapa usa e a lista de quotas já mostra: id, exercício e imposto a pagar.
+   * Com `declaration.view`, a resposta traz também `receiptFile` (recibo .REC guardado).
    */
   app.get('/customers/:id/declarations/:year', { preHandler: guard('declaration.view', 'darf.view') }, async (req) => {
     const user = requireUser(req);
@@ -134,7 +153,7 @@ export async function declarationRoutes(app: FastifyInstance) {
     const customer = await getCustomerForUser(app.ctx, user, id);
     const d = await db.query.declarations.findFirst({ where: and(eq(declarations.customerId, customer.id), eq(declarations.exerciseYear, year)) });
     const full = d ? presentDeclaration(d) : emptyDeclaration(customer.id, year);
-    if (can(user, 'declaration.view')) return full;
+    if (can(user, 'declaration.view')) return { ...full, receiptFile: d ? await receiptFileOf(user.officeId, d.id) : null };
     return { id: full.id, exists: full.exists, customerId: full.customerId, exerciseYear: full.exerciseYear, taxDueCents: full.taxDueCents };
   });
 
@@ -159,7 +178,7 @@ export async function declarationRoutes(app: FastifyInstance) {
       .update(declarations)
       .set({
         ...fields,
-        ...(transmittedAt !== undefined ? { transmittedAt: transmittedAt ? new Date(`${transmittedAt}T12:00:00-03:00`) : null } : {}),
+        ...(transmittedAt !== undefined ? { transmittedAt: transmittedAt ? transmittedAtOfDay(transmittedAt) : null } : {}),
         ...(otherExpenses ? { otherExpenses: { ...current.otherExpenses, ...otherExpenses } } : {}),
         updatedAt: new Date(),
       })

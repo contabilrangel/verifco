@@ -134,3 +134,12 @@
 .vf-chart__center, .vf-chart__center-label, .vf-chart__label, .vf-chart__value { pointer-events: none; }
 .vf-kanban__title { display: flex; align-items: center; gap: var(--size-spacing-02); min-width: 0; }
 .vf-dec-board .vf-kanban__head { gap: var(--size-spacing-02); }
+
+/* recibo de entrega (.REC) guardado, no resumo da declaração */
+.vf-dec-receipt {
+  display: flex; align-items: center; gap: var(--size-spacing-03); margin-top: var(--size-spacing-03); padding: var(--size-spacing-03);
+  border: 1px solid var(--color-border); border-radius: var(--border-radius-sm); flex-wrap: wrap;
+}
+.vf-dec-receipt > svg { width: 20px; height: 20px; flex-shrink: 0; color: var(--color-success); }
+.vf-dec-receipt__text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; font: var(--text-sm-regular); }
+.vf-dec-receipt__name { overflow-wrap: anywhere; color: var(--color-text-medium); }
