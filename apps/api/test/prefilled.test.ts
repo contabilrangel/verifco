@@ -1,7 +1,7 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import JSZip from 'jszip';
-import { prefilledStatements } from '../src/db/schema';
+import { files, prefilledStatements } from '../src/db/schema';
 import { VALID_CPFS, createEmployee, createTestEnv, registerOffice, type TestEnv } from './helpers';
 import { multipart, send } from './robot-helpers';
 
@@ -58,6 +58,31 @@ describe('pré-preenchidas', () => {
     expect(await zipNames(novos2)).toEqual(['529.982.247-25 - Ana/pre-v2.dec']);
     const todos = await env.app.inject({ method: 'POST', url: '/api/prefilled/download', headers: { authorization: `Bearer ${office.token}` }, payload: { year: 2026, mode: 'all' } });
     expect(await zipNames(todos)).toHaveLength(3);
+  });
+
+  it('o .zip sai em stream com o conteúdo de cada arquivo e respeita o limite de 1 GB (DAD-10)', async () => {
+    const office = await registerOffice(env);
+    const c = await office.api.post('/api/customers', { name: 'Elisa', cpfCnpj: VALID_CPFS[4] });
+    const content = Buffer.concat([Buffer.from('pre-elisa '), Buffer.alloc(200_000, 3)]);
+    const up = await send(env, office.token, 'POST', '/api/prefilled/upload', { multipart: multipart({ customerId: c.body.id, year: '2026' }, { name: 'pre-elisa.dec', content }) });
+    expect(up.status).toBe(201);
+    const generateAsync = vi.spyOn(JSZip.prototype, 'generateAsync');
+    try {
+      const res = await env.app.inject({ method: 'POST', url: '/api/prefilled/download', headers: { authorization: `Bearer ${office.token}` }, payload: { year: 2026, mode: 'all' } });
+      expect(res.statusCode).toBe(200);
+      expect(res.headers['content-type']).toBe('application/zip');
+      expect(res.headers['content-disposition']).toContain('pre-preenchidas-2026-todas.zip');
+      expect(generateAsync).not.toHaveBeenCalled();
+      const zip = await JSZip.loadAsync(res.rawPayload);
+      expect((await zip.file('123.456.789-09 - Elisa/pre-elisa.dec')!.async('nodebuffer')).equals(content)).toBe(true);
+    } finally {
+      generateAsync.mockRestore();
+    }
+    const st = await env.ctx.db.query.prefilledStatements.findFirst({ where: eq(prefilledStatements.id, up.body.id) });
+    await env.ctx.db.update(files).set({ size: 1100 * 1024 * 1024 }).where(eq(files.id, st!.fileId));
+    const tooBig = await office.api.post('/api/prefilled/download', { year: 2026, mode: 'all' });
+    expect(tooBig.status).toBe(400);
+    expect(tooBig.body.error).toBe('Os arquivos passam de 1 GB. Selecione menos clientes ou baixe só os novos.');
   });
 
   it('download individual, envio manual, permissões e isolamento', async () => {

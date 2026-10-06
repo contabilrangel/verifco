@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import JSZip from 'jszip';
-import { declarationItems, declarations } from '../src/db/schema';
+import { declarationItems, declarations, files } from '../src/db/schema';
 import { getOrCreateDeclaration } from '../src/services/declarations';
 import { VALID_CPFS, createEmployee, createTestEnv, registerOffice, type TestEnv } from './helpers';
 import { fakePdf, multipart, send } from './robot-helpers';
@@ -85,6 +85,42 @@ describe('elaboração', () => {
     // novo documento depois da exportação volta para "não processado"
     await o.upload('recibo-medico.pdf', fakePdf('medico'));
     expect((await o.api.get('/api/elaboration?year=2026')).body.data[0].status).toBe('not_processed');
+  });
+
+  it('baixa os pacotes em stream: um sai como está, vários num .zip sem recomprimir, com limite de 1 GB (DAD-10)', async () => {
+    const office = await registerOffice(env);
+    const pkgs: { customerId: string; fileId: string; content: Buffer; filename: string }[] = [];
+    for (const [i, name] of ['Ana Costa', 'Bruno Lima'].entries()) {
+      const c = await office.api.post('/api/customers', { name, cpfCnpj: VALID_CPFS[i + 4] });
+      const content = Buffer.concat([Buffer.from('PK\u0003\u0004'), Buffer.alloc(20_000 + i, i + 1)]);
+      const filename = `conferencia-${name.split(' ')[0].toLowerCase()}-2026.zip`;
+      const f = await env.ctx.files.save({ officeId: office.officeId, data: content, filename, mimeType: 'application/zip' });
+      const d = await getOrCreateDeclaration(env.ctx.db, office.officeId, c.body.id, 2026);
+      await env.ctx.db.update(declarations).set({ exportedFileId: f.id }).where(eq(declarations.id, d.id));
+      pkgs.push({ customerId: c.body.id, fileId: f.id, content, filename });
+    }
+    const download = (customerIds: string[]) =>
+      env.app.inject({ method: 'POST', url: '/api/elaboration/download', headers: { authorization: `Bearer ${office.token}` }, payload: { year: 2026, customerIds } });
+
+    const one = await download([pkgs[0].customerId]);
+    expect(one.statusCode).toBe(200);
+    expect(one.headers['content-length']).toBe(String(pkgs[0].content.length));
+    expect(one.headers['content-disposition']).toContain(pkgs[0].filename);
+    expect(one.rawPayload.equals(pkgs[0].content)).toBe(true);
+
+    const both = await download(pkgs.map((p) => p.customerId));
+    expect(both.statusCode).toBe(200);
+    expect(both.headers['content-type']).toBe('application/zip');
+    expect(both.headers['content-disposition']).toContain('conferencia-2026.zip');
+    const zip = await JSZip.loadAsync(both.rawPayload);
+    for (const p of pkgs) expect((await zip.file(p.filename)!.async('nodebuffer')).equals(p.content)).toBe(true);
+    // os pacotes já são .zip: entram sem recomprimir (os bytes aparecem como estão)
+    for (const p of pkgs) expect(both.rawPayload.includes(p.content)).toBe(true);
+
+    await env.ctx.db.update(files).set({ size: 1100 * 1024 * 1024 }).where(eq(files.id, pkgs[1].fileId));
+    const tooBig = await download(pkgs.map((p) => p.customerId));
+    expect(tooBig.statusCode).toBe(400);
+    expect(tooBig.json().error).toBe('Os pacotes passam de 1 GB. Selecione menos clientes.');
   });
 
   it('marca conflito quando o documento diverge das linhas lançadas e resolve pela decisão', async () => {

@@ -159,7 +159,8 @@ export const files = pgTable(
     storageKey: text('storage_key').notNull(),
     filename: text('filename').notNull(),
     mimeType: text('mime_type').notNull(),
-    size: integer('size').notNull(),
+    /** Bytes. `bigint` porque o .zip do backup passa de 2 GiB; em modo number (seguro até 2^53). */
+    size: bigint('size', { mode: 'number' }).notNull(),
     sha256: text('sha256').notNull(),
     createdByUserId: uuid('created_by_user_id'),
     createdAt: createdAt(),

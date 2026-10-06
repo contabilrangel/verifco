@@ -1,6 +1,5 @@
 import { and, asc, desc, eq, ilike, inArray, isNull, or, type SQL } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
-import JSZip from 'jszip';
 import { z } from 'zod';
 import { ELABORATION_STATUS, ITEM_KINDS, onlyDigits, type DeclarationItem, type ElaborationStatus } from '@verifco/shared';
 import { customers, declarationItems, declarations, documents, files, jobs } from '../../db/schema';
@@ -10,6 +9,7 @@ import { customerScope, getCustomerForUser } from '../../services/customers';
 import { listItems, recomputeTotals } from '../../services/declarations';
 import { jobView } from '../ecac/util';
 import { safeZipName, sendStoredFile } from '../../services/uploads';
+import { MAX_ZIP_DOWNLOAD_BYTES, zipStoredFiles } from '../../storage/zip';
 import {
   computeElaborationStatus,
   docCounts,
@@ -300,23 +300,28 @@ export async function elaborationRoutes(app: FastifyInstance) {
     const user = requireUser(req);
     const body = parse(selectionSchema, req.body);
     const ids = await scopedIds(req, body.customerIds);
-    const rows = await db
-      .select({ fileId: declarations.exportedFileId })
+    const packages = await db
+      .select({ filename: files.filename, size: files.size, storageKey: files.storageKey, createdAt: files.createdAt })
       .from(declarations)
+      .innerJoin(files, and(eq(files.id, declarations.exportedFileId), eq(files.officeId, user.officeId)))
       .where(and(eq(declarations.officeId, user.officeId), eq(declarations.exerciseYear, body.year), inArray(declarations.customerId, ids)));
-    const fileIds = rows.flatMap((r) => (r.fileId ? [r.fileId] : []));
-    if (!fileIds.length) throw notFound('Pacote exportado');
-    const send = (name: string, data: Buffer) => sendStoredFile(reply, { filename: name, mimeType: 'application/zip' }, data);
-    if (fileIds.length === 1) {
-      const { row, data } = await app.ctx.files.get(user.officeId, fileIds[0]);
-      return send(row.filename, data);
+    if (!packages.length) throw notFound('Pacote exportado');
+    // em stream: um pacote sai como está; vários viram um .zip montado enquanto é baixado
+    if (packages.length === 1) {
+      const [p] = packages;
+      return sendStoredFile(reply, { filename: p.filename, mimeType: 'application/zip', size: p.size }, await app.ctx.files.stream(p));
     }
-    const zip = new JSZip();
-    for (const id of fileIds) {
-      const { row, data } = await app.ctx.files.get(user.officeId, id);
-      zip.file(safeZipName(row.filename), data);
-    }
-    return send(`conferencia-${body.year}.zip`, await zip.generateAsync({ type: 'nodebuffer' }));
+    if (packages.reduce((a, p) => a + p.size, 0) > MAX_ZIP_DOWNLOAD_BYTES) throw badRequest('Os pacotes passam de 1 GB. Selecione menos clientes.');
+    const used = new Set<string>();
+    const entries = packages.map((p) => {
+      const base = safeZipName(p.filename);
+      let path = base;
+      for (let n = 2; used.has(path.toLowerCase()); n++) path = base.replace(/(\.[^.]*)?$/, (ext) => ` (${n})${ext}`);
+      used.add(path.toLowerCase());
+      return { path, file: p };
+    });
+    // os pacotes já são .zip: entram sem comprimir de novo
+    return sendStoredFile(reply, { filename: `conferencia-${body.year}.zip`, mimeType: 'application/zip' }, zipStoredFiles(app.ctx.files, entries, { compress: false }));
   });
 
   /** Últimas tarefas de processamento/exportação do escritório. */

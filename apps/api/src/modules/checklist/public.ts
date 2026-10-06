@@ -214,8 +214,8 @@ export async function checklistPublicRoutes(app: FastifyInstance) {
     const { id, docId } = parse(docParam, req.params);
     const l = await loadForCustomer(req, id);
     const doc = await docOf(l, docId);
-    const { row, data } = await ctx.files.get(l.checklist.officeId, doc.fileId);
-    return sendStoredFile(reply, row, data, (req.query as Record<string, string>).inline === '1');
+    const { row, stream } = await ctx.files.open(l.checklist.officeId, doc.fileId);
+    return sendStoredFile(reply, row, stream, (req.query as Record<string, string>).inline === '1');
   });
 
   app.delete('/portal/checklists/:id/files/:docId', async (req) => {

@@ -8,6 +8,7 @@
  *   `nosniff` e CSP `sandbox`, e tipos fora da lista viram `application/octet-stream`.
  *   Assim um HTML ou SVG enviado como "documento" não roda script na origem do Verifco.
  */
+import type { Readable } from 'node:stream';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { fileExtension } from '@verifco/shared';
 import { HttpError, badRequest } from '../lib/errors';
@@ -92,13 +93,19 @@ export function safeZipName(name: string, maxLength = 150): string {
   );
 }
 
+/**
+ * Quantos bytes do começo do arquivo `contentMatches` olha (no máximo). O `readUploads` confere o
+ * tipo assim que eles chegam, sem esperar o resto do arquivo.
+ */
+export const SIGNATURE_BYTES = 8192;
+
 /** Confere a assinatura do arquivo com a extensão (evita, por ex., um HTML renomeado para .pdf). */
 export function contentMatches(ext: string, buf: Buffer): boolean {
   const head = buf.subarray(0, 16);
   const ascii = (from: number, to: number) => head.subarray(from, to).toString('latin1');
   const isZip = head[0] === 0x50 && head[1] === 0x4b;
   const isOle = head.subarray(0, 8).equals(Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]));
-  const isText = () => !buf.subarray(0, 8192).includes(0);
+  const isText = () => !buf.subarray(0, SIGNATURE_BYTES).includes(0);
   switch (ext) {
     case 'pdf':
       return buf.subarray(0, 1024).includes('%PDF-');
@@ -178,22 +185,39 @@ export interface ReadUploadsOptions {
   accepted?: string;
   /** Recusa arquivo vazio (padrão: ignora). */
   rejectEmpty?: boolean;
+  /**
+   * Soma máxima dos arquivos lidos para a memória num envio (padrão: 100 MB). Passou disso, o
+   * resto do formulário é lido e descartado e o envio é recusado com 413.
+   */
+  maxTotalBytes?: number;
+  /** Fica só com o primeiro arquivo: os demais são descartados (`resume`), sem ir para a memória. */
+  firstFileOnly?: boolean;
 }
 
 const DEFAULT_MAX_BYTES = 25 * 1024 * 1024;
+const DEFAULT_MAX_TOTAL_BYTES = 100 * 1024 * 1024;
 const formatMb = (bytes: number) => `${Math.round(bytes / (1024 * 1024))} MB`;
 
 /**
  * Lê um formulário multipart: arquivos (validados por extensão e assinatura) e campos de texto.
  * Traduz os erros de limite do @fastify/multipart para mensagens em português.
+ *
+ * Os arquivos vêm para a memória (quem chama recebe o `Buffer`), com teto por arquivo
+ * (`maxBytes`) e pela soma do envio (`maxTotalBytes`). O tipo é conferido nos primeiros bytes:
+ * conteúdo que não confere é recusado antes de ler o resto do arquivo.
  */
 export async function readUploads(req: FastifyRequest, opts: ReadUploadsOptions): Promise<{ files: UploadedFile[]; fields: Record<string, string> }> {
   if (!req.isMultipart()) throw badRequest('Envie o arquivo pelo formulário de upload.');
   const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
   const maxFiles = opts.maxFiles ?? 20;
+  const maxTotal = opts.maxTotalBytes ?? DEFAULT_MAX_TOTAL_BYTES;
+  const strict = opts.unknown !== 'octet-stream';
   const files: UploadedFile[] = [];
   const fields: Record<string, string> = {};
+  const tooLarge = (name: string) => new HttpError(413, `O arquivo “${name}” passa de ${formatMb(maxBytes)}. Envie um arquivo menor.`);
   let current = 'arquivo';
+  let total = 0;
+  let overTotal = false;
   try {
     for await (const part of req.parts({ limits: { fileSize: maxBytes, files: maxFiles } })) {
       if (part.type !== 'file') {
@@ -202,29 +226,54 @@ export async function readUploads(req: FastifyRequest, opts: ReadUploadsOptions)
       }
       const filename = safeFilename(part.filename || 'arquivo');
       current = filename;
-      const strict = opts.unknown !== 'octet-stream';
+      // arquivo que não vai ser usado: descarta sem guardar, lendo até o fim para o formulário seguir
+      if (overTotal || (opts.firstFileOnly && files.length)) {
+        part.file.resume();
+        continue;
+      }
       // extensão fora da lista: recusa antes de ler o conteúdo
       if (strict && !opts.types[fileExtension(filename)]) {
         throw badRequest(`O arquivo “${filename}” não é aceito.${opts.accepted ? ` Envie ${opts.accepted}.` : ''}`);
       }
-      const data = await part.toBuffer();
+      const typeOf = (head: Buffer) => {
+        const mime = detectMime(filename, head, opts.types);
+        if (!mime && strict) throw badRequest(`O conteúdo de “${filename}” não corresponde ao tipo do arquivo.`);
+        return mime ?? OCTET_STREAM;
+      };
+      const chunks: Buffer[] = [];
+      let size = 0;
+      // conferido assim que chegam os primeiros SIGNATURE_BYTES (ou no fim, se o arquivo for menor)
+      let mimeType: string | undefined;
+      for await (const chunk of part.file as AsyncIterable<Buffer>) {
+        if (overTotal) continue;
+        size += chunk.length;
+        if (total + size > maxTotal) {
+          overTotal = true;
+          chunks.length = 0;
+          continue;
+        }
+        chunks.push(chunk);
+        if (mimeType === undefined && size >= SIGNATURE_BYTES) mimeType = typeOf(Buffer.concat(chunks, size));
+      }
+      if (overTotal) continue;
+      // o @fastify/multipart corta o arquivo no limite e marca `truncated`
+      if ((part.file as { truncated?: boolean }).truncated) throw tooLarge(filename);
+      const data = Buffer.concat(chunks, size);
       if (!data.length) {
         if (opts.rejectEmpty) throw badRequest(`O arquivo “${filename}” está vazio.`);
         continue;
       }
-      let mimeType = detectMime(filename, data, opts.types);
-      if (!mimeType) {
-        if (strict) throw badRequest(`O conteúdo de “${filename}” não corresponde ao tipo do arquivo.`);
-        mimeType = OCTET_STREAM;
-      }
+      mimeType ??= typeOf(data);
+      total += data.length;
       files.push({ filename, mimeType, data });
     }
   } catch (err) {
     const code = (err as { code?: string }).code;
-    if (code === 'FST_REQ_FILE_TOO_LARGE') throw new HttpError(413, `O arquivo “${current}” passa de ${formatMb(maxBytes)}. Envie um arquivo menor.`);
+    if (code === 'FST_REQ_FILE_TOO_LARGE') throw tooLarge(current);
     if (code === 'FST_FILES_LIMIT') throw new HttpError(413, `Envie no máximo ${maxFiles === 1 ? 'um arquivo' : `${maxFiles} arquivos`} por vez.`);
     throw err;
   }
+  if (overTotal) throw new HttpError(413, `Os arquivos enviados passam de ${formatMb(maxTotal)} juntos. Envie menos arquivos por vez.`);
   return { files, fields };
 }
 
@@ -240,8 +289,18 @@ export const isInlineType = (mime: string) => INLINE_TYPES.has(mime);
  * Entrega um arquivo gravado sem permitir execução de conteúdo: tipo da lista branca,
  * `inline` só para PDF e imagens, `nosniff`, CSP `sandbox` e sem cache compartilhado
  * (`cacheControl` só muda o cache, ex.: o logo público do escritório).
+ *
+ * O conteúdo vai de preferência em stream (`ctx.files.open`), sem carregar o arquivo na
+ * memória; com o `size` do registro, a resposta leva `Content-Length`. Um .zip montado na hora
+ * (`zipStoredFiles`) vai sem `size`, em partes.
  */
-export function sendStoredFile(reply: FastifyReply, file: { filename: string; mimeType: string }, data: Buffer, inline = false, cacheControl = 'private, no-store') {
+export function sendStoredFile(
+  reply: FastifyReply,
+  file: { filename: string; mimeType: string; size?: number | null },
+  data: Buffer | Readable,
+  inline = false,
+  cacheControl = 'private, no-store',
+) {
   const type = servedMimeType(file.mimeType);
   const canInline = inline && isInlineType(type);
   reply
@@ -251,5 +310,6 @@ export function sendStoredFile(reply: FastifyReply, file: { filename: string; mi
     .header('Content-Disposition', `${canInline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(file.filename)}`);
   // o visualizador de PDF do Chrome não abre em documento com sandbox
   if (type !== 'application/pdf') reply.header('Content-Security-Policy', "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox");
+  if (!Buffer.isBuffer(data) && typeof file.size === 'number') reply.header('Content-Length', String(file.size));
   return reply.send(data);
 }

@@ -61,7 +61,8 @@ describe('migrações (SEG-4)', () => {
   });
 
   it('a migração própria dá 30 dias aos links do checklist enviados antes da validade', async () => {
-    // cópia da pasta sem a migração própria: o banco fica como estava depois da 0002
+    // cópia da pasta só com as migrações anteriores à própria: o banco fica como estava depois da 0002
+    // (as posteriores ficam de fora também: o migrador não aplica uma migração mais antiga que a última aplicada)
     const dir = mkdtempSync(join(tmpdir(), 'verifco-migracoes-'));
     const client = new PGlite();
     try {

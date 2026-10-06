@@ -36,7 +36,14 @@ const EXCLUDED = [
   'Backups anteriores e a fila interna de tarefas',
 ];
 
-const size = (bytes?: number) => (!bytes ? '—' : bytes > 1024 * 1024 ? `${(bytes / 1024 / 1024).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`);
+const size = (bytes?: number) =>
+  !bytes
+    ? '—'
+    : bytes >= 1024 ** 3
+      ? `${(bytes / 1024 ** 3).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} GB`
+      : bytes > 1024 * 1024
+        ? `${(bytes / 1024 / 1024).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} MB`
+        : `${Math.max(1, Math.round(bytes / 1024))} KB`;
 
 export function BackupPage() {
   const { can } = useAuth();

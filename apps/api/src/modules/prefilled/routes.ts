@@ -1,6 +1,5 @@
 import { and, asc, desc, eq, ilike, inArray, isNull, or, type SQL } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
-import JSZip from 'jszip';
 import { z } from 'zod';
 import { formatCpfCnpj, onlyDigits } from '@verifco/shared';
 import { customers, files, prefilledStatements, procurators } from '../../db/schema';
@@ -8,6 +7,7 @@ import { badRequest, notFound } from '../../lib/errors';
 import { audit, guard, parse, requireUser, uuidParam, yearSchema } from '../../lib/http';
 import { customerScope, getCustomerForUser } from '../../services/customers';
 import { safeZipName, sendStoredFile } from '../../services/uploads';
+import { MAX_ZIP_DOWNLOAD_BYTES, zipStoredFiles, type StoredZipEntry } from '../../storage/zip';
 import { readMultipart } from '../sync/multipart';
 import { savePrefilled } from './service';
 
@@ -81,9 +81,18 @@ export async function prefilledRoutes(app: FastifyInstance) {
     const st = await db.query.prefilledStatements.findFirst({ where: and(eq(prefilledStatements.id, id), eq(prefilledStatements.officeId, user.officeId)) });
     if (!st) throw notFound('Arquivo');
     await getCustomerForUser(app.ctx, user, st.customerId);
-    const { row, data } = await app.ctx.files.get(user.officeId, st.fileId);
-    if (!st.downloadedAt) await db.update(prefilledStatements).set({ downloadedAt: new Date() }).where(eq(prefilledStatements.id, st.id));
-    return sendStoredFile(reply, row, data);
+    const { row, stream } = await app.ctx.files.open(user.officeId, st.fileId);
+    if (!st.downloadedAt) {
+      await db
+        .update(prefilledStatements)
+        .set({ downloadedAt: new Date() })
+        .where(eq(prefilledStatements.id, st.id))
+        .catch((err) => {
+          stream.destroy();
+          throw err;
+        });
+    }
+    return sendStoredFile(reply, row, stream);
   });
 
   /**
@@ -97,28 +106,29 @@ export async function prefilledRoutes(app: FastifyInstance) {
     if (body.mode === 'new') conds.push(isNull(prefilledStatements.downloadedAt));
     if (body.customerIds?.length) conds.push(inArray(prefilledStatements.customerId, body.customerIds));
     const rows = await db
-      .select({ st: prefilledStatements, name: customers.name, cpf: customers.cpfCnpj })
+      .select({ st: prefilledStatements, name: customers.name, cpf: customers.cpfCnpj, file: { filename: files.filename, size: files.size, storageKey: files.storageKey, createdAt: files.createdAt } })
       .from(prefilledStatements)
       .innerJoin(customers, eq(customers.id, prefilledStatements.customerId))
+      .innerJoin(files, and(eq(files.id, prefilledStatements.fileId), eq(files.officeId, user.officeId)))
       .where(and(...conds))
       .orderBy(asc(customers.name), desc(prefilledStatements.fetchedAt));
     if (!rows.length) throw notFound(body.mode === 'new' ? 'Arquivo novo' : 'Arquivo');
-    const zip = new JSZip();
+    if (rows.reduce((a, r) => a + r.file.size, 0) > MAX_ZIP_DOWNLOAD_BYTES) throw badRequest('Os arquivos passam de 1 GB. Selecione menos clientes ou baixe só os novos.');
+    const entries: StoredZipEntry[] = [];
     const used = new Set<string>();
     for (const r of rows) {
-      const { row, data } = await app.ctx.files.get(user.officeId, r.st.fileId);
       const folder = safeZipName(`${formatCpfCnpj(r.cpf)} - ${r.name}`);
-      let path = `${folder}/${safeZipName(row.filename)}`;
-      for (let n = 2; used.has(path); n++) path = `${folder}/${safeZipName(row.filename).replace(/(\.[^.]*)?$/, (ext) => ` (${n})${ext}`)}`;
+      let path = `${folder}/${safeZipName(r.file.filename)}`;
+      for (let n = 2; used.has(path); n++) path = `${folder}/${safeZipName(r.file.filename).replace(/(\.[^.]*)?$/, (ext) => ` (${n})${ext}`)}`;
       used.add(path);
-      zip.file(path, data);
+      entries.push({ path, file: r.file });
     }
-    const buf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
     const pending = rows.filter((r) => !r.st.downloadedAt).map((r) => r.st.id);
     if (pending.length) await db.update(prefilledStatements).set({ downloadedAt: new Date() }).where(inArray(prefilledStatements.id, pending));
     await audit(req, 'prefilled_download', 'prefilled_statement', null, { year: body.year, mode: body.mode, count: rows.length });
     const name = `pre-preenchidas-${body.year}-${body.mode === 'new' ? 'novas' : 'todas'}.zip`;
-    return reply.header('Content-Type', 'application/zip').header('Content-Disposition', `attachment; filename="${name}"`).send(buf);
+    // montado em stream enquanto é baixado: cada arquivo é lido do armazenamento na sua vez
+    return sendStoredFile(reply, { filename: name, mimeType: 'application/zip' }, zipStoredFiles(app.ctx.files, entries));
   });
 
   /** Envio manual do arquivo da pré-preenchida (quando o escritório baixou por fora do robô). */

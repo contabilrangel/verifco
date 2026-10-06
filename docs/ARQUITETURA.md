@@ -70,12 +70,19 @@ Não há registro central para editar: criar a pasta basta.
 | `xlsx.ts` | `buildWorkbook`, `readSheet`, `parseMoneyToCents`, `parseDate` |
 | `settings.ts` | `getOfficeSettings` com os padrões aplicados |
 | `notify.ts` | notificação no sino |
-| `uploads.ts` | `readUploads` (multipart: tipo pela extensão conferida com o conteúdo, limites e mensagens em português), `sendStoredFile` (download com lista branca de tipos, `nosniff` e CSP `sandbox`), `safeFilename`, `safeZipName`, `uploadedFromBase64`, listas de tipos (`DOCUMENT_TYPES`, `SHEET_TYPES`, `PDF_TYPES`...) |
+| `uploads.ts` | `readUploads` (multipart: tipo pela extensão conferida com o conteúdo, limites por arquivo e pela soma do envio, mensagens em português; `firstFileOnly` descarta os demais arquivos sem ler), `sendStoredFile` (download com lista branca de tipos, `nosniff` e CSP `sandbox`; aceita stream, com `Content-Length` pelo `size`), `safeFilename`, `safeZipName`, `uploadedFromBase64`, listas de tipos (`DOCUMENT_TYPES`, `SHEET_TYPES`, `PDF_TYPES`...) |
 | `rate-limit.ts` | limite de tentativas no banco (vale entre instâncias): `consume`, `check`, `fail`, `allow`, `resetLimit`; `ROUTE_LIMITS` (por IP, aplicado em `app.ts`) e as regras por e-mail, CPF/link (`CUSTOMER_LOGIN_RULE`) e conta |
 
 **Arquivos**: todo upload usa `readUploads` (ou um leitor do módulo construído sobre ele, como
 `readChecklistUploads` e `readMultipart`) e todo download de arquivo gravado usa
 `sendStoredFile`. Nunca grave nem devolva o `Content-Type` informado por quem enviou.
+Downloads saem em stream: `ctx.files.open(officeId, fileId)` e `sendStoredFile(reply, row, stream)`
+(o `ctx.files.get`, com o arquivo inteiro na memória, fica para arquivos pequenos como logo e
+anexos; o `readFile` recusa acima de 2 GiB). Um .zip montado na hora para download usa
+`zipStoredFiles` (`storage/zip.ts`), que lê um arquivo de cada vez enquanto o navegador baixa,
+com teto `MAX_ZIP_DOWNLOAD_BYTES` (1 GB) conferido antes; um arquivo grande gerado no servidor
+(ex.: o backup) usa `ZipWriter` + `ctx.files.saveStream`, que grava em stream e calcula tamanho e
+sha256 no caminho. `files.size` é `bigint` (modo number).
 **Limites de tentativa**: use as funções de `rate-limit.ts` (nunca um contador em memória, que
 vale só para uma instância da API).
 
@@ -149,6 +156,15 @@ permissões e isolamento entre escritórios.
   cabeçalho para escapar do limite.
 - Ao subir, a API aplica as migrações de `apps/api/drizzle/` (padrão `DB_SYNC=migrate`); não use
   `DB_SYNC=push` em produção.
+- **Fila de tarefas fora das instâncias HTTP (recomendado em produção)**: por padrão
+  (`RUN_WORKER=true`) cada processo da API também executa a fila, e jobs pesados (backup do
+  escritório, que lê todos os arquivos; exportações e processamento da elaboração; sincronizações
+  do eCAC) disputam CPU, memória e disco com as requisições de todos os escritórios. Rode as
+  instâncias que atendem o público com `RUN_WORKER=false` e uma instância separada com
+  `RUN_WORKER=true` (o mesmo `pnpm start`, fora do balanceador), com o mesmo `DATABASE_URL` e o
+  mesmo armazenamento de arquivos (`STORAGE_DIR` numa pasta compartilhada, se estiverem em máquinas
+  diferentes: o worker grava o .zip do backup e a API o entrega). A geração de backup roda um de
+  cada vez por processo; com um só worker, um de cada vez no total.
 
 ## Web (`apps/web`)
 

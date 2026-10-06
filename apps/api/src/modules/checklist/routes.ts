@@ -203,8 +203,8 @@ export async function checklistRoutes(app: FastifyInstance) {
     const { checklistId, docId } = parse(docParam, req.params);
     await loadForUser(user, checklistId);
     const doc = await docOf(checklistId, docId);
-    const { row, data } = await ctx.files.get(user.officeId, doc.fileId);
-    return sendStoredFile(reply, row, data, (req.query as Record<string, string>).inline === '1');
+    const { row, stream } = await ctx.files.open(user.officeId, doc.fileId);
+    return sendStoredFile(reply, row, stream, (req.query as Record<string, string>).inline === '1');
   });
 
   app.delete('/checklists/:checklistId/files/:docId', { preHandler: guard('checklist_digital.upload') }, async (req) => {
