@@ -39,7 +39,7 @@ export function FavoritesNav({ favorites, onRemove }: { favorites: Favorite[] | 
 /**
  * Atalho global: sincroniza pelo SERPRO o eCAC de todos os clientes com procurador (POST /robot/sync-office).
  * Ao abrir, confere o estado da integração (GET /robot/overview, campo `serpro`): sem o SERPRO pronto,
- * não enfileira nada e aponta para Administração › Integrações.
+ * não enfileira nada e aponta para Meu escritório › Integrações.
  */
 function EcacSyncButton() {
   const { can } = useAuth();
@@ -47,7 +47,7 @@ function EcacSyncButton() {
   // só consulta ao abrir: o painel do robô monta o cliente do SERPRO, caro demais para cada página
   const overview = useApi<Pick<RobotOverview, 'serpro'>>(['robot', 'overview'], '/robot/overview', { enabled: open });
   const sync = useAction(() => api.post<{ alreadyQueued: boolean }>('/robot/sync-office'), {
-    success: (r) => (r.alreadyQueued ? 'Já existe uma sincronização do eCAC na fila. Acompanhe em Administração › Robô.' : 'Sincronização do eCAC solicitada. Acompanhe em Administração › Robô.'),
+    success: (r) => (r.alreadyQueued ? 'Já existe uma sincronização do eCAC na fila. Acompanhe em Meu escritório › Robô.' : 'Sincronização do eCAC solicitada. Acompanhe em Meu escritório › Robô.'),
     invalidate: [['robot']],
     onSuccess: () => setOpen(false),
   });
@@ -85,10 +85,10 @@ function EcacSyncButton() {
                 A sincronização usa a integração SERPRO Integra Contador, que ainda não está configurada (ou está inativa) neste escritório. Configure-a em{' '}
                 {can('integrations.manage') ? (
                   <Link to="/admin/integracoes" onClick={close}>
-                    Administração › Integrações
+                    Meu escritório › Integrações
                   </Link>
                 ) : (
-                  'Administração › Integrações (peça a quem administra o escritório)'
+                  'Meu escritório › Integrações (peça a quem administra o escritório)'
                 )}{' '}
                 e tente de novo.
               </>
@@ -99,7 +99,7 @@ function EcacSyncButton() {
         <ConfirmDialog
           open={open}
           title="Sincronizar o eCAC"
-          message="O robô consulta pelo SERPRO a procuração eletrônica e a caixa postal de todos os clientes ativos com procurador. A consulta roda em segundo plano: você recebe uma notificação ao terminar (ou se ela falhar) e o andamento aparece em Administração › Robô."
+          message="O robô consulta pelo SERPRO a procuração eletrônica e a caixa postal de todos os clientes ativos com procurador. A consulta roda em segundo plano: você recebe uma notificação ao terminar (ou se ela falhar) e o andamento aparece em Meu escritório › Robô."
           confirmLabel="Sincronizar"
           loading={sync.isPending}
           onConfirm={() => sync.mutate(undefined)}
@@ -330,7 +330,7 @@ export function PageHeader({
   description?: ReactNode;
   actions?: ReactNode;
   crumbs?: { label: string; to?: string }[];
-  /** Aba aberta da página; entra no nome do favorito ("Administração › Colaboradores"). */
+  /** Aba aberta da página; entra no nome do favorito ("Meu escritório › Colaboradores"). */
   section?: string;
 }) {
   const { me, refresh } = useAuth();

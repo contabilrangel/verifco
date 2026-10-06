@@ -84,18 +84,24 @@ const KEY = ['integrations'];
 
 export function IntegrationsPage() {
   const list = useApi<IntegrationView[]>(KEY, '/integrations');
+  const ai = useApi<{ available: boolean; provider: string | null; model: string | null; pdf: boolean; images: boolean }>(['ai-platform-status'], '/ai/platform-status');
   if (list.isLoading) return <Loading />;
   if (list.error || !list.data) return <Alert tone="danger" title="Não foi possível carregar as integrações." />;
   const byProvider = new Map(list.data.map((v) => [v.provider, v]));
   const categories = Object.keys(INTEGRATION_CATEGORIES) as (keyof typeof INTEGRATION_CATEGORIES)[];
   return (
     <div className="vf-stack" style={{ '--gap': '32px' } as CSSProperties}>
+      <Card title="Inteligência artificial do escritório">
+        <p>{ai.data?.available ? `Disponível: ${ai.data.provider} · ${ai.data.model}` : 'Aguardando configuração pela equipe do Verifco.'}</p>
+        <p className="vf-muted">Os assistentes usam a IA disponibilizada pela plataforma. As chaves e a escolha dos serviços são administradas pelo proprietário do sistema em um painel separado.</p>
+        {ai.error && <Alert tone="warning" title="Não foi possível consultar a disponibilidade da IA." />}
+      </Card>
       <Alert tone="primary" title="Credenciais protegidas">
         Chaves, tokens e senhas ficam cifrados no servidor e nunca voltam ao navegador: depois de salvos, aparecem só os 4 últimos caracteres. Cada escritório
         configura as próprias contas.
       </Alert>
       {categories.map((cat) => {
-        const defs = INTEGRATION_CATALOG.filter((d) => d.category === cat);
+        const defs = INTEGRATION_CATALOG.filter((def) => def.key !== 'ai').filter((d) => d.category === cat);
         if (!defs.length) return null;
         return (
           <section key={cat} className="vf-stack" style={{ '--gap': '12px' } as CSSProperties} aria-labelledby={`int-cat-${cat}`}>

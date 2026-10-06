@@ -20,7 +20,7 @@ export interface ProviderDeps {
  * (Administração › Integrações), então mudanças valem sem reiniciar a API:
  * - e-mail: SMTP do escritório ou `SMTP_URL` da plataforma;
  * - WhatsApp: Evolution API ou WhatsApp Cloud API (Meta), conforme o modo;
- * - IA: Anthropic com a chave do escritório ou `ANTHROPIC_API_KEY`.
+ * - IA: conexão global escolhida pelo proprietário (ou `ANTHROPIC_API_KEY` legado).
  */
 export function createProviders(ctx: AppContext, deps: ProviderDeps = {}): Providers {
   const providers: Providers = {

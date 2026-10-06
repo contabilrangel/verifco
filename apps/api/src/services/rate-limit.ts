@@ -98,6 +98,7 @@ const FIFTEEN_MIN = 15 * 60;
  * Chave: `MÉTODO /api/rota`.
  */
 export const ROUTE_LIMITS: Record<string, RouteLimit> = {
+  'POST /api/platform/login': { group: 'platform-login', count: 'all', max: 15, windowSec: FIFTEEN_MIN },
   'POST /api/auth/login': { group: 'login', count: [401], max: 20, windowSec: FIFTEEN_MIN },
   'POST /api/auth/register': { group: 'register', count: 'all', max: 10, windowSec: 60 * 60 },
   'POST /api/auth/forgot-password': { group: 'forgot', count: 'all', max: 10, windowSec: FIFTEEN_MIN },

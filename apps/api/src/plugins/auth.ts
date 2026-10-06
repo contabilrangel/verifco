@@ -2,11 +2,11 @@ import fp from 'fastify-plugin';
 import jwt from '@fastify/jwt';
 import { eq } from 'drizzle-orm';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { customers, roles, users } from '../db/schema';
+import { customers, roles, users, platformUsers } from '../db/schema';
 
 export type UserToken = { typ: 'user'; sub: string; oid: string; tv: number };
 export type CustomerToken = { typ: 'customer'; cid: string; oid: string; scope: string };
-type Token = UserToken | CustomerToken;
+type Token = UserToken | CustomerToken | { typ: 'platform'; sub: string; tv: number };
 
 /**
  * Lê o token do cabeçalho `Authorization: Bearer` e carrega o usuário com as permissões
@@ -19,6 +19,7 @@ export const authPlugin = fp(async (app: FastifyInstance) => {
 
   app.decorateRequest('auth', null);
   app.decorateRequest('customerAuth', null);
+  app.decorateRequest('platformAuth', null);
 
   app.addHook('onRequest', async (req: FastifyRequest) => {
     const header = req.headers.authorization;
@@ -31,7 +32,11 @@ export const authPlugin = fp(async (app: FastifyInstance) => {
       return;
     }
     const { db } = app.ctx;
-    if (payload.typ === 'user') {
+    if (payload.typ === 'platform') {
+      const user = await db.query.platformUsers.findFirst({ where: eq(platformUsers.id, payload.sub) });
+      if (!user?.isActive || user.tokenVersion !== payload.tv) return;
+      req.platformAuth = { id: user.id, name: user.name, email: user.email, role: user.role };
+    } else if (payload.typ === 'user') {
       const user = await db.query.users.findFirst({ where: eq(users.id, payload.sub) });
       if (!user || !user.isActive || user.officeId !== payload.oid || user.tokenVersion !== payload.tv) return;
       const role = user.roleId ? await db.query.roles.findFirst({ where: eq(roles.id, user.roleId) }) : null;

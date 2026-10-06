@@ -14,7 +14,7 @@ import {
 import type { AppContext } from '../../context';
 import { integrations, procurators } from '../../db/schema';
 import { randomToken } from '../../lib/crypto';
-import { badRequest, notFound } from '../../lib/errors';
+import { badRequest, notFound, forbidden } from '../../lib/errors';
 import { audit, guard, parse, requireUser } from '../../lib/http';
 import { SMTP_ALLOWED_PORTS } from '../../integrations/email';
 import { IntegrationError, errorMessage } from '../../integrations/http';
@@ -134,6 +134,7 @@ export async function integrationRoutes(app: FastifyInstance) {
   const manage = { preHandler: guard('integrations.manage') };
 
   const defOf = (provider: string) => {
+    if (provider === 'ai') throw forbidden('A IA � administrada pelo propriet�rio do sistema no painel global.');
     const def = getIntegrationDef(provider);
     if (!def) throw notFound('Integração');
     return def;
@@ -142,7 +143,7 @@ export async function integrationRoutes(app: FastifyInstance) {
   app.get('/integrations', manage, async (req) => {
     const user = requireUser(req);
     const rows = await db.query.integrations.findMany({ where: eq(integrations.officeId, user.officeId) });
-    return INTEGRATION_CATALOG.map((def) => view(ctx, def, rows.find((r) => r.provider === def.key) ?? null));
+    return INTEGRATION_CATALOG.filter((def) => def.key !== 'ai').map((def) => view(ctx, def, rows.find((r) => r.provider === def.key) ?? null));
   });
 
   /** Certificados A1 cadastrados nos procuradores (para a autenticação do SERPRO). */

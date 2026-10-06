@@ -4,6 +4,7 @@ import { useAuth } from '../lib/auth';
 import { ForgotPasswordPage, LoginPage, RegisterPage, ResetPasswordPage } from '../modules/auth/AuthPages';
 import { Shell } from './Shell';
 import { APP_ROUTES, PUBLIC_ROUTES } from './routes';
+import { PlatformPanel } from '../modules/platform/PlatformPanel';
 
 function RequireAuth() {
   const { me, loading } = useAuth();
@@ -20,6 +21,7 @@ function GuestOnly() {
 }
 
 const router = createBrowserRouter([
+  { path: '/sistema/*', element: <PlatformPanel /> },
   {
     element: <GuestOnly />,
     children: [

@@ -90,7 +90,7 @@ export const NAV: NavGroup[] = [
   { id: 'pre-preenchidas', label: 'Pré-preenchidas', icon: FileStack, to: '/pre-preenchidas', perms: ['prefilled.download'] },
   {
     id: 'admin',
-    label: 'Administração',
+    label: 'Meu escritório',
     icon: Building2,
     to: '/admin',
     // calculada das abas que os módulos registram; getter porque os módulos importam o Shell (que importa

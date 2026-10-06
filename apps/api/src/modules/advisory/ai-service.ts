@@ -65,7 +65,7 @@ export function aiError(err: unknown): HttpError {
   const e = err as { message?: string; code?: string; statusCode?: number; status?: number };
   const message = e?.message ?? String(err);
   if (e?.code === 'AI_NOT_CONFIGURED' || /n[aã]o (est[aá] )?configurad|not configured|api[ _-]?key|chave da api|credencia/i.test(message)) {
-    return new HttpError(503, 'A inteligência artificial não está configurada para o escritório. Peça ao administrador para configurá-la em Administração › Integrações.');
+    return new HttpError(503, 'A inteligência artificial não está configurada na plataforma. Peça ao suporte do Verifco para disponibilizá-la.');
   }
   return new HttpError(502, `A IA não conseguiu responder agora. Tente novamente em instantes. (${message.slice(0, 200)})`);
 }

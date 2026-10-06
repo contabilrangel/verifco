@@ -124,7 +124,7 @@ export function CopilotTab() {
               Habilitar para este cliente
             </Button>
           ) : (
-            <span className="vf-text-sm vf-muted">Peça a um administrador do escritório para habilitar o cliente em Administração › Copiloto Financeiro.</span>
+            <span className="vf-text-sm vf-muted">Peça a um administrador do escritório para habilitar o cliente em Meu escritório › Copiloto Financeiro.</span>
           )}
         </div>
       </Card>
