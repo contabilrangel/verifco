@@ -2,7 +2,7 @@
 import { and, desc, eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { BUDGET_CATEGORIES, computeBudgetAmount, escapeHtml, todayIso, type BudgetCategory } from '@verifco/shared';
+import { BUDGET_CATEGORIES, INTEGRATION_PROVIDERS, computeBudgetAmount, escapeHtml, todayIso, type BudgetCategory } from '@verifco/shared';
 import { budgets, declarations, installments, priceTables } from '../../db/schema';
 import { badRequest, conflict, forbidden, notFound } from '../../lib/errors';
 import { audit, can, centsSchema, dateStr, guard, optionalText, parse, requireUser, uuidParam, yearSchema } from '../../lib/http';
@@ -31,7 +31,9 @@ import {
   serializeBudget,
   serializeBudgets,
   userName,
+  type BillingRow,
   type Channel,
+  type InstallmentRow,
 } from './service';
 
 const categories = Object.keys(BUDGET_CATEGORIES) as [BudgetCategory, ...BudgetCategory[]];
@@ -233,6 +235,27 @@ export async function budgetRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ parcelas
+  /**
+   * Parcela com cobrança emitida no Asaas/Omie (`externalId`) e a integração ativa: o Verifco não
+   * altera, baixa nem estorna a cobrança no provedor, então trocar vencimento ou valor, dar baixa
+   * manual ou desfazer o recebimento só aqui deixaria a cobrança do provedor de pé (o cliente
+   * pagaria em dobro ou o boleto ficaria com outro vencimento). Essas mudanças são feitas no
+   * provedor, e o aviso do Asaas (webhook) ou a consulta periódica do Omie atualizam a parcela;
+   * esses caminhos gravam direto no banco e não passam por aqui. Com a integração desativada ou
+   * removida, o Verifco deixa de acompanhar a cobrança e o controle volta a ser manual (o escritório
+   * não fica preso). Parcela ainda sem cobrança (emissão pendente ou que falhou) segue livre.
+   */
+  const assertNotIssuedAtProvider = async (inst: InstallmentRow, billing: BillingRow, action: string) => {
+    if (!inst.externalId || (billing.provider !== 'asaas' && billing.provider !== 'omie')) return;
+    if (!(await billingProvidersReady(ctx, billing.officeId))[billing.provider]) return;
+    const name = INTEGRATION_PROVIDERS[billing.provider];
+    const how =
+      billing.provider === 'asaas'
+        ? 'No Asaas, altere a cobrança, use "Confirmar recebimento em dinheiro" ou estorne por lá; o Verifco atualiza a parcela pelo aviso (webhook) do Asaas.'
+        : 'No Omie, altere, baixe ou cancele a conta a receber; o Verifco confere os pagamentos do Omie periodicamente.';
+    throw conflict(`Esta parcela tem cobrança emitida no ${name}: ${action} pelo ${name}, para o cliente não ser cobrado em dobro. ${how}`);
+  };
+
   app.put('/finance/installments/:id', { preHandler: guard('billing.edit') }, async (req) => {
     const user = requireUser(req);
     const { id } = parse(uuidParam, req.params);
@@ -240,9 +263,9 @@ export async function budgetRoutes(app: FastifyInstance) {
     const { inst, billing } = await getInstallmentForUser(ctx, user, id);
     if (inst.status === 'paid') throw conflict('Parcela paga não pode ser alterada. Desfaça o recebimento antes.');
     if (inst.status === 'canceled') throw conflict('Parcela cancelada não pode ser alterada.');
-    if (inst.externalId && body.amountCents !== undefined && body.amountCents !== inst.amountCents) {
-      throw conflict('Esta parcela já tem cobrança emitida no provedor. Altere o valor por lá.');
-    }
+    const changesDue = body.dueDate !== undefined && body.dueDate !== inst.dueDate;
+    const changesAmount = body.amountCents !== undefined && body.amountCents !== inst.amountCents;
+    if (changesDue || changesAmount) await assertNotIssuedAtProvider(inst, billing, 'o vencimento e o valor só podem ser alterados');
     const [row] = await db
       .update(installments)
       .set({ ...(body.dueDate ? { dueDate: body.dueDate } : {}), ...(body.amountCents !== undefined ? { amountCents: body.amountCents } : {}) })
@@ -257,9 +280,10 @@ export async function budgetRoutes(app: FastifyInstance) {
     const user = requireUser(req);
     const { id } = parse(uuidParam, req.params);
     const body = parse(z.object({ paidAt: dateStr.optional(), paidAmountCents: centsSchema.refine((v) => v > 0, 'Informe o valor recebido').optional() }), req.body);
-    const { inst } = await getInstallmentForUser(ctx, user, id);
+    const { inst, billing } = await getInstallmentForUser(ctx, user, id);
     if (inst.status === 'paid') throw conflict('Esta parcela já está paga.');
     if (inst.status === 'canceled') throw conflict('Parcela cancelada não pode ser recebida.');
+    await assertNotIssuedAtProvider(inst, billing, 'o recebimento só pode ser registrado');
     const paidAt = body.paidAt ?? todayIso();
     if (paidAt > todayIso()) throw badRequest('A data do recebimento não pode estar no futuro.');
     await db
@@ -274,9 +298,10 @@ export async function budgetRoutes(app: FastifyInstance) {
   app.post('/finance/installments/:id/reopen', { preHandler: guard('billing.receive') }, async (req) => {
     const user = requireUser(req);
     const { id } = parse(uuidParam, req.params);
-    const { inst } = await getInstallmentForUser(ctx, user, id);
+    const { inst, billing } = await getInstallmentForUser(ctx, user, id);
     if (inst.status !== 'paid') throw conflict('A parcela não está paga.');
     if (inst.receiptNumber) throw conflict('Já existe recibo emitido para esta parcela.');
+    await assertNotIssuedAtProvider(inst, billing, 'o recebimento só pode ser desfeito');
     await db.update(installments).set({ status: 'open', paidAt: null, paidAmountCents: null }).where(eq(installments.id, inst.id));
     await audit(req, 'reopen', 'installment', inst.id);
     return { ok: true };

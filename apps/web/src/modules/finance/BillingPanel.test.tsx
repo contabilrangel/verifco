@@ -89,3 +89,35 @@ describe('BillingPanel: emissão da cobrança integrada (DAD-4, INT-9)', () => {
     expect(screen.queryByText(/emitida|emitir/i)).toBeNull();
   });
 });
+
+describe('BillingPanel: parcela com cobrança emitida no provedor (INT-10)', () => {
+  const issued = { ...installment, externalId: 'pay_1', externalUrl: 'https://pagar.exemplo/1' };
+  const paid = { ...installment, id: 'i2', number: 2, status: 'paid' as const, paidAt: '2030-01-05', paidAmountCents: 30_000, externalId: 'pay_2', externalUrl: null };
+  const withInstallments = (ready: boolean): Billing => ({ ...billing(sync({ status: 'done', integrationReady: ready })), installments: [issued, paid] });
+  const menuItem = (n: number, name: RegExp) => {
+    fireEvent.click(screen.getByRole('button', { name: `Mais ações da parcela ${n}` }));
+    return screen.getByRole('menuitem', { name }) as HTMLButtonElement;
+  };
+
+  it('com a integração ativa: baixa, alteração e estorno ficam desabilitados e o painel explica como fazer no provedor', () => {
+    renderPanel(withInstallments(true), ['billing.edit', 'billing.receive']);
+    expect(screen.getByText('Parcelas com cobrança emitida no Asaas')).toBeTruthy();
+    expect(screen.getByText(/confirmar recebimento em dinheiro ou estornar, use a cobrança no Asaas/)).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Receber' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(menuItem(1, /Alterar vencimento ou valor \(pelo provedor\)/).disabled).toBe(true);
+    expect(menuItem(2, /Desfazer recebimento \(pelo provedor\)/).disabled).toBe(true);
+  });
+
+  it('com a integração desativada: o controle volta a ser manual, com o aviso de cancelar a cobrança no provedor', async () => {
+    renderPanel(withInstallments(false), ['billing.edit', 'billing.receive']);
+    expect(screen.queryByText('Parcelas com cobrança emitida no Asaas')).toBeNull();
+    const receive = screen.getByRole('button', { name: 'Receber' }) as HTMLButtonElement;
+    expect(receive.disabled).toBe(false);
+    fireEvent.click(receive);
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText(/a integração está desativada: a mudança vale só no Verifco/)).toBeTruthy();
+    cleanup();
+    renderPanel(withInstallments(false), ['billing.edit', 'billing.receive']);
+    expect(menuItem(1, /^Alterar vencimento ou valor$/).disabled).toBe(false);
+  });
+});

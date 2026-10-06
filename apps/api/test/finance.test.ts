@@ -291,6 +291,8 @@ describe('orçamentos', () => {
     const list = await api.get(`/api/finance/customers/${customerId}/budgets?year=2026`);
     expect(list.body.data[0].billing.installments[0].externalUrl).toBe('https://pagar.exemplo/1');
     const inst = list.body.data[0].billing.installments[0];
+    // com a integração ativa, o valor da cobrança emitida só muda no provedor (INT-10)
+    await api.put('/api/integrations/asaas', { enabled: true, config: { environment: 'sandbox' }, secrets: { apiKey: '$aact_hmlg_abc123456789' } });
     expect((await api.put(`/api/finance/installments/${inst.id}`, { amountCents: 1 })).status).toBe(409);
   });
 });
