@@ -7,11 +7,13 @@ import {
   ECAC_RECORD_KIND_LIST,
   GOVBR_LEVELS,
   PROCURATION_STATUS,
+  SITFIS_STATUS,
   TAXATION_TYPES,
   addDaysIso,
   todayIso,
   type EcacRecordKind,
   type EcacRecordSource,
+  type SitfisStatus,
 } from '@verifco/shared';
 import type { AppContext } from '../../context';
 import { customers, darfs, declarations, ecacRecords, offices, procurators } from '../../db/schema';
@@ -226,6 +228,23 @@ export async function notifyEcacChanges(ctx: AppContext, input: { record: EcacRe
 const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : null);
 const strList = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
 
+/**
+ * Leitura gravada do relatório de situação fiscal: só os campos no formato esperado. Relatório sem
+ * leitura (gravado antes dela ou com `status` fora da lista) conta como "não interpretado"; o status
+ * simplificado lançado à mão não tem essa leitura (`null`).
+ */
+function sitfisView(r: EcacRecordRow): { status: SitfisStatus | null; certificate: { type: string; code: string | null; issuedAt: string | null; validUntil: string | null } | null } {
+  if (r.kind !== 'fiscal_situation') return { status: null, certificate: null };
+  const status = keyOf(SITFIS_STATUS, r.data.status) ?? 'unknown';
+  const c = r.data.certificate;
+  const cert = c && typeof c === 'object' && !Array.isArray(c) ? (c as Record<string, unknown>) : null;
+  const type = cert ? str(cert.type) : null;
+  return {
+    status,
+    certificate: cert && type ? { type, code: str(cert.code), issuedAt: normalizeDate(cert.issuedAt), validUntil: normalizeDate(cert.validUntil) } : null,
+  };
+}
+
 /** Monta os painéis da aba eCAC do cliente. */
 export async function buildEcacPanel(ctx: AppContext, customer: CustomerRow) {
   const { db } = ctx;
@@ -289,7 +308,14 @@ export async function buildEcacPanel(ctx: AppContext, customer: CustomerRow) {
       latest: lastCnd ? { ...base(lastCnd), issuedAt: normalizeDate(lastCnd.data.issuedAt), validUntil: normalizeDate(lastCnd.data.validUntil) } : null,
     },
     simplified: simplified
-      ? { ...base(simplified), kind: simplified.kind, situation: str(simplified.data.situation), message: str(simplified.data.message), pendencies: strList(simplified.data.pendencies) }
+      ? {
+          ...base(simplified),
+          kind: simplified.kind,
+          situation: str(simplified.data.situation),
+          message: str(simplified.data.message),
+          pendencies: strList(simplified.data.pendencies),
+          ...sitfisView(simplified),
+        }
       : null,
     // a caixa postal chega em lotes de até 50 pelo SERPRO: as mais recentes primeiro
     mailbox: of('mailbox_message')

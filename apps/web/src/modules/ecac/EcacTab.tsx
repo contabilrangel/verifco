@@ -8,8 +8,10 @@ import {
   DARF_STATUS,
   ECAC_DECLARATION_STATUS,
   GOVBR_LEVELS,
+  SITFIS_STATUS,
   TAXATION_TYPES,
   optionsOf,
+  todayIso,
 } from '@verifco/shared';
 import { Alert, Button, Card, Checkbox, ConfirmDialog, DropFile, EmptyState, IconButton, Input, Loading, Modal, Select, Tabs, Tag, Textarea } from '../../ds';
 import { api } from '../../lib/api';
@@ -371,6 +373,8 @@ function CndPanel({ d }: { d: EcacPanel }) {
   );
 }
 
+const SITFIS_TONE = { regular: 'success', pending: 'warning', unknown: 'neutral' } as const;
+
 function SimplifiedPanel({ d }: { d: EcacPanel }) {
   const s = d.simplified;
   if (!s) {
@@ -381,12 +385,14 @@ function SimplifiedPanel({ d }: { d: EcacPanel }) {
             <li>Associe um procurador ao cliente (aba Identificação).</li>
             <li>Confirme a procuração eletrônica no eCAC, em nome do cliente.</li>
             <li>Configure e ative o SERPRO em Administração › Integrações.</li>
-            <li>A sincronização diária emite o relatório a cada 30 dias; “Solicitar sincronização” acima emite na hora. O PDF aparece nesta aba.</li>
+            <li>A sincronização diária emite o relatório a cada 30 dias; “Solicitar sincronização” acima emite na hora. O PDF e a leitura dele aparecem nesta aba.</li>
           </ol>
         </Alert>
       </div>
     );
   }
+  const cert = s.certificate;
+  const certValid = Boolean(cert?.validUntil && cert.validUntil >= todayIso());
   return (
     <div className="vf-stack" style={{ padding: 24 }}>
       <dl className="vf-ecac-facts">
@@ -398,7 +404,13 @@ function SimplifiedPanel({ d }: { d: EcacPanel }) {
           </span>
         </dd>
         <dt>Situação</dt>
-        <dd>{s.situation ?? (s.fileId ? 'Veja as pendências no PDF' : '—')}</dd>
+        <dd>
+          {s.status ? (
+            <Tag tone={SITFIS_TONE[s.status]}>{SITFIS_STATUS[s.status]}</Tag>
+          ) : (
+            (s.situation ?? (s.fileId ? 'Veja as pendências no PDF' : '—'))
+          )}
+        </dd>
         <dt>Atualizado em</dt>
         <dd>
           {formatDateTime(s.fetchedAt)} <span className="vf-muted">· {sourceLabel(s.source)}</span>
@@ -407,6 +419,19 @@ function SimplifiedPanel({ d }: { d: EcacPanel }) {
           <>
             <dt>Mensagem</dt>
             <dd>{s.message}</dd>
+          </>
+        )}
+        {cert && (
+          <>
+            <dt>Certidão no relatório</dt>
+            <dd>
+              <span>Certidão {cert.type}</span>
+              {cert.code && <span className="vf-muted vf-mono">· {cert.code}</span>}
+              {cert.issuedAt && <span className="vf-muted">· emitida em {formatDate(cert.issuedAt)}</span>}
+              {cert.validUntil && <span className="vf-muted">· válida até {formatDate(cert.validUntil)}</span>}
+              {cert.validUntil && !certValid && <Tag tone="danger">Vencida</Tag>}
+              {!cert.validUntil && <span className="vf-muted">· datas não informadas no relatório</span>}
+            </dd>
           </>
         )}
       </dl>
@@ -418,6 +443,9 @@ function SimplifiedPanel({ d }: { d: EcacPanel }) {
             ))}
           </ul>
         </Alert>
+      )}
+      {s.kind === 'fiscal_situation' && s.fileId && (
+        <span className="vf-text-xs vf-muted">A leitura acima é automática e serve de resumo; o PDF do relatório, emitido pela Receita Federal, é o documento que vale.</span>
       )}
     </div>
   );

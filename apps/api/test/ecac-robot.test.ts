@@ -11,6 +11,7 @@ import type { Providers } from '../src/integrations/providers';
 import { clearSerproTokens } from '../src/integrations/serpro';
 import { DAILY_TRIGGER, nextDailyRun, registerJobs, robotTiming, scheduleEcacDailySync } from '../src/modules/ecac/jobs';
 import { VALID_CPFS, createEmployee, createTestEnv, registerOffice, type TestEnv } from './helpers';
+import { sitfisPendingPdf } from './sitfis-helpers';
 
 let env: TestEnv;
 const realFetch = globalThis.fetch;
@@ -172,12 +173,14 @@ describe('sincronização pelo SERPRO (COB-1)', () => {
     expect(report[0]).toMatchObject({ tipo: 'Emitir', dados: { protocoloRelatorio: 'PROTO+abc/123==' } });
     const fiscal = await env.ctx.db.select().from(ecacRecords).where(and(eq(ecacRecords.customerId, customerId), eq(ecacRecords.kind, 'fiscal_situation')));
     expect(fiscal).toHaveLength(1);
-    expect(fiscal[0]).toMatchObject({ source: 'serpro', data: expect.objectContaining({ issuedAt: today }) });
+    // PDF sem texto legível: guardado mesmo assim, com a situação "não interpretada"
+    expect(fiscal[0]).toMatchObject({ source: 'serpro', data: expect.objectContaining({ issuedAt: today, status: 'unknown', situation: null, pendencies: [], certificate: null }) });
     const stored = await env.ctx.files.get(office.officeId, fiscal[0].fileId!);
     expect(stored.data.equals(pdf)).toBe(true);
     expect(stored.row.mimeType).toBe('application/pdf');
     const panel = (await office.api.get(`/api/customers/${customerId}/ecac`)).body;
-    expect(panel.simplified).toMatchObject({ kind: 'fiscal_situation', fileId: fiscal[0].fileId });
+    expect(panel.simplified).toMatchObject({ kind: 'fiscal_situation', fileId: fiscal[0].fileId, status: 'unknown', certificate: null });
+    expect(panel.simplified.message).toMatch(/não foi possível ler o texto do PDF/);
     expect(panel.mailbox[0].subject).toBe('[IRPF] Declaração do exercício 2026 processada');
 
     // pagamentos: receita 0211 no período das quotas; paga a de mesmo vencimento e valor (principal ou total)
@@ -202,7 +205,7 @@ describe('sincronização pelo SERPRO (COB-1)', () => {
     const child = await env.ctx.db.query.jobs.findFirst({ where: and(eq(jobs.type, 'ecac.sync'), eq(jobs.officeId, office.officeId)) });
     expect(child!.status).toBe('done');
     expect(child!.result!.steps).toEqual(
-      expect.arrayContaining(['mensagens da caixa postal: 2 consultada(s), 2 nova(s)', 'situação fiscal: relatório emitido', 'pagamentos do DARF: 2 de 3 quota(s) em aberto encontrada(s) paga(s)']),
+      expect.arrayContaining(['mensagens da caixa postal: 2 consultada(s), 2 nova(s)', 'situação fiscal: relatório emitido (não interpretado)', 'pagamentos do DARF: 2 de 3 quota(s) em aberto encontrada(s) paga(s)']),
     );
     const overview = (await office.api.get('/api/robot/overview')).body;
     expect(overview.lastOfficeSync).toMatchObject({ status: 'done', progress: 100, result: expect.objectContaining({ total: 1, ok: 1, failed: 0 }) });
@@ -258,6 +261,55 @@ describe('sincronização pelo SERPRO (COB-1)', () => {
     expect(gateway.calls.map((c) => c.servico)).toEqual(['OBTERPROCURACAO41', 'INNOVAMSG63']);
     const last = (await office.api.get(`/api/customers/${customerId}/ecac`)).body.lastSync;
     expect(last.result.steps).toContain('demais consultas não feitas: a procuração eletrônica venceu');
+  });
+});
+
+describe('leitura do relatório de situação fiscal (SITFIS)', () => {
+  it('grava a situação, as pendências e a certidão lidas do PDF e a API devolve ao lado do relatório', async () => {
+    const office = await officeWithSerpro();
+    const customerId = await office.addCustomer('Contribuinte Exemplo', VALID_CPFS[6]);
+    const report = await sitfisPendingPdf(VALID_CPFS[6]);
+    env.providers.fetch = serproGateway((c) => {
+      if (c.servico === 'OBTERPROCURACAO41') return procurationOk;
+      if (c.servico === 'INNOVAMSG63') return { dados: { codigo: '00', conteudo: [{ indicadorMensagensNovas: '0' }] } };
+      if (c.servico === 'SOLICITARPROTOCOLO91') return { dados: { protocoloRelatorio: 'PROTO-1' } };
+      if (c.servico === 'RELATORIOSITFIS92') return { dados: [{ pdf: report.toString('base64') }] };
+      return undefined;
+    }).fn;
+
+    expect((await office.api.post(`/api/customers/${customerId}/ecac/sync`)).status).toBe(202);
+    await env.ctx.jobs.drain();
+
+    const [row] = await env.ctx.db.select().from(ecacRecords).where(and(eq(ecacRecords.customerId, customerId), eq(ecacRecords.kind, 'fiscal_situation')));
+    expect(row.data).toMatchObject({
+      status: 'pending',
+      situation: 'Com pendências',
+      pendencies: ['Pendência - Débito (SIEF)', 'Pendência – Omissão de Declaração'],
+      certificate: { type: 'Positiva com Efeitos de Negativa', code: '9F8E.7D6C.5B4A.3210', issuedAt: '2026-01-10', validUntil: '2026-07-09' },
+    });
+    // o PDF continua sendo a fonte da verdade
+    expect((await env.ctx.files.get(office.officeId, row.fileId!)).data.equals(report)).toBe(true);
+
+    const panel = (await office.api.get(`/api/customers/${customerId}/ecac`)).body;
+    expect(panel.simplified).toMatchObject({
+      kind: 'fiscal_situation',
+      fileId: row.fileId,
+      status: 'pending',
+      situation: 'Com pendências',
+      pendencies: ['Pendência - Débito (SIEF)', 'Pendência – Omissão de Declaração'],
+      certificate: { type: 'Positiva com Efeitos de Negativa', code: '9F8E.7D6C.5B4A.3210', issuedAt: '2026-01-10', validUntil: '2026-07-09' },
+    });
+    expect(panel.lastSync.result.steps).toContain('situação fiscal: relatório emitido (com pendências: 2)');
+    // a leitura não mexe na CND do cadastro (a certidão continua sendo lançada pelo escritório)
+    expect(panel.cnd.status).toBe('not_requested');
+  });
+
+  it('dado gravado fora do formato não quebra a aba: vira "não interpretado"', async () => {
+    const office = await officeWithSerpro();
+    const customerId = await office.addCustomer('Contribuinte Exemplo', VALID_CPFS[7]);
+    await office.api.post(`/api/customers/${customerId}/ecac/records`, { kind: 'fiscal_situation', data: { status: 'qualquer', certificate: ['x'], pendencies: 'x' } });
+    const panel = (await office.api.get(`/api/customers/${customerId}/ecac`)).body;
+    expect(panel.simplified).toMatchObject({ kind: 'fiscal_situation', status: 'unknown', certificate: null, pendencies: [] });
   });
 });
 

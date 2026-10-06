@@ -1,3 +1,5 @@
+import type { SitfisStatus } from '@verifco/shared';
+
 export interface JobView {
   id: string;
   type: string;
@@ -38,7 +40,17 @@ export interface EcacPanel {
     autoGenerateCnd: boolean;
     latest: (RecordBase & { issuedAt: string | null; validUntil: string | null }) | null;
   };
-  simplified: (RecordBase & { kind: string; situation: string | null; message: string | null; pendencies: string[] }) | null;
+  simplified:
+    | (RecordBase & {
+        kind: string;
+        situation: string | null;
+        message: string | null;
+        pendencies: string[];
+        /** Leitura do relatório SITFIS (`null` no status simplificado lançado à mão). */
+        status: SitfisStatus | null;
+        certificate: { type: string; code: string | null; issuedAt: string | null; validUntil: string | null } | null;
+      })
+    | null;
   mailbox: (RecordBase & { subject: string | null; receivedAt: string | null; read: boolean })[];
   others: (RecordBase & { kind: string; data: Record<string, unknown> })[];
   lastSync: JobView | null;
