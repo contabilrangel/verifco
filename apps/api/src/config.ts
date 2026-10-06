@@ -59,6 +59,11 @@ const schema = z.object({
     .string()
     .default('true')
     .transform((v) => v !== 'false'),
+  /**
+   * Quantas tarefas da fila cada instância com RUN_WORKER executa ao mesmo tempo. As longas (backup,
+   * eCAC do escritório, elaboração, Radar) nunca ocupam a última vaga, que fica para envios e cobranças.
+   */
+  JOB_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(4),
 });
 
 type Parsed = z.infer<typeof schema>;

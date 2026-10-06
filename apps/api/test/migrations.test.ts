@@ -68,7 +68,8 @@ describe('migrações (SEG-4)', () => {
       cpSync(MIGRATIONS, dir, { recursive: true });
       const journal = readJournal(MIGRATIONS);
       const journalPath = join(dir, 'meta/_journal.json');
-      writeFileSync(journalPath, JSON.stringify({ ...journal, entries: journal.entries.filter((e) => e.tag !== CUSTOM) }));
+      // corta antes da própria (não só a remove): o migrator pula migração mais antiga que a última aplicada
+      writeFileSync(journalPath, JSON.stringify({ ...journal, entries: journal.entries.slice(0, journal.entries.findIndex((e) => e.tag === CUSTOM)) }));
       const db = drizzle(client, { schema });
       await migrate(db, { migrationsFolder: dir });
 

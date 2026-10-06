@@ -23,6 +23,7 @@ import { scheduleOmiePoll, type OmieConfig } from '../../integrations/omie';
 import { clearSerproTokens } from '../../integrations/serpro';
 import { decryptSecrets, getIntegrationRow, maskSecret, type IntegrationRow } from '../../integrations/store';
 import { testIntegration } from '../../integrations/testers';
+import { requeuePendingBillings } from './jobs';
 
 const PROVIDER_KEYS = Object.keys(INTEGRATION_PROVIDERS) as [IntegrationProvider, ...IntegrationProvider[]];
 const providerParam = z.object({ provider: z.enum(PROVIDER_KEYS) });
@@ -202,7 +203,9 @@ export async function integrationRoutes(app: FastifyInstance) {
 
     if (provider === 'serpro' && credentialsChanged) clearSerproTokens(`${user.officeId}:`);
     if (provider === 'omie' && enabled) await scheduleOmiePoll(ctx, user.officeId, effective as Partial<OmieConfig>, 60_000);
-    await audit(req, 'integration.update', 'integration', saved.id, { provider, enabled, changedConfig, changedSecrets });
+    // integração de cobrança pronta: emite o que ficou pendente (aprovado antes de configurar, falha de credencial...)
+    const requeuedBillings = enabled && status !== 'not_configured' ? await requeuePendingBillings(ctx, user.officeId, provider, user.userId) : 0;
+    await audit(req, 'integration.update', 'integration', saved.id, { provider, enabled, changedConfig, changedSecrets, ...(requeuedBillings ? { requeuedBillings } : {}) });
     return view(ctx, def, saved);
   });
 

@@ -1,6 +1,7 @@
 import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import type { Db } from '../../db/client';
 import { jobs } from '../../db/schema';
+import { activeJob } from '../../jobs/queue';
 
 export type JobRow = typeof jobs.$inferSelect;
 
@@ -28,9 +29,12 @@ export async function latestJob(db: Db, officeId: string, types: string[], paylo
   return row ?? null;
 }
 
-/** Job ainda pendente (na fila ou executando) com o mesmo tipo e payload. */
+/**
+ * Job ainda pendente (na fila ou executando) com o mesmo tipo e payload. O de um processo que caiu
+ * só conta enquanto a fila ainda vai retomá-lo (lease vigente ou tentativas sobrando).
+ */
 export async function pendingJob(db: Db, officeId: string, type: string, payload: Record<string, string>) {
-  const conds: SQL[] = [eq(jobs.officeId, officeId), eq(jobs.type, type), inArray(jobs.status, ['queued', 'running'])];
+  const conds: SQL[] = [eq(jobs.officeId, officeId), eq(jobs.type, type), activeJob()];
   for (const [k, v] of Object.entries(payload)) conds.push(sql`${jobs.payload}->>${k} = ${v}`);
   const [row] = await db.select().from(jobs).where(and(...conds)).limit(1);
   return row ?? null;

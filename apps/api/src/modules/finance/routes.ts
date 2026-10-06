@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { billingRoutes } from './billing-routes';
 import { budgetRoutes } from './budget-routes';
 import { catalogRoutes } from './catalog-routes';
 import { importRoutes } from './import-routes';
@@ -12,6 +13,7 @@ import { reportRoutes } from './report-routes';
 export async function financeRoutes(app: FastifyInstance) {
   await catalogRoutes(app);
   await budgetRoutes(app);
+  await billingRoutes(app);
   await publicRoutes(app);
   await reportRoutes(app);
   await importRoutes(app);

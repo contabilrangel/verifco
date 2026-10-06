@@ -52,11 +52,14 @@ export function DeliveriesPage() {
   const [page, setPage] = useState(1);
   const [openId, setOpenId] = useState<string | null>(null);
   const [resendId, setResendId] = useState<string | null>(null);
+  const [resendAll, setResendAll] = useState(false);
   useEffect(() => setPage(1), [debounced, filters]);
 
   const query = qs({ search: debounced, page, pageSize: 25, ...filters });
   const [poll, setPoll] = useState(false);
-  const list = useApi<{ data: DeliveryRow[]; total: number; page: number; pages: number }>(['deliveries', query], `/deliveries${query}`, { refetchInterval: poll ? 5000 : undefined });
+  const list = useApi<{ data: DeliveryRow[]; total: number; page: number; pages: number; failedCount: number }>(['deliveries', query], `/deliveries${query}`, {
+    refetchInterval: poll ? 5000 : undefined,
+  });
   const rows = list.data?.data ?? [];
   // atualiza sozinho enquanto houver envios na fila
   useEffect(() => setPoll(Boolean(list.data?.data.some((r) => r.status === 'queued'))), [list.data]);
@@ -68,6 +71,23 @@ export function DeliveriesPage() {
     invalidate: [['deliveries']],
     onSuccess: () => setResendId(null),
   });
+  // reenvio em massa: os que falharam dentro da busca e dos filtros (a situação escolhida não conta)
+  const failedCount = list.data?.failedCount ?? 0;
+  const resendFailed = useAction(
+    () =>
+      api.post<{ queued: number }>('/deliveries/resend-failed', {
+        search: debounced || undefined,
+        templateKey: filters.templateKey || undefined,
+        channel: filters.channel || undefined,
+        from: filters.from || undefined,
+        to: filters.to || undefined,
+      }),
+    {
+      success: (r) => `${r.queued} envio(s) colocado(s) na fila novamente.`,
+      invalidate: [['deliveries']],
+      onSuccess: () => setResendAll(false),
+    },
+  );
 
   return (
     <>
@@ -105,6 +125,11 @@ export function DeliveriesPage() {
             </Button>
           )}
           <div className="vf-grow" />
+          {canResend && failedCount > 0 && (
+            <Button kind="secondary" icon={<RefreshCw />} onClick={() => setResendAll(true)}>
+              Reenviar com falha ({failedCount})
+            </Button>
+          )}
           <IconButton label="Atualizar" onClick={() => void list.refetch()}>
             <RefreshCw />
           </IconButton>
@@ -223,6 +248,15 @@ export function DeliveriesPage() {
         loading={resend.isPending}
         onConfirm={() => resendId && resend.mutate(resendId)}
         onClose={() => setResendId(null)}
+      />
+      <ConfirmDialog
+        open={resendAll}
+        title="Reenviar envios com falha"
+        message={`${failedCount} envio(s) com falha${debounced || active ? ' dentro da busca e dos filtros aplicados' : ''} voltam para a fila e serão tentados de novo com o mesmo conteúdo e destinatário.`}
+        confirmLabel="Reenviar"
+        loading={resendFailed.isPending}
+        onConfirm={() => resendFailed.mutate(undefined)}
+        onClose={() => setResendAll(false)}
       />
     </>
   );

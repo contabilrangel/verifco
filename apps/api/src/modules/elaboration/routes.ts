@@ -140,7 +140,7 @@ export async function elaborationRoutes(app: FastifyInstance) {
     const user = requireUser(req);
     const body = parse(selectionSchema, req.body);
     const ids = await scopedIds(req, body.customerIds);
-    const job = await app.ctx.jobs.enqueue('elaboration.process', { year: body.year, customerIds: ids, force: Boolean(body.force) }, { officeId: user.officeId, userId: user.userId, maxAttempts: 1 });
+    const job = await app.ctx.jobs.enqueue('elaboration.process', { year: body.year, customerIds: ids, force: Boolean(body.force) }, { officeId: user.officeId, userId: user.userId, maxAttempts: 2 });
     await audit(req, 'elaboration_process', 'declaration', null, { year: body.year, count: ids.length });
     reply.status(202);
     return { job: jobView(job) };

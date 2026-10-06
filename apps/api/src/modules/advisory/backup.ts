@@ -5,6 +5,7 @@ import type { FastifyInstance } from 'fastify';
 import type { AppContext } from '../../context';
 import * as schema from '../../db/schema';
 import { jobs } from '../../db/schema';
+import { activeJob } from '../../jobs/queue';
 import { badRequest, notFound } from '../../lib/errors';
 import { audit, guard, parse, requireUser, uuidParam } from '../../lib/http';
 import { notify } from '../../services/notify';
@@ -148,8 +149,9 @@ export async function backupRoutes(app: FastifyInstance) {
 
   app.post('/backups', { preHandler: guard('backup.download') }, async (req, reply) => {
     const user = requireUser(req);
+    // job de processo que caiu não segura o botão: só conta se a fila ainda vai executá-lo
     const pending = await db.query.jobs.findFirst({
-      where: and(eq(jobs.officeId, user.officeId), eq(jobs.type, 'backup.generate'), inArray(jobs.status, ['queued', 'running'])),
+      where: and(eq(jobs.officeId, user.officeId), eq(jobs.type, 'backup.generate'), activeJob()),
     });
     if (pending) return { id: pending.id, status: pending.status, alreadyRunning: true };
     const job = await app.ctx.jobs.enqueue('backup.generate', { officeId: user.officeId, userId: user.userId }, { officeId: user.officeId, userId: user.userId, maxAttempts: 2 });

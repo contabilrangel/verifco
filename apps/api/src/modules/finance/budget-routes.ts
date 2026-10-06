@@ -10,6 +10,8 @@ import { getCustomerForUser } from '../../services/customers';
 import { getOrCreateDeclaration } from '../../services/declarations';
 import { queueDelivery } from '../../services/delivery';
 import { getOfficeSettings } from '../../services/settings';
+import { billingProvidersReady } from '../integrations/jobs';
+import { withExternalSync } from './billing-routes';
 import { buildAuthorizationPdf, generateReceipt, receiptValues } from './pdfs';
 import {
   applyStatus,
@@ -84,11 +86,13 @@ export async function budgetRoutes(app: FastifyInstance) {
     const decl = await db.query.declarations.findFirst({ where: and(eq(declarations.customerId, customer.id), eq(declarations.exerciseYear, year)) });
     const settings = await getOfficeSettings(db, user.officeId);
     return {
-      data: await serializeBudgets(ctx, rows),
+      data: await withExternalSync(ctx, user.officeId, await serializeBudgets(ctx, rows)),
       previous: await previousYearBudget(ctx, user.officeId, customer.id, year),
       declarationTotals: pricingTotalsOf(decl),
       customer: { id: customer.id, name: customer.name, hasEmail: Boolean(customer.email), hasMobile: Boolean(customer.mobile) },
       settings: { allowAuthorizationWithoutBudget: settings.allowAuthorizationWithoutBudget },
+      // integrações de cobrança prontas: a tela avisa ao aprovar com Asaas/Omie desligado
+      integrations: await billingProvidersReady(ctx, user.officeId),
     };
   });
 

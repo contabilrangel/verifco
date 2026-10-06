@@ -8,7 +8,7 @@ import { fieldErrors, useAction, useApi, useDebounced } from '../../lib/hooks';
 import { formatDate, formatMoney } from '../../lib/format';
 import { describeTable } from './PriceTablesPage';
 import type { Budget, PaymentMethod, PriceTable, Quote } from './types';
-import { BudgetStatusTag, formatNumber, parseNumber } from './ui';
+import { BudgetStatusTag, formatNumber, inactiveIntegration, parseNumber } from './ui';
 
 const CATEGORY_OPTIONS = Object.entries(BUDGET_CATEGORIES).map(([value, label]) => ({ value, label }));
 // rótulos curtos para caber no seletor
@@ -84,6 +84,7 @@ export function BudgetFormModal({
   hasEmail,
   hasMobile,
   previous,
+  integrations,
   onClose,
   onSaved,
 }: {
@@ -94,6 +95,8 @@ export function BudgetFormModal({
   hasEmail: boolean;
   hasMobile: boolean;
   previous: Budget | null;
+  /** Integrações de cobrança ativas (para avisar quando a forma de pagamento depende de uma desligada). */
+  integrations?: { asaas: boolean; omie: boolean };
   onClose: () => void;
   onSaved: (b: Budget & { link: string | null }) => void;
 }) {
@@ -114,6 +117,7 @@ export function BudgetFormModal({
   const table = tables.find((t) => t.id === f?.priceTableId) ?? null;
   const method = methods.find((m) => m.id === f?.paymentMethodId) ?? null;
   const maxInstallments = method?.maxInstallments ?? 1;
+  const inactiveProvider = inactiveIntegration(method?.type, integrations);
 
   // cálculo pela tabela com os dados da declaração do ano
   const inputs = useMemo(() => {
@@ -350,6 +354,7 @@ export function BudgetFormModal({
               }}
               options={methods.map((m) => ({ value: m.id, label: m.name }))}
               error={f.type === 'integration' && !['asaas', 'omie'].includes(method?.type ?? '') ? 'Escolha uma cobrança Asaas ou Omie' : undefined}
+              help={inactiveProvider ? `A integração ${inactiveProvider} não está ativa: a cobrança só é emitida depois de ativá-la em Administração › Integrações.` : undefined}
             />
             <Input label="Data inicial da cobrança" type="date" value={f.billingStartDate} onChange={(e) => set('billingStartDate', e.target.value)} help="Vencimento da 1ª parcela." />
             <Select

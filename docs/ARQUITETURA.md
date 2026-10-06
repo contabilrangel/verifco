@@ -88,6 +88,27 @@ Contexto (`app.ctx`): `db`, `config`, `secrets`, `files` (salvar/ler arquivos), 
 externo ou demora (envios, exportações, IA, sincronizações) passa pela fila. Nos testes,
 `await env.ctx.jobs.drain()` executa o que estiver pendente.
 
+- **Execução**: cada instância com `RUN_WORKER` executa até `JOB_CONCURRENCY` jobs ao mesmo tempo
+  (padrão 4). Prioridade, tentativas e limites de cada tipo ficam em `src/jobs/policies.ts`:
+  envios e cobranças saem primeiro; tarefas longas (`heavy`: backup, eCAC do escritório, elaboração,
+  Radar) têm limite por escritório (`perOffice`) e nunca ocupam a última vaga do worker. O módulo
+  completa no `ctx.jobs.register(tipo, executor, { onFailed, ... })`.
+- **Lease**: o job em execução renova `locked_at` (a cada 30 s e no `progress`); se o processo cai,
+  outro worker o retoma quando o lease (5 min) vence, contando a tentativa, ou o marca como falho
+  se acabaram as tentativas. Ao desligar, `ctx.jobs.stop({ graceMs })` espera os jobs em andamento e
+  devolve à fila os que não terminam no prazo.
+- **"Já em andamento"**: deduplique com `activeJob()` (SQL) ou `isJobActive(job)`, nunca com
+  `status in ('queued', 'running')`: um job de processo que caiu, sem tentativas, não pode segurar
+  o botão para sempre.
+- **Nova tentativa**: `enqueue` com a mesma `idempotencyKey` reabre o job que falhou de vez;
+  `ctx.jobs.retryNow(tipo, [{ idempotencyKey, payload }])` atende "tentar de novo agora" (reabre
+  também o concluído e antecipa o que espera nova tentativa). Erro que repetir não resolve
+  (credencial recusada, integração desligada) é `PermanentJobError`: falha na hora. `onFailed` roda
+  uma vez na falha final (avise o escritório por ali).
+- **Fan-out**: um lote grande vira um job por item. O executor do pai cria os filhos de uma vez com
+  `spawn([...])` (chave por filho) e devolve `WAIT_FOR_CHILDREN`; sem ocupar o worker, o pai roda de
+  novo quando todos terminam e junta os resultados com `children()` (veja `elaboration.process`).
+
 ### Banco
 
 `src/db/schema.ts` concentra as tabelas. Depois de alterá-lo, gere a migração

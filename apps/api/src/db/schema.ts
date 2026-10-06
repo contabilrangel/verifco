@@ -8,6 +8,7 @@
  */
 import { sql } from 'drizzle-orm';
 import {
+  type AnyPgColumn,
   bigint,
   boolean,
   date,
@@ -733,15 +734,27 @@ export const jobs = pgTable(
     maxAttempts: integer('max_attempts').notNull().default(3),
     runAt: ts('run_at').notNull().defaultNow(),
     lockedAt: ts('locked_at'),
+    /** Rodada em execução (novo a cada claim): só quem tem o token grava o resultado. */
+    lockToken: uuid('lock_token'),
     progress: integer('progress').notNull().default(0),
     result: jsonb('result').$type<Record<string, unknown>>(),
     error: text('error'),
     idempotencyKey: text('idempotency_key'),
     createdByUserId: uuid('created_by_user_id'),
+    /** Ordem na fila: maior sai primeiro (envios e cobranças antes das tarefas longas). */
+    priority: integer('priority').notNull().default(0),
+    /** Job que criou este (fan-out): o pai espera os filhos terminarem e junta os resultados. */
+    parentId: uuid('parent_id').references((): AnyPgColumn => jobs.id, { onDelete: 'cascade' }),
     createdAt: createdAt(),
     finishedAt: ts('finished_at'),
   },
-  (t) => [index('jobs_status_run_idx').on(t.status, t.runAt), uniqueIndex('jobs_idempotency_uq').on(t.type, t.idempotencyKey)],
+  (t) => [
+    index('jobs_status_run_idx').on(t.status, t.runAt),
+    uniqueIndex('jobs_idempotency_uq').on(t.type, t.idempotencyKey),
+    index('jobs_parent_idx').on(t.parentId),
+    // limite por escritório no claim e deduplicações ("já em andamento")
+    index('jobs_running_idx').on(t.officeId, t.type).where(sql`${t.status} = 'running'`),
+  ],
 );
 
 export const importBatches = pgTable('import_batches', {
