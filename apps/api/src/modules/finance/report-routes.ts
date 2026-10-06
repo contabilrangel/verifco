@@ -7,6 +7,8 @@ import { budgets, customers, users } from '../../db/schema';
 import { guard, parse, requireUser, yearSchema } from '../../lib/http';
 import { customerScope } from '../../services/customers';
 import { buildWorkbook } from '../../services/xlsx';
+import { billingSyncStates } from '../integrations/jobs';
+import { externalSyncFailed } from './billing-routes';
 import { serializeBudgets, type SerializedBudget } from './service';
 import { budgetStatusLabel, budgetTypeLabel, categoryLabel } from './text';
 
@@ -50,6 +52,7 @@ export async function reportRoutes(app: FastifyInstance) {
       .where(and(...conds))
       .orderBy(asc(customers.name), desc(budgets.createdAt));
     const serialized = await serializeBudgets(ctx, rows.map((r) => r.b));
+    const syncStates = await billingSyncStates(ctx, user.officeId, serialized.flatMap((s) => (s.billing ? [s.billing] : [])));
     const data = rows
       .map((r, i) => {
         const s = serialized[i];
@@ -71,6 +74,8 @@ export async function reportRoutes(app: FastifyInstance) {
           openCents: s.billing?.openCents ?? 0,
           overdueCents: s.billing?.overdueCents ?? 0,
           paymentStatus: s.paymentStatus,
+          /** Cobrança no Asaas/Omie não emitida (falhou de vez ou não foi pedida) com parcela em aberto. */
+          externalSyncFailed: externalSyncFailed(s.billing, s.billing ? syncStates.get(s.billing.id) : null),
           installments: s.billing?.installments ?? [],
         };
       })

@@ -6,7 +6,7 @@ import { billings, installments } from '../../db/schema';
 import { badRequest, conflict, notFound } from '../../lib/errors';
 import { audit, guard, parse, requireUser, uuidParam } from '../../lib/http';
 import { getCustomerForUser } from '../../services/customers';
-import { billingSyncStates, requestBillingSync } from '../integrations/jobs';
+import { billingSyncStates, requestBillingSync, type BillingSyncState } from '../integrations/jobs';
 import type { SerializedBudget } from './service';
 
 /** Faturamento do escritório cujo cliente o usuário pode ver; 404 caso contrário. */
@@ -25,6 +25,20 @@ async function getBillingForUser(ctx: AppContext, user: AuthUser, id: string) {
 export async function withExternalSync(ctx: AppContext, officeId: string, list: SerializedBudget[]) {
   const states = await billingSyncStates(ctx, officeId, list.flatMap((b) => (b.billing ? [b.billing] : [])));
   return list.map((b) => (b.billing ? { ...b, billing: { ...b.billing, externalSync: states.get(b.billing.id) ?? null } } : b));
+}
+
+/**
+ * Cobrança integrada não emitida: há parcela em aberto sem boleto/Pix no provedor e nenhuma emissão
+ * em andamento ou com nova tentativa agendada (a fila desistiu, nunca foi pedida ou terminou sem
+ * emitir tudo). É o caso em que alguém precisa agir ("Emitir novamente" no orçamento do cliente).
+ */
+export function externalSyncFailed(
+  billing: { provider: string | null; installments: { status: string; externalId: string | null }[] } | null,
+  sync: BillingSyncState | null | undefined,
+) {
+  if (!billing?.provider || !sync) return false;
+  if (sync.status === 'running' || sync.status === 'queued') return false;
+  return billing.installments.some((i) => (i.status === 'open' || i.status === 'overdue') && !i.externalId);
 }
 
 export async function billingRoutes(app: FastifyInstance) {
