@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import JSZip from 'jszip';
-import { checklists, declarations } from '../src/db/schema';
+import { backlogs, checklists, declarations } from '../src/db/schema';
 import { VALID_CPFS, createEmployee, createTestEnv, registerOffice, type TestEnv } from './helpers';
 import { PDF, PNG, addPreviousYear, customerLogin, issueAccess, officeWithCustomer, setSubstatus, upload } from './portal-helpers';
 
@@ -357,6 +357,91 @@ describe('checklist do cliente', () => {
   });
 });
 
+describe('documentos pendentes do checklist → pendências da declaração (INT-7)', () => {
+  const backlogsOf = async (declarationId: string) =>
+    (await env.ctx.db.query.backlogs.findMany({ where: eq(backlogs.declarationId, declarationId) })).sort((a, b) => a.description.localeCompare(b.description));
+  const substatus = async (declarationId: string) => (await env.ctx.db.query.declarations.findFirst({ where: eq(declarations.id, declarationId) }))!.substatus;
+
+  it('cria uma pendência por documento pendente, não é desfeita pelas outras pendências e dá baixa ao concluir', async () => {
+    const o = await withChecklist(VALID_CPFS[0], [
+      { kind: 'income_pj', counterpartyName: 'Acme', counterpartyDoc: '11222333000181' },
+      { kind: 'income_pj', counterpartyName: 'Beta', counterpartyDoc: '11444777000161' },
+    ]);
+    const decl = await setSubstatus(env, o.officeId, o.customerId, YEAR, 'elaboration');
+    const id = o.checklist.id;
+    const { token, code } = await issueAccess(o.api, id);
+    const cust = (await customerLogin(env, token, VALID_CPFS[0], code)).api!;
+    const acme = itemTitled(o.checklist, 'Informe de rendimentos — Acme');
+    const beta = itemTitled(o.checklist, 'Informe de rendimentos — Beta');
+    // um item resolvido antes de finalizar não vira pendência
+    const marked = await cust.put(`/api/portal/checklists/${id}/items/${beta.id}`, { status: 'not_applicable' });
+    const pending = marked.body.sections.find((s: any) => s.section === 'income').items.filter((i: any) => i.status === 'pending');
+    expect(pending.map((i: any) => i.id)).toContain(acme.id);
+
+    const finished = await cust.post(`/api/portal/checklists/${id}/sections/income/finish`, { status: 'pending_documents', note: 'O informe sai em março.' });
+    expect(finished.status).toBe(200);
+    let rows = await backlogsOf(decl!.id);
+    expect(rows.map((b) => b.description).sort()).toEqual(pending.map((i: any) => i.title).sort());
+    expect(rows.map((b) => b.description)).not.toContain('Informe de rendimentos — Beta');
+    expect(rows.every((b) => !b.resolvedAt && b.sourceKey?.startsWith('checklist:item:') && b.customerId === o.customerId)).toBe(true);
+    expect(await substatus(decl!.id)).toBe('missing_documents');
+
+    // aparecem na etapa "Documentos faltantes" do escritório
+    const listed = await o.api.get(`/api/declarations/${decl!.id}/backlogs`);
+    expect(listed.body.map((b: any) => b.description)).toEqual(expect.arrayContaining(['Informe de rendimentos — Acme']));
+
+    // a regra das pendências não desfaz: baixar uma pendência do escritório mantém "Documentos faltantes"
+    const manual = await o.api.post(`/api/declarations/${decl!.id}/backlogs`, { description: 'Recibo do aluguel' });
+    await o.api.put(`/api/backlogs/${manual.body.id}`, { resolved: true });
+    expect(await substatus(decl!.id)).toBe('missing_documents');
+
+    // o cliente retoma a seção: as pendências continuam enquanto ele completa
+    await cust.post(`/api/portal/checklists/${id}/sections/income/reopen`);
+    expect((await backlogsOf(decl!.id)).filter((b) => b.sourceKey && !b.resolvedAt)).toHaveLength(pending.length);
+    // enviou o informe da Acme: essa pendência recebe baixa
+    expect((await upload(env, (await customerLogin(env, token, VALID_CPFS[0], code)).body.token, `/api/portal/checklists/${id}/items/${acme.id}/files`, [{ name: 'acme.pdf', data: PDF }])).status).toBe(201);
+    rows = await backlogsOf(decl!.id);
+    expect(rows.find((b) => b.sourceKey === `checklist:item:${acme.id}`)!.resolvedAt).not.toBeNull();
+
+    // concluiu a seção ("sem documentos" para o resto): tudo baixado e a declaração volta para elaboração
+    expect((await cust.post(`/api/portal/checklists/${id}/sections/income/finish`, { status: 'no_documents' })).status).toBe(200);
+    rows = await backlogsOf(decl!.id);
+    expect(rows.every((b) => b.resolvedAt)).toBe(true);
+    expect(await substatus(decl!.id)).toBe('elaboration');
+  });
+
+  it('seção pendente sem item pendente vira uma pendência da seção; o que o escritório exclui não volta sozinho', async () => {
+    const o = await withChecklist(VALID_CPFS[1]);
+    const decl = await setSubstatus(env, o.officeId, o.customerId, YEAR, 'elaboration');
+    const id = o.checklist.id;
+    const { token, code } = await issueAccess(o.api, id);
+    const cust = (await customerLogin(env, token, VALID_CPFS[1], code)).api!;
+    const files = o.checklist.sections.find((s: any) => s.section === 'files').items;
+    for (const i of files) await cust.put(`/api/portal/checklists/${id}/items/${i.id}`, { status: 'not_applicable' });
+    await cust.post(`/api/portal/checklists/${id}/sections/files/finish`, { status: 'pending_documents', note: 'Falta a escritura.' });
+    let rows = await backlogsOf(decl!.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].description).toBe('Documentos pendentes em “Arquivos” (checklist): Falta a escritura.');
+    expect(await substatus(decl!.id)).toBe('missing_documents');
+
+    // o escritório exclui a pendência: a declaração volta e nada recria a pendência por conta própria
+    await o.api.del(`/api/backlogs/${rows[0].id}`);
+    expect(await substatus(decl!.id)).toBe('elaboration');
+    const identItem = o.checklist.sections.find((s: any) => s.section === 'identification').items[0];
+    await o.api.put(`/api/checklists/${id}/items/${identItem.id}`, { status: 'sent' });
+    expect(await backlogsOf(decl!.id)).toHaveLength(0);
+
+    // excluir o checklist dá baixa nas pendências que vieram dele
+    await cust.post(`/api/portal/checklists/${id}/sections/identification/finish`, { status: 'pending_documents' });
+    rows = (await backlogsOf(decl!.id)).filter((b) => !b.resolvedAt);
+    expect(rows.length).toBeGreaterThan(0);
+    expect(await substatus(decl!.id)).toBe('missing_documents');
+    await o.api.del(`/api/checklists/${id}`);
+    expect((await backlogsOf(decl!.id)).every((b) => b.resolvedAt)).toBe(true);
+    expect(await substatus(decl!.id)).toBe('elaboration');
+  });
+});
+
 describe('checklist em PDF', () => {
   it('baixa, visualiza e envia por e-mail (anexo) e WhatsApp', async () => {
     const o = await officeWithCustomer(env, VALID_CPFS[3]);
@@ -365,7 +450,7 @@ describe('checklist em PDF', () => {
     const pdf = await env.app.inject({ method: 'GET', url: `/api/customers/${o.customerId}/checklist-pdf?year=${YEAR}`, headers: { authorization: `Bearer ${o.token}` } });
     expect(pdf.statusCode).toBe(200);
     expect(pdf.headers['content-type']).toBe('application/pdf');
-    expect(pdf.headers['content-disposition']).toMatch(/^attachment/);
+    expect(pdf.headers['content-disposition']).toMatch(/^attachment; filename="checklist-irpf-2026-maria-souza\.pdf"/);
     expect(pdf.rawPayload.subarray(0, 4).toString()).toBe('%PDF');
 
     const sent = await o.api.post(`/api/customers/${o.customerId}/checklist-pdf/send`, { year: YEAR, channel: 'email' });
@@ -373,10 +458,11 @@ describe('checklist em PDF', () => {
     await o.api.post(`/api/customers/${o.customerId}/checklist-pdf/send`, { year: YEAR, channel: 'whatsapp' });
     await env.ctx.jobs.drain();
     const mail = env.providers.sentEmails.find((m) => m.to === o.customerEmail && m.subject.includes('Checklist'));
-    expect(mail?.attachments?.[0].filename).toBe(`checklist-irpf-${YEAR}.pdf`);
+    // o mesmo nome de arquivo da mala direta
+    expect(mail?.attachments?.[0].filename).toBe(`checklist-irpf-${YEAR}-maria-souza.pdf`);
     expect(mail?.attachments?.[0].content.subarray(0, 4).toString()).toBe('%PDF');
     const wa = env.providers.sentWhatsApp.filter((m) => m.officeId === o.officeId).at(-1);
-    expect(wa?.document?.filename).toBe(`checklist-irpf-${YEAR}.pdf`);
+    expect(wa?.document?.filename).toBe(`checklist-irpf-${YEAR}-maria-souza.pdf`);
 
     // permissões: só visualizar não permite baixar nem enviar
     const viewer = await createEmployee(env, o.api, ['customer.list', 'checklist_pdf.view']);

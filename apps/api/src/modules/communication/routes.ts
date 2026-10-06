@@ -5,6 +5,8 @@ import { z } from 'zod';
 import {
   DELIVERY_CHANNELS,
   DELIVERY_STATUS,
+  MAILING_MAX_RECIPIENTS,
+  MAILING_SKIP_REASONS,
   MAILING_TYPES,
   TEMPLATES,
   getMailingType,
@@ -13,17 +15,66 @@ import {
   sampleTemplateValues,
   sanitizeHtml,
   unknownVariables,
+  type MailingSkipReason,
 } from '@verifco/shared';
 import type { AuthUser } from '../../context';
-import { customers, deliveries, emailTemplates, offices } from '../../db/schema';
+import { customers, deliveries, emailTemplates, jobs, offices } from '../../db/schema';
 import { badRequest, conflict, notFound } from '../../lib/errors';
-import { audit, can, dateStr, guard, paginate, parse, requirePermission, requireUser, yearSchema } from '../../lib/http';
+import { audit, can, dateStr, guard, paginate, parse, requirePermission, requireUser, uuidParam, yearSchema } from '../../lib/http';
 import { getCustomerForUser } from '../../services/customers';
 import { resolveTemplate } from '../../services/delivery';
 import { getOfficeSettings } from '../../services/settings';
+import { checklistPdfFor } from '../checklist/pdf';
 import { buildKitPdf } from '../reports/kit';
-import { buildChecklistPdf } from './checklist-pdf';
-import { executeMailing, mailingSchema, planMailing, renderForCustomer, summarize } from './mailing';
+import { MAILING_JOB, mailingSchema, planMailing, renderForCustomer, requestMailing, summarize, type MailingRunPayload, type MailingRunResult } from './mailing';
+
+interface RunRow {
+  id: string;
+  status: string;
+  progress: number;
+  error: string | null;
+  result: Record<string, unknown> | null;
+  createdAt: Date;
+  finishedAt: Date | null;
+  payload: Record<string, unknown>;
+  total?: number;
+}
+
+/** Situação de uma mala direta para a tela: o planejado na revisão e o andamento do envio. */
+function runView(row: RunRow) {
+  const p = row.payload as Partial<MailingRunPayload>;
+  const r = (row.result ?? {}) as Partial<MailingRunResult>;
+  const type = p.type ? getMailingType(p.type) : undefined;
+  const total = row.total ?? (Array.isArray(p.targets) ? p.targets.length : 0);
+  const skippedOnSend = Object.entries(r.skipped ?? {}).map(([reason, s]) => ({
+    reason,
+    label: MAILING_SKIP_REASONS[reason as MailingSkipReason] ?? reason,
+    count: s?.count ?? 0,
+    names: s?.names ?? [],
+  }));
+  return {
+    id: row.id,
+    status: row.status,
+    progress: row.progress,
+    createdAt: row.createdAt,
+    finishedAt: row.finishedAt,
+    error: row.status === 'failed' ? row.error : null,
+    type: { key: p.type ?? '', label: type?.label ?? p.type ?? '', attachment: type?.attachment ?? null },
+    channel: p.channel ?? null,
+    year: p.year ?? null,
+    customers: p.planned?.customers ?? total,
+    deliveries: p.planned?.deliveries ?? { email: 0, whatsapp: 0, total: 0 },
+    skipped: p.planned?.skipped ?? [],
+    progressDetail: {
+      total,
+      processed: r.processed ?? 0,
+      queued: (r.queued ?? 0) + (r.already ?? 0),
+      skipped: skippedOnSend,
+      errorCount: r.errorCount ?? 0,
+      errors: r.errors ?? [],
+    },
+  };
+}
 
 const keyParam = z.object({ key: z.string().refine((k) => Boolean(getTemplateDef(k)), 'Template desconhecido') });
 const SEND_PERMS = [...new Set([...MAILING_TYPES.map((t) => t.permission), 'message.send'])];
@@ -258,7 +309,7 @@ export async function communicationRoutes(app: FastifyInstance) {
   app.post('/mailing/preview', async (req) => {
     const input = parse(mailingSchema, req.body);
     const user = typePermission(req, input.type);
-    const { type, entries } = await planMailing(ctx, user, input);
+    const { type, entries, matched, truncated } = await planMailing(ctx, user, input);
     const wanted = input.channel === 'both' ? 2 : 1;
     // exemplo: o cliente escolhido ou, de preferência, um que receba por todos os canais pedidos
     const sampleEntry =
@@ -282,6 +333,10 @@ export async function communicationRoutes(app: FastifyInstance) {
     return {
       type: { key: type.key, label: type.label, templateKey: type.templateKey, note: type.note ?? null, attachment: type.attachment },
       ...summarize(entries),
+      // mais clientes que o limite: a tela avisa e o envio é recusado (nada é cortado em silêncio)
+      matched,
+      truncated,
+      limit: MAILING_MAX_RECIPIENTS,
       recipients: entries.slice(0, 300).map((e) => ({
         id: e.customer.id,
         name: e.customer.name,
@@ -295,15 +350,58 @@ export async function communicationRoutes(app: FastifyInstance) {
     };
   });
 
-  /** Envia: um envio por cliente e canal. Devolve quantos enfileirou e quantos ficaram de fora e por quê. */
-  app.post('/mailing/send', async (req) => {
+  /**
+   * Envia: registra a mala direta na fila e responde na hora (202). O job gera os envios em lotes
+   * (um por cliente e canal) e grava o andamento, que a tela acompanha em `GET /mailing/runs/:id`.
+   * Repetir o pedido (mesmo `requestId`) devolve a mala direta já registrada, sem enviar de novo.
+   */
+  app.post('/mailing/send', async (req, reply) => {
     const input = parse(mailingSchema.extend({ requestId: z.uuid() }), req.body);
     const user = typePermission(req, input.type);
-    const result = await executeMailing(ctx, user, input);
-    const summary = summarize(result.entries);
-    if (!summary.customers) throw badRequest('Nenhum cliente selecionado pode receber este envio.');
-    await audit(req, 'mailing_send', 'mailing', input.requestId, { type: input.type, channel: input.channel, queued: result.queued, year: input.year });
-    return { queued: result.queued, alreadyQueued: result.alreadyQueued, customers: summary.customers, deliveries: summary.deliveries, skipped: summary.skipped };
+    const { job, created } = await requestMailing(ctx, user, input);
+    if (created) {
+      const p = job.payload as MailingRunPayload;
+      await audit(req, 'mailing_send', 'mailing', input.requestId, { type: input.type, channel: input.channel, year: input.year, customers: p.planned.customers, deliveries: p.planned.deliveries.total });
+    }
+    reply.status(202);
+    return { ...runView(job), alreadyRequested: !created };
+  });
+
+  /** Quem acompanha uma mala direta: quem tem "E-mails enviados" sem restrição de carteira vê todas; os demais, as próprias. */
+  const runScope = async (user: AuthUser): Promise<SQL> => {
+    const conds: SQL[] = [eq(jobs.officeId, user.officeId), eq(jobs.type, MAILING_JOB)];
+    const restricted = !user.isOwner && (await getOfficeSettings(db, user.officeId)).restrictCustomersToResponsible;
+    if (restricted || !can(user, 'mailing.list')) conds.push(eq(jobs.createdByUserId, user.userId));
+    return and(...conds)!;
+  };
+
+  /** Colunas da mala direta sem a lista de destinatários (que pode ter milhares de linhas). */
+  const runColumns = {
+    id: jobs.id,
+    status: jobs.status,
+    progress: jobs.progress,
+    error: jobs.error,
+    result: jobs.result,
+    createdAt: jobs.createdAt,
+    finishedAt: jobs.finishedAt,
+    createdByUserId: jobs.createdByUserId,
+    payload: sql<Omit<MailingRunPayload, 'targets'>>`${jobs.payload} - 'targets'`,
+    total: sql<number>`coalesce(jsonb_array_length(${jobs.payload}->'targets'), 0)`.mapWith(Number),
+  };
+
+  /** Malas diretas recentes, com o andamento. */
+  app.get('/mailing/runs', async (req) => {
+    const user = requirePermission(req, ...SEND_PERMS);
+    const rows = await db.select(runColumns).from(jobs).where(await runScope(user)).orderBy(desc(jobs.createdAt)).limit(10);
+    return rows.map(runView);
+  });
+
+  app.get('/mailing/runs/:id', async (req) => {
+    const user = requirePermission(req, ...SEND_PERMS);
+    const { id } = parse(uuidParam, req.params);
+    const [row] = await db.select(runColumns).from(jobs).where(and(await runScope(user), eq(jobs.id, id)));
+    if (!row) throw notFound('Mala direta');
+    return runView(row);
   });
 
   /** Anexo de exemplo (kit ou checklist em PDF) de um cliente, para conferir antes do envio. */
@@ -317,7 +415,8 @@ export async function communicationRoutes(app: FastifyInstance) {
       if (!declaration) throw badRequest('O cliente não tem declaração neste exercício.');
       file = await buildKitPdf(ctx, declaration, customer);
     } else {
-      file = await buildChecklistPdf(ctx, customer, q.year);
+      // o mesmo PDF da etapa Documentação (checklist digital do cliente, quando houver)
+      file = await checklistPdfFor(ctx, customer, q.year);
     }
     return reply.header('Content-Type', 'application/pdf').header('Content-Disposition', `inline; filename="${file.filename}"`).send(file.buffer);
   });

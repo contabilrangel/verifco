@@ -1,5 +1,5 @@
 import JSZip from 'jszip';
-import { and, asc, eq, inArray } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, like } from 'drizzle-orm';
 import {
   CHECKLIST_FILLABLE_SECTIONS,
   CHECKLIST_SECTIONS,
@@ -12,10 +12,10 @@ import {
 } from '@verifco/shared';
 import type { AppContext } from '../../context';
 import type { Db } from '../../db/client';
-import { checklistItems, checklistSections, checklists, customers, declarations, documents, files } from '../../db/schema';
+import { backlogs, checklistItems, checklistSections, checklists, customers, declarations, documents, files } from '../../db/schema';
 import { randomCode, randomToken, sha256 } from '../../lib/crypto';
-import { conflict } from '../../lib/errors';
-import { listItems } from '../../services/declarations';
+import { HttpError, conflict } from '../../lib/errors';
+import { getOrCreateDeclaration, listItems, syncBacklogSubstatus } from '../../services/declarations';
 import { getOfficeSettings } from '../../services/settings';
 import { notify } from '../../services/notify';
 import { safeFilename, type UploadedFile } from '../../services/uploads';
@@ -96,6 +96,43 @@ export async function rotateAccess(db: Db, checklistId: string) {
     .set({ accessTokenHash: sha256(token), accessCodeHash: checklistCodeHash(checklistId, code), accessExpiresAt: expiresAt })
     .where(eq(checklists.id, checklistId));
   return { token, code, expiresAt };
+}
+
+/** Endereço público do checklist (o cliente entra com CPF + código). */
+export const checklistLink = (ctx: AppContext, token: string) => `${ctx.config.WEB_URL.replace(/\/$/, '')}/checklist/${token}`;
+
+/**
+ * Acesso do cliente ao checklist do exercício para um envio (etapa Documentação e mala direta):
+ * cria a declaração e o checklist se ainda não existirem e gera um novo link + código (os
+ * anteriores deixam de valer). Devolve os valores do template `checklist_digital` e os trechos
+ * secretos, que o envio grava mascarados no histórico (`redact`). Depois de enfileirar o envio,
+ * chame {@link markChecklistSent}.
+ */
+export async function issueChecklistAccess(
+  ctx: AppContext,
+  input: { officeId: string; customer: CustomerRow; exerciseYear: number; declaration?: DeclarationRow | null; checklist?: ChecklistRow | null },
+) {
+  const declaration = input.declaration ?? (await getOrCreateDeclaration(ctx.db, input.officeId, input.customer.id, input.exerciseYear));
+  let checklist = input.checklist ?? (await ctx.db.query.checklists.findFirst({ where: eq(checklists.declarationId, declaration.id) })) ?? null;
+  let created = false;
+  if (!checklist) {
+    try {
+      checklist = (await createChecklist(ctx.db, { officeId: input.officeId, customer: input.customer, declaration })).checklist;
+      created = true;
+    } catch (err) {
+      // corrida: o checklist foi criado ao mesmo tempo por outra tela
+      if (!(err instanceof HttpError && err.statusCode === 409)) throw err;
+      checklist = (await ctx.db.query.checklists.findFirst({ where: eq(checklists.declarationId, declaration.id) }))!;
+    }
+  }
+  const { token, code, expiresAt } = await rotateAccess(ctx.db, checklist.id);
+  const link = checklistLink(ctx, token);
+  return { declaration, checklist, created, link, code, expiresAt, values: { LINK: link, CODIGO: code }, redact: [token, code] };
+}
+
+/** Registra que o acesso foi enviado ao cliente. */
+export async function markChecklistSent(db: Db, checklistIds: string[]) {
+  if (checklistIds.length) await db.update(checklists).set({ sentAt: new Date() }).where(inArray(checklists.id, checklistIds));
 }
 
 export interface ChecklistDoc {
@@ -221,6 +258,72 @@ export async function refreshFinished(db: Db, checklistId: string): Promise<bool
   }
   if (!done && current?.finishedAt) await db.update(checklists).set({ finishedAt: null }).where(eq(checklists.id, checklistId));
   return false;
+}
+
+// ---------------------------------------------------------------------------
+// Documentos pendentes → pendências da declaração
+// ---------------------------------------------------------------------------
+
+const ITEM_SOURCE = 'checklist:item:';
+const SECTION_SOURCE = 'checklist:section:';
+
+const itemBacklogText = (i: ItemRow) => `${i.title}${i.ownerName ? ` (${i.ownerName})` : ''}`;
+const sectionBacklogText = (s: SectionRow) =>
+  `Documentos pendentes em “${CHECKLIST_SECTIONS[s.section as ChecklistSection] ?? s.section}” (checklist)${s.note ? `: ${s.note.slice(0, 500)}` : ''}`;
+
+/**
+ * Mantém as pendências (backlogs) da declaração em dia com o checklist digital:
+ * - seção finalizada como "com documentos pendentes": cada item ainda pendente vira uma pendência
+ *   (ou uma pendência da seção, se nenhum item ficou pendente). Elas só são criadas (ou reabertas)
+ *   quando o cliente finaliza a seção (`finishedSection`): pendência que o escritório baixou ou
+ *   excluiu não volta sozinha;
+ * - item que deixa de estar pendente, seção concluída ou "sem documentos", item excluído ou
+ *   checklist excluído: a pendência ganha baixa automática;
+ * - seção reaberta (o cliente está completando): as pendências continuam como estão.
+ * No fim, o subestado "Documentos faltantes" segue a regra única das pendências
+ * ({@link syncBacklogSubstatus}), que assim não desfaz o que o checklist marcou.
+ */
+export async function syncChecklistBacklogs(db: Db, declarationId: string, opts: { finishedSection?: string } = {}) {
+  const declaration = await db.query.declarations.findFirst({ where: eq(declarations.id, declarationId) });
+  if (!declaration) return;
+  const checklist = await db.query.checklists.findFirst({ where: eq(checklists.declarationId, declarationId) });
+  const sections = checklist ? await db.select().from(checklistSections).where(eq(checklistSections.checklistId, checklist.id)) : [];
+  const items = checklist ? await db.select().from(checklistItems).where(eq(checklistItems.checklistId, checklist.id)) : [];
+  const existing = await db
+    .select()
+    .from(backlogs)
+    .where(and(eq(backlogs.declarationId, declarationId), like(backlogs.sourceKey, 'checklist:%')));
+
+  const wanted = new Map<string, { description: string; section: string }>();
+  const untouched = new Set<string>();
+  for (const s of sections) {
+    const pending = items.filter((i) => i.section === s.section && i.status === 'pending');
+    if (s.status === 'pending_documents') {
+      if (pending.length) for (const i of pending) wanted.set(ITEM_SOURCE + i.id, { description: itemBacklogText(i), section: s.section });
+      else wanted.set(SECTION_SOURCE + s.id, { description: sectionBacklogText(s), section: s.section });
+    } else if (s.status === 'open') {
+      // em preenchimento: o que ainda está pendente continua como está até a seção ser finalizada
+      for (const i of pending) untouched.add(ITEM_SOURCE + i.id);
+      untouched.add(SECTION_SOURCE + s.id);
+    }
+  }
+
+  const resolve = existing.filter((b) => !b.resolvedAt && !wanted.has(b.sourceKey!) && !untouched.has(b.sourceKey!)).map((b) => b.id);
+  if (resolve.length) await db.update(backlogs).set({ resolvedAt: new Date() }).where(and(inArray(backlogs.id, resolve), isNull(backlogs.resolvedAt)));
+
+  if (opts.finishedSection) {
+    const mine = [...wanted].filter(([, w]) => w.section === opts.finishedSection);
+    const reopen = existing.filter((b) => b.resolvedAt && mine.some(([key]) => key === b.sourceKey)).map((b) => b.id);
+    if (reopen.length) await db.update(backlogs).set({ resolvedAt: null }).where(inArray(backlogs.id, reopen));
+    const missing = mine.filter(([key]) => !existing.some((b) => b.sourceKey === key));
+    if (missing.length) {
+      await db
+        .insert(backlogs)
+        .values(missing.map(([key, w]) => ({ officeId: declaration.officeId, customerId: declaration.customerId, declarationId, description: w.description, sourceKey: key })))
+        .onConflictDoNothing({ target: [backlogs.declarationId, backlogs.sourceKey] });
+    }
+  }
+  await syncBacklogSubstatus(db, declarationId);
 }
 
 /** Notificação para o responsável pelo cliente (ou o escritório todo, se não houver). */

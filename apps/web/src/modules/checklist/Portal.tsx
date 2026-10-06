@@ -333,6 +333,7 @@ export function PortalHome() {
                   <span className="vf-stack" style={{ '--gap': '0px', minWidth: 0 } as CSSProperties}>
                     <span style={{ overflowWrap: 'anywhere' }}>{d.filename}</span>
                     <span className="vf-muted vf-text-xs">
+                      {d.exerciseYear ? `IR ${d.exerciseYear} · ` : ''}
                       {formatDate(d.createdAt)} · {formatBytes(d.size)}
                     </span>
                   </span>

@@ -64,8 +64,8 @@ Não há registro central para editar: criar a pasta basta.
 | Serviço | Uso |
 | --- | --- |
 | `customers.ts` | `customerScope`, `getCustomerForUser`, `publicCustomer` |
-| `declarations.ts` | `getOrCreateDeclaration`, `setDeclarationSubstatus`, `advanceDeclaration`, `recomputeTotals`, `listItems` |
-| `delivery.ts` | `queueDelivery` (e-mail/WhatsApp por template ou texto, com idempotência e anexos) |
+| `declarations.ts` | `getOrCreateDeclaration`, `setDeclarationSubstatus`, `advanceDeclaration`, `syncBacklogSubstatus` (regra única de "Documentos faltantes" a partir das pendências abertas, inclusive as do checklist), `recomputeTotals`, `listItems` |
+| `delivery.ts` | `queueDelivery` (e-mail/WhatsApp por template ou texto, com idempotência, anexos e trechos secretos mascarados no histórico), `queueDeliveries` (o mesmo em lote, para envios em massa), `htmlToText` (único conversor HTML → texto do WhatsApp e das prévias) |
 | `pdf.ts` | `PdfBuilder` + `loadBranding` (logo e cores do escritório) |
 | `xlsx.ts` | `buildWorkbook`, `readSheet`, `parseMoneyToCents`, `parseDate` |
 | `settings.ts` | `getOfficeSettings` com os padrões aplicados |
@@ -87,6 +87,9 @@ Contexto (`app.ctx`): `db`, `config`, `secrets`, `files` (salvar/ler arquivos), 
 `ctx.jobs.enqueue(tipo, payload, { officeId, idempotencyKey })`. Tudo que fala com serviço
 externo ou demora (envios, exportações, IA, sincronizações) passa pela fila. Nos testes,
 `await env.ctx.jobs.drain()` executa o que estiver pendente.
+Operação em massa (como a mala direta) não roda na requisição: a rota registra um job e responde
+202; o job processa em lotes (lê clientes e afins de uma vez, grava com `queueDeliveries`) e grava
+o andamento no próprio job (`progress` e `result`), que a tela consulta.
 
 ### Banco
 

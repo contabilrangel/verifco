@@ -151,6 +151,73 @@ describe('início do portal', () => {
   });
 });
 
+describe('documentos compartilhados com o cliente (INT-3)', () => {
+  /** Upload pela etapa Documentos do IRPF, com a categoria no formulário. */
+  async function officeUpload(token: string, customerId: string, filename: string, category: string) {
+    const boundary = `----vf${Math.random().toString(16).slice(2)}`;
+    const payload = Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="category"\r\n\r\n${category}\r\n`),
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: application/pdf\r\n\r\n`),
+      PDF,
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ]);
+    const res = await env.app.inject({
+      method: 'POST',
+      url: `/api/customers/${customerId}/documents?year=${YEAR}`,
+      payload,
+      headers: { 'content-type': `multipart/form-data; boundary=${boundary}`, authorization: `Bearer ${token}` },
+    });
+    return { status: res.statusCode, body: res.json() };
+  }
+
+  it('o escritório marca e desmarca "Visível no portal" e o portal lista e libera o download', async () => {
+    const a = await withPortal(VALID_CPFS[0], 'Helena Prado');
+    const shared = await officeUpload(a.token, a.customerId, 'recibo-entrega.pdf', 'shared_with_customer');
+    expect(shared.status).toBe(201);
+    const internal = await officeUpload(a.token, a.customerId, 'planilha-interna.pdf', 'other');
+    expect(internal.status).toBe(201);
+    const sharedId = shared.body[0].id as string;
+    const internalId = internal.body[0].id as string;
+
+    let ov = await a.portal.get('/api/portal/overview');
+    expect(ov.body.documents.map((d: any) => d.filename)).toEqual(['recibo-entrega.pdf']);
+    expect(ov.body.documents[0].exerciseYear).toBe(YEAR);
+    const dl = await env.app.inject({ method: 'GET', url: `/api/portal/documents/${sharedId}`, headers: { authorization: `Bearer ${a.portalToken}` } });
+    expect(dl.statusCode).toBe(200);
+    expect((await a.portal.get(`/api/portal/documents/${internalId}`)).status).toBe(404);
+
+    // marcar depois do upload (a ação da etapa Documentos) e desmarcar
+    expect((await a.api.patch(`/api/documents/${internalId}`, { category: 'shared_with_customer' })).status).toBe(200);
+    ov = await a.portal.get('/api/portal/overview');
+    expect(ov.body.documents.map((d: any) => d.filename).sort()).toEqual(['planilha-interna.pdf', 'recibo-entrega.pdf']);
+    expect((await a.api.patch(`/api/documents/${sharedId}`, { category: 'other' })).status).toBe(200);
+    ov = await a.portal.get('/api/portal/overview');
+    expect(ov.body.documents.map((d: any) => d.filename)).toEqual(['planilha-interna.pdf']);
+    expect((await a.portal.get(`/api/portal/documents/${sharedId}`)).status).toBe(404);
+    const audits = await env.ctx.db.query.auditLogs.findMany({ where: (t, { eq: e }) => e(t.entityId, sharedId) });
+    expect(audits.map((x) => x.action)).toContain('unshare_with_customer');
+
+    // arquivo enviado pelo próprio cliente não é "do escritório"
+    const fromCustomer = await shareDoc(a.officeId, a.customerId, 'meu-rg.pdf', { category: 'checklist', uploadedBy: 'customer' });
+    const refused = await a.api.patch(`/api/documents/${fromCustomer}`, { category: 'shared_with_customer' });
+    expect(refused.status).toBe(400);
+    expect(refused.body.error).toMatch(/próprio cliente/);
+    // mesmo gravado direto no banco, não aparece
+    const forced = await shareDoc(a.officeId, a.customerId, 'forcado.pdf', { uploadedBy: 'customer' });
+    expect((await a.portal.get(`/api/portal/documents/${forced}`)).status).toBe(404);
+    // o que vem da sincronização (recibo, declaração) pode ser compartilhado
+    const synced = await shareDoc(a.officeId, a.customerId, 'recibo.rec.pdf', { category: 'irpf_receipt', uploadedBy: 'sync' });
+    expect((await a.api.patch(`/api/documents/${synced}`, { category: 'shared_with_customer' })).status).toBe(200);
+    expect((await a.portal.get('/api/portal/overview')).body.documents.map((d: any) => d.filename)).toContain('recibo.rec.pdf');
+
+    // outro escritório e outro cliente
+    const b = await withPortal(VALID_CPFS[1], 'Igor Lima');
+    expect((await b.api.patch(`/api/documents/${internalId}`, { category: 'other' })).status).toBe(404);
+    expect((await b.portal.get(`/api/portal/documents/${internalId}`)).status).toBe(404);
+    expect((await b.portal.get('/api/portal/overview')).body.documents).toEqual([]);
+  });
+});
+
 describe('mensagens', () => {
   it('escritório e cliente conversam; lidas, notificação e WhatsApp', async () => {
     const a = await withPortal(VALID_CPFS[5], 'Eva Prado');
@@ -197,6 +264,10 @@ describe('mensagens', () => {
     expect(rows.find((r) => r.channel === 'whatsapp')!.body).toBe('Pode me ligar? 1 < 2 & "ok"');
     const latest = (await a.api.get(`/api/customers/${a.customerId}/messages`)).body.messages.at(-1);
     expect(latest).toMatchObject({ channel: 'whatsapp', deliveryStatus: 'sent' });
+    // quebras de linha digitadas chegam iguais no WhatsApp (o texto passa pelo conversor HTML → texto)
+    await a.api.post(`/api/customers/${a.customerId}/messages`, { body: 'Linha 1\nLinha 2\n\nD\'Ávila', whatsapp: true });
+    await env.ctx.jobs.drain();
+    expect(env.providers.sentWhatsApp.filter((m) => m.officeId === a.officeId).at(-1)?.text).toBe("Linha 1\nLinha 2\n\nD'Ávila");
 
     // sem celular não envia por WhatsApp
     const noPhone = await a.api.post('/api/customers', { name: 'Sem Celular', cpfCnpj: VALID_CPFS[6] });

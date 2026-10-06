@@ -1,7 +1,7 @@
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, count, eq, isNull } from 'drizzle-orm';
 import { STAGE_SUBSTATUS, declarationTotals, stageOfSubstatus, type DeclarationItem, type DeclarationSubstatus } from '@verifco/shared';
 import type { Db } from '../db/client';
-import { customers, declarationItems, declarations } from '../db/schema';
+import { backlogs, customers, declarationItems, declarations } from '../db/schema';
 import { notFound } from '../lib/errors';
 
 export type DeclarationRow = typeof declarations.$inferSelect;
@@ -69,6 +69,22 @@ export async function advanceDeclaration(db: Db, decl: DeclarationRow, substatus
     return setDeclarationSubstatus(db, decl.id, substatus);
   }
   return decl;
+}
+
+/**
+ * "Documentos faltantes" acompanha as pendências (backlogs) da declaração: com alguma em aberto e a
+ * declaração em preenchimento, o subestado passa a "Documentos faltantes"; sem nenhuma em aberto,
+ * volta para "Em elaboração". Vale para as pendências do escritório e as do checklist digital.
+ */
+export async function syncBacklogSubstatus(db: Db, declarationId: string) {
+  const d = await db.query.declarations.findFirst({ where: eq(declarations.id, declarationId) });
+  if (!d) return;
+  const [{ open }] = await db
+    .select({ open: count() })
+    .from(backlogs)
+    .where(and(eq(backlogs.declarationId, declarationId), isNull(backlogs.resolvedAt)));
+  if (open > 0 && d.stage === 'filling' && d.substatus !== 'missing_documents') await setDeclarationSubstatus(db, d.id, 'missing_documents');
+  if (open === 0 && d.substatus === 'missing_documents') await setDeclarationSubstatus(db, d.id, 'elaboration');
 }
 
 const STAGE_ORDER = ['not_started', 'negotiation', 'filling', 'transmitted', 'finished'] as const;

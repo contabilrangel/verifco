@@ -344,9 +344,15 @@ export const backlogs = pgTable(
     dueDate: date('due_date'),
     resolvedAt: ts('resolved_at'),
     createdByUserId: uuid('created_by_user_id'),
+    /**
+     * Origem automática da pendência; vazio = criada pelo escritório. O checklist digital grava
+     * `checklist:item:<id>` (documento pendente) ou `checklist:section:<id>` (seção finalizada com
+     * pendências sem item pendente) e dá baixa sozinho quando o cliente resolve.
+     */
+    sourceKey: text('source_key'),
     createdAt: createdAt(),
   },
-  (t) => [index('backlogs_decl_idx').on(t.declarationId)],
+  (t) => [index('backlogs_decl_idx').on(t.declarationId), uniqueIndex('backlogs_source_uq').on(t.declarationId, t.sourceKey)],
 );
 
 export const darfs = pgTable(

@@ -3,12 +3,12 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { brazilToday, formatDate } from '@verifco/shared';
 import type { AppContext, AuthUser } from '../../context';
-import { backlogs, declarations } from '../../db/schema';
+import { backlogs } from '../../db/schema';
 import { HttpError, badRequest, notFound } from '../../lib/errors';
 import { audit, dateStr, guard, parse, requireUser, uuidParam } from '../../lib/http';
 import { getCustomerForUser } from '../../services/customers';
 import { queueDelivery } from '../../services/delivery';
-import { setDeclarationSubstatus } from '../../services/declarations';
+import { syncBacklogSubstatus } from '../../services/declarations';
 import { getDeclarationForUser } from './access';
 
 type BacklogRow = typeof backlogs.$inferSelect;
@@ -45,16 +45,8 @@ const present = (b: BacklogRow, today = brazilToday()) => ({ ...b, overdue: !b.r
 export async function backlogRoutes(app: FastifyInstance) {
   const { db } = app.ctx;
 
-  const syncSubstatus = async (declarationId: string) => {
-    const d = await db.query.declarations.findFirst({ where: eq(declarations.id, declarationId) });
-    if (!d) return;
-    const [{ open }] = await db
-      .select({ open: sql<number>`count(*)`.mapWith(Number) })
-      .from(backlogs)
-      .where(and(eq(backlogs.declarationId, declarationId), isNull(backlogs.resolvedAt)));
-    if (open > 0 && d.stage === 'filling' && d.substatus !== 'missing_documents') await setDeclarationSubstatus(db, d.id, 'missing_documents');
-    if (open === 0 && d.substatus === 'missing_documents') await setDeclarationSubstatus(db, d.id, 'elaboration');
-  };
+  // a mesma regra vale para as pendências criadas pelo checklist digital (services/declarations.ts)
+  const syncSubstatus = (declarationId: string) => syncBacklogSubstatus(db, declarationId);
 
   app.get('/declarations/:id/backlogs', { preHandler: guard('declaration.view') }, async (req) => {
     const user = requireUser(req);

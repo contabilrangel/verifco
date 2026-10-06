@@ -27,6 +27,7 @@ import { useAuth } from '../../lib/auth';
 import { useAction, useApi, useDebounced } from '../../lib/hooks';
 import { stageLabel, stageTone } from '../../lib/format';
 import { useYear } from '../../lib/year';
+import { MailingRunCard, RecentMailings, type MailingRun } from './MailingRun';
 import { MailPreview } from './TemplatesPage';
 import './communication.css';
 
@@ -37,6 +38,10 @@ const EMPTY: Filters = { groups: [], noGroup: false, responsible: [], stage: [],
 interface PreviewResult {
   type: { key: MailingTypeKey; label: string; templateKey: string; note: string | null; attachment: 'kit' | 'checklist_pdf' | null };
   total: number;
+  /** Clientes que atendem aos filtros; acima de `limit`, o envio é recusado. */
+  matched: number;
+  truncated: boolean;
+  limit: number;
   withEmail: number;
   withoutEmail: number;
   withMobile: number;
@@ -55,14 +60,6 @@ interface PreviewResult {
     text: string;
     attachment: string | null;
   };
-}
-
-interface SendResult {
-  queued: number;
-  alreadyQueued: number;
-  customers: number;
-  deliveries: { email: number; whatsapp: number; total: number };
-  skipped: PreviewResult['skipped'];
 }
 
 const ICONS: Record<MailingTypeKey, ReactNode> = {
@@ -101,7 +98,8 @@ export function MailingPage() {
   const [sampleId, setSampleId] = useState<string>('');
   const [confirm, setConfirm] = useState(false);
   const [requestId, setRequestId] = useState(() => crypto.randomUUID());
-  const [result, setResult] = useState<SendResult | null>(null);
+  /** Mala direta pedida (ou aberta em "Malas diretas recentes"): a tela mostra o andamento dela. */
+  const [run, setRun] = useState<{ id: string; initial: MailingRun | null } | null>(null);
 
   const selected = types.data?.find((t) => t.key === type);
   // tipo vindo da URL sem permissão: volta para a escolha
@@ -127,21 +125,21 @@ export function MailingPage() {
     queryKey: ['mailing', 'preview', debouncedBody],
     queryFn: () => api.post<PreviewResult>('/mailing/preview', debouncedBody),
     // usa o corpo já estabilizado (o tipo pode ter acabado de mudar)
-    enabled: Boolean(type) && debouncedBody.type === type && step >= 2 && !result,
+    enabled: Boolean(type) && debouncedBody.type === type && step >= 2 && !run,
     placeholderData: (prev) => prev,
   });
   const p = preview.data;
 
-  const send = useAction(() => api.post<SendResult>('/mailing/send', { ...body, previewCustomerId: undefined, requestId }), {
-    invalidate: [['deliveries']],
+  const send = useAction(() => api.post<MailingRun>('/mailing/send', { ...body, previewCustomerId: undefined, requestId }), {
+    invalidate: [['deliveries'], ['mailing', 'runs']],
     onSuccess: (r) => {
       setConfirm(false);
-      setResult(r);
+      setRun({ id: r.id, initial: r });
     },
   });
 
   const restart = () => {
-    setResult(null);
+    setRun(null);
     setRequestId(crypto.randomUUID());
     setStep(1);
     setType('');
@@ -163,35 +161,19 @@ export function MailingPage() {
         description={`Envie comunicados, checklists, orçamentos e o kit pós-declaração para vários clientes de uma vez. Exercício ${year}.`}
         crumbs={[{ label: 'Início', to: '/' }, { label: 'Comunicação' }, { label: 'Mala direta' }]}
       />
-      {result ? (
-        <Card>
-          <EmptyState
-            icon={<CircleCheck />}
-            title={result.queued ? `${result.queued} envio(s) na fila para ${result.customers} cliente(s)` : 'Este envio já tinha sido feito'}
-            description={
-              <div className="vf-stack" style={{ '--gap': '8px' } as React.CSSProperties}>
-                <span>
-                  {result.deliveries.email} por e-mail e {result.deliveries.whatsapp} por WhatsApp.
-                  {result.alreadyQueued > 0 && ` ${result.alreadyQueued} já estavam na fila e não foram duplicados.`}
-                  {selected?.attachment && ' Os anexos em PDF são gerados um a um e podem levar alguns minutos.'}
-                </span>
-                {result.skipped.map((s) => (
-                  <span key={s.reason} className="vf-text-xs">
-                    {s.count} sem envio — {s.label.toLowerCase()}: {names(s.names, s.count)}
-                  </span>
-                ))}
-              </div>
-            }
-            action={
-              <div className="vf-inline">
-                <Button onClick={() => navigate('/comunicacao/envios')}>Acompanhar envios</Button>
-                <Button kind="secondary" onClick={restart}>
-                  Nova mala direta
-                </Button>
-              </div>
-            }
-          />
-        </Card>
+      {run ? (
+        <MailingRunCard
+          id={run.id}
+          initial={run.initial}
+          actions={
+            <>
+              {can('mailing.list') && <Button onClick={() => navigate('/comunicacao/envios')}>Ver os e-mails enviados</Button>}
+              <Button kind="secondary" onClick={restart}>
+                Nova mala direta
+              </Button>
+            </>
+          }
+        />
       ) : (
         <>
           <nav className="vf-wizard-steps" aria-label="Etapas">
@@ -255,6 +237,11 @@ export function MailingPage() {
               </div>
             </Card>
           )}
+          {step === 1 && (
+            <div style={{ marginTop: 24 }}>
+              <RecentMailings onOpen={(id) => setRun({ id, initial: null })} />
+            </div>
+          )}
 
           {step === 2 && type && (
             <RecipientsStep
@@ -308,6 +295,11 @@ export function MailingPage() {
                         <Stat label="E-mails" value={p.deliveries.email} hint={`${p.withoutEmail} cliente(s) sem e-mail`} />
                         <Stat label="WhatsApp" value={p.deliveries.whatsapp} hint={`${p.withoutMobile} cliente(s) sem celular`} />
                       </div>
+                      {p.truncated && (
+                        <Alert tone="danger" title={`${p.matched.toLocaleString('pt-BR')} clientes atendem aos filtros`}>
+                          Cada mala direta vai para até {p.limit.toLocaleString('pt-BR')} clientes. Volte aos destinatários e use os filtros (grupo, responsável, etapa) para dividir o envio.
+                        </Alert>
+                      )}
                       {p.type.note && <Alert>{p.type.note}</Alert>}
                       {p.skipped.length > 0 && (
                         <Alert tone="warning" title={`${p.skipped.reduce((a, s) => a + s.count, 0)} situação(ões) sem envio`}>
@@ -383,7 +375,7 @@ export function MailingPage() {
                 <Button kind="secondary" icon={<ArrowLeft />} onClick={() => setStep(2)}>
                   Destinatários
                 </Button>
-                <Button icon={<Send />} disabled={!p || !p.customers || preview.isFetching} onClick={() => setConfirm(true)}>
+                <Button icon={<Send />} disabled={!p || !p.customers || p.truncated || preview.isFetching} onClick={() => setConfirm(true)}>
                   Enviar para {p?.customers ?? 0} cliente(s)
                 </Button>
               </div>
@@ -406,7 +398,7 @@ export function MailingPage() {
                 <strong>{selected?.label}</strong> para <strong>{p.customers}</strong> cliente(s): {p.deliveries.email} e-mail(s) e {p.deliveries.whatsapp} WhatsApp.
               </span>
               {p.total - p.customers > 0 && <span>{p.total - p.customers} cliente(s) ficarão de fora por falta de contato ou de dados.</span>}
-              {!can('mailing.list') && <span>Depois do envio, acompanhe a situação com quem tem acesso a E-mails enviados.</span>}
+              <span>O envio vai para a fila e você acompanha o andamento nesta tela.</span>
             </div>
           )
         }
@@ -524,6 +516,13 @@ function RecipientsStep({
               </tbody>
             </table>
             {preview.total > preview.recipients.length && <div className="vf-text-xs vf-muted" style={{ padding: 16 }}>Mostrando {preview.recipients.length} de {preview.total}.</div>}
+            {preview.truncated && (
+              <div style={{ padding: '0 16px 16px' }}>
+                <Alert tone="danger">
+                  {preview.matched.toLocaleString('pt-BR')} clientes atendem aos filtros; cada mala direta vai para até {preview.limit.toLocaleString('pt-BR')}. Use os filtros para dividir o envio.
+                </Alert>
+              </div>
+            )}
           </div>
         )}
         <div className="vf-inline vf-between" style={{ padding: 16, borderTop: '1px solid var(--color-border)' }}>

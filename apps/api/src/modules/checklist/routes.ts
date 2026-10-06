@@ -9,19 +9,21 @@ import { audit, emptyToNull, guard, parse, requirePermission, requireUser, uuidP
 import { getCustomerForUser } from '../../services/customers';
 import { getOrCreateDeclaration } from '../../services/declarations';
 import { queueDelivery } from '../../services/delivery';
-import { buildChecklistPdf, pdfItems } from './pdf';
+import { checklistPdfFor } from './pdf';
 import { checklistPublicRoutes } from './public';
 import {
   attachFiles,
   buildZip,
   createChecklist,
+  issueChecklistAccess,
   loadBundle,
   lockOf,
+  markChecklistSent,
   officeView,
   previousYearItems,
   refreshFinished,
   removeDocument,
-  rotateAccess,
+  syncChecklistBacklogs,
 } from './service';
 import { sendStoredFile } from '../../services/uploads';
 import { readChecklistUploads } from './uploads';
@@ -114,9 +116,11 @@ export async function checklistRoutes(app: FastifyInstance) {
   app.delete('/checklists/:checklistId', { preHandler: guard('checklist_digital.create') }, async (req) => {
     const user = requireUser(req);
     const { checklistId } = parse(checklistParam, req.params);
-    const { checklist, customer } = await loadForUser(user, checklistId);
+    const { checklist, declaration, customer } = await loadForUser(user, checklistId);
     // os arquivos já enviados continuam nos documentos do cliente
     await db.delete(checklists).where(eq(checklists.id, checklist.id));
+    // as pendências que vieram do checklist recebem baixa
+    await syncChecklistBacklogs(db, declaration.id);
     await audit(req, 'delete', 'checklist', checklist.id, { customerId: customer.id });
     return { ok: true };
   });
@@ -147,7 +151,7 @@ export async function checklistRoutes(app: FastifyInstance) {
     const user = requireUser(req);
     const { checklistId, itemId } = parse(itemParam, req.params);
     const body = parse(itemBody.partial(), req.body);
-    await loadForUser(user, checklistId);
+    const { declaration } = await loadForUser(user, checklistId);
     await itemOf(checklistId, itemId);
     await db
       .update(checklistItems)
@@ -160,16 +164,18 @@ export async function checklistRoutes(app: FastifyInstance) {
         ...(body.status !== undefined && { status: body.status }),
       })
       .where(eq(checklistItems.id, itemId));
+    await syncChecklistBacklogs(db, declaration.id);
     return fullView(checklistId);
   });
 
   app.delete('/checklists/:checklistId/items/:itemId', { preHandler: guard('checklist_digital.edit') }, async (req) => {
     const user = requireUser(req);
     const { checklistId, itemId } = parse(itemParam, req.params);
-    await loadForUser(user, checklistId);
+    const { declaration } = await loadForUser(user, checklistId);
     const item = await itemOf(checklistId, itemId);
     // documentos enviados continuam guardados nos documentos do cliente (vínculo é desfeito)
     await db.delete(checklistItems).where(eq(checklistItems.id, item.id));
+    await syncChecklistBacklogs(db, declaration.id);
     await audit(req, 'delete_item', 'checklist', checklistId, { title: item.title });
     return fullView(checklistId);
   });
@@ -183,6 +189,7 @@ export async function checklistRoutes(app: FastifyInstance) {
     const uploads = await readChecklistUploads(req);
     await attachFiles(ctx, { officeId: user.officeId, customerId: customer.id, declarationId: declaration.id, itemId: item.id, uploadedBy: 'office', userId: user.userId, uploads });
     if (item.status === 'pending') await db.update(checklistItems).set({ status: 'sent' }).where(eq(checklistItems.id, item.id));
+    await syncChecklistBacklogs(db, declaration.id);
     reply.status(201);
     return fullView(checklistId);
   });
@@ -210,9 +217,10 @@ export async function checklistRoutes(app: FastifyInstance) {
   app.delete('/checklists/:checklistId/files/:docId', { preHandler: guard('checklist_digital.upload') }, async (req) => {
     const user = requireUser(req);
     const { checklistId, docId } = parse(docParam, req.params);
-    await loadForUser(user, checklistId);
+    const { declaration } = await loadForUser(user, checklistId);
     const doc = await docOf(checklistId, docId);
     await removeDocument(ctx, user.officeId, doc);
+    await syncChecklistBacklogs(db, declaration.id);
     await audit(req, 'delete_file', 'checklist', checklistId, { documentId: doc.id });
     return fullView(checklistId);
   });
@@ -264,26 +272,27 @@ export async function checklistRoutes(app: FastifyInstance) {
     const user = requireUser(req);
     const { checklistId } = parse(checklistParam, req.params);
     const { channels } = parse(z.object({ channels: z.array(z.enum(['email', 'whatsapp'])).max(2).default([]) }), req.body);
-    const { declaration, customer } = await loadForUser(user, checklistId);
+    const { checklist, declaration, customer } = await loadForUser(user, checklistId);
     const unique = [...new Set(channels)];
     if (unique.includes('email') && !customer.email) throw badRequest('O cliente não tem e-mail cadastrado.');
     if (unique.includes('whatsapp') && !customer.mobile) throw badRequest('O cliente não tem celular cadastrado.');
-    const { token, code, expiresAt } = await rotateAccess(db, checklistId);
-    const link = `${ctx.config.WEB_URL.replace(/\/$/, '')}/checklist/${token}`;
+    // o mesmo serviço da mala direta do checklist digital
+    const access = await issueChecklistAccess(ctx, { officeId: user.officeId, customer, exerciseYear: declaration.exerciseYear, declaration, checklist });
+    const { link, code, expiresAt } = access;
     for (const channel of unique) {
       await queueDelivery(ctx, {
         officeId: user.officeId,
         customerId: customer.id,
         channel,
         templateKey: 'checklist_digital',
-        values: { LINK: link, CODIGO: code },
+        values: access.values,
         // link e código só na mensagem entregue; o histórico (envios e mensagens) guarda a versão mascarada
-        redact: [token, code],
+        redact: access.redact,
         exerciseYear: declaration.exerciseYear,
         userId: user.userId,
       });
     }
-    if (unique.length) await db.update(checklists).set({ sentAt: new Date() }).where(eq(checklists.id, checklistId));
+    if (unique.length) await markChecklistSent(db, [checklistId]);
     await audit(req, unique.length ? 'send_access' : 'regenerate_access', 'checklist', checklistId, { channels: unique });
     return { link, code, channels: unique, expiresAt };
   });
@@ -295,12 +304,11 @@ export async function checklistRoutes(app: FastifyInstance) {
     const user = requirePermission(req, inline ? 'checklist_pdf.view' : 'checklist_pdf.download');
     const { id } = parse(uuidParam, req.params);
     const customer = await getCustomerForUser(ctx, user, id);
-    const declaration = await db.query.declarations.findFirst({ where: and(eq(declarations.customerId, customer.id), eq(declarations.exerciseYear, q.year)) });
-    const pdf = await buildChecklistPdf(ctx, customer, q.year, await pdfItems(ctx, customer, declaration ?? null, q.year));
+    const pdf = await checklistPdfFor(ctx, customer, q.year);
     return reply
       .header('Content-Type', 'application/pdf')
-      .header('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename="checklist-irpf-${q.year}.pdf"`)
-      .send(pdf);
+      .header('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename="${pdf.filename}"`)
+      .send(pdf.buffer);
   });
 
   app.post('/customers/:id/checklist-pdf/send', { preHandler: guard('checklist_pdf.send') }, async (req) => {
@@ -310,10 +318,8 @@ export async function checklistRoutes(app: FastifyInstance) {
     const customer = await getCustomerForUser(ctx, user, id);
     if (body.channel === 'email' && !customer.email) throw badRequest('O cliente não tem e-mail cadastrado.');
     if (body.channel === 'whatsapp' && !customer.mobile) throw badRequest('O cliente não tem celular cadastrado.');
-    const declaration = await db.query.declarations.findFirst({ where: and(eq(declarations.customerId, customer.id), eq(declarations.exerciseYear, body.year)) });
-    const pdf = await buildChecklistPdf(ctx, customer, body.year, await pdfItems(ctx, customer, declaration ?? null, body.year));
-    const filename = `checklist-irpf-${body.year}.pdf`;
-    const saved = await ctx.files.save({ officeId: user.officeId, data: pdf, filename, mimeType: 'application/pdf', userId: user.userId });
+    const { buffer, filename } = await checklistPdfFor(ctx, customer, body.year);
+    const saved = await ctx.files.save({ officeId: user.officeId, data: buffer, filename, mimeType: 'application/pdf', userId: user.userId });
     const delivery = await queueDelivery(ctx, {
       officeId: user.officeId,
       customerId: customer.id,

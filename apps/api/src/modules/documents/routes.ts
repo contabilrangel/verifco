@@ -2,7 +2,7 @@ import { and, asc, desc, eq, inArray, type SQL } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import JSZip from 'jszip';
 import { z } from 'zod';
-import { DOCUMENT_CATEGORY_LIST, formatCpfCnpj, type DocumentCategory } from '@verifco/shared';
+import { DOCUMENT_CATEGORY_LIST, SHARED_WITH_CUSTOMER, canShareWithCustomer, formatCpfCnpj, type DocumentCategory } from '@verifco/shared';
 import type { AppContext, AuthUser } from '../../context';
 import { customers, declarations, documents, files } from '../../db/schema';
 import { HttpError, badRequest, notFound } from '../../lib/errors';
@@ -89,17 +89,26 @@ export async function documentRoutes(app: FastifyInstance) {
         .returning();
       created.push({ ...doc, filename: saved.filename, mimeType: saved.mimeType, size: saved.size, exerciseYear: year });
     }
-    await audit(req, 'upload', 'document', customer.id, { count: created.length, year });
+    await audit(req, 'upload', 'document', customer.id, { count: created.length, year, ...(category === SHARED_WITH_CUSTOMER && { sharedWithCustomer: true }) });
     reply.status(201);
     return created;
   });
 
+  /**
+   * Muda a categoria. `shared_with_customer` deixa o arquivo visível (e baixável) no portal do
+   * cliente, em "Documentos do escritório"; trocar por outra categoria o tira de lá.
+   */
   app.patch('/documents/:id', { preHandler: guard('declaration.edit') }, async (req) => {
     const user = requireUser(req);
     const { id } = parse(uuidParam, req.params);
     const { category } = parse(z.object({ category: categoryEnum }), req.body);
     const doc = await getDocumentForUser(app.ctx, user, id);
+    if (category === SHARED_WITH_CUSTOMER && !canShareWithCustomer(doc.uploadedBy)) {
+      throw badRequest('Este arquivo foi enviado pelo próprio cliente. Só arquivos do escritório podem ser compartilhados no portal.');
+    }
     const [row] = await db.update(documents).set({ category }).where(eq(documents.id, doc.id)).returning();
+    const shared = category === SHARED_WITH_CUSTOMER;
+    if (shared !== (doc.category === SHARED_WITH_CUSTOMER)) await audit(req, shared ? 'share_with_customer' : 'unshare_with_customer', 'document', doc.id);
     return row;
   });
 

@@ -1,8 +1,9 @@
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { CHECKLIST_FILLABLE_SECTIONS, CHECKLIST_SECTIONS, buildChecklistDrafts, formatCpfCnpj, type ChecklistSection } from '@verifco/shared';
 import type { AppContext } from '../../context';
-import { checklistItems, checklists } from '../../db/schema';
+import { checklistItems, checklists, declarations } from '../../db/schema';
 import { PdfBuilder, loadBranding } from '../../services/pdf';
+import { slug } from '../reports/kit';
 import { previousYearItems, type CustomerRow, type DeclarationRow } from './service';
 
 interface PdfItem {
@@ -69,4 +70,21 @@ export async function buildChecklistPdf(ctx: AppContext, customer: CustomerRow, 
   }
   doc.y = startY + 3 * 22 + 8;
   return pdf.finish();
+}
+
+/** Nome do arquivo do checklist em PDF (download, envio individual e mala direta). */
+export const checklistPdfFilename = (customer: Pick<CustomerRow, 'name'>, exerciseYear: number) => `checklist-irpf-${exerciseYear}-${slug(customer.name) || 'cliente'}.pdf`;
+
+/**
+ * O checklist em PDF do cliente no exercício. É o único gerador: a etapa Documentação, o envio
+ * individual, a mala direta e a prévia do anexo usam este, com os itens do checklist digital (sem
+ * os removidos e com os acrescentados pelo escritório) ou, sem checklist, os do ano anterior.
+ */
+export async function checklistPdfFor(ctx: AppContext, customer: CustomerRow, exerciseYear: number, declaration?: DeclarationRow | null) {
+  const decl =
+    declaration !== undefined
+      ? declaration
+      : ((await ctx.db.query.declarations.findFirst({ where: and(eq(declarations.customerId, customer.id), eq(declarations.exerciseYear, exerciseYear)) })) ?? null);
+  const buffer = await buildChecklistPdf(ctx, customer, exerciseYear, await pdfItems(ctx, customer, decl, exerciseYear));
+  return { buffer, filename: checklistPdfFilename(customer, exerciseYear) };
 }

@@ -14,8 +14,11 @@ const messageBody = z.string().trim().min(1, 'Escreva a mensagem').max(4000, 'Me
 /** Mensagens novas do cliente em sequência geram uma notificação só (enquanto não lida). */
 const NOTIFY_COALESCE_MS = 30 * 60_000;
 
-/** Escapa só o necessário para o texto passar pelo conversor HTML → texto do WhatsApp. */
-const escapeForWhatsApp = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+/**
+ * Texto digitado → HTML que o conversor do WhatsApp (htmlToText) devolve igual: escapa o que seria
+ * lido como tag ou entidade e mantém as quebras de linha (no HTML, quebra do código não conta).
+ */
+const escapeForWhatsApp = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\r?\n/g, '<br>');
 
 /**
  * Conversa entre escritório e cliente. O escritório envia pelo portal (e, se quiser, também

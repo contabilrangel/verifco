@@ -58,7 +58,10 @@ export const HELP_SECTIONS: HelpSection[] = [
     title: 'Comunicação',
     faqs: [
       { q: 'Como personalizo os e-mails?', a: 'Em Comunicação › Templates de e-mail, edite o assunto e o conteúdo. Clique nas variáveis para inserir dados do cliente, como {{CLIENTE}}. Use Pré-visualizar para conferir e Restaurar modelo padrão para desfazer.' },
-      { q: 'Como envio uma mala direta?', a: 'Em Comunicação › Mala direta, escolha o tipo, os destinatários (por filtros ou pela seleção feita na lista de clientes) e o canal. A revisão mostra quantos clientes não têm e-mail ou celular antes de enviar.' },
+      {
+        q: 'Como envio uma mala direta?',
+        a: 'Em Comunicação › Mala direta, escolha o tipo, os destinatários (por filtros ou pela seleção feita na lista de clientes) e o canal. A revisão mostra quantos clientes não têm e-mail ou celular antes de enviar. O envio vai para a fila e a própria tela mostra o andamento (também em “Malas diretas recentes”). No checklist digital, cada cliente recebe um link e um código próprios (o checklist é criado se ainda não existir); no orçamento, vai o link de aprovação online e o orçamento passa a “Enviado”.',
+      },
       { q: 'O mesmo envio pode sair duas vezes?', a: 'Não. Cada envio tem uma identificação única; se a tela for confirmada duas vezes, o sistema reconhece a repetição e não duplica.' },
       { q: 'Como sei se o e-mail chegou?', a: 'Em Comunicação › E-mails enviados você vê a situação de cada envio e o conteúdo enviado. Envios que falharam podem ser reenviados.' },
     ],

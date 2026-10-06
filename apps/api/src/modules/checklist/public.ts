@@ -1,24 +1,26 @@
 import { and, count, eq, inArray } from 'drizzle-orm';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import {
-  CHECKLIST_FILLABLE_SECTIONS,
-  CHECKLIST_FINISH_OPTIONS,
-  CHECKLIST_SECTIONS,
-  onlyDigits,
-  stageOfSubstatus,
-  type ChecklistSection,
-  type DeclarationSubstatus,
-} from '@verifco/shared';
+import { CHECKLIST_FILLABLE_SECTIONS, CHECKLIST_FINISH_OPTIONS, CHECKLIST_SECTIONS, onlyDigits, type ChecklistSection } from '@verifco/shared';
 import { checklistItems, checklistSections, checklists, customers, declarations, documents, offices } from '../../db/schema';
 import { safeEqual, sha256 } from '../../lib/crypto';
 import { badRequest, conflict, forbidden, notFound, unauthorized } from '../../lib/errors';
 import { emptyToNull, parse } from '../../lib/http';
 import { signCustomerToken } from '../../plugins/auth';
-import { setDeclarationSubstatus } from '../../services/declarations';
 import { CUSTOMER_LOGIN_RULE, check, fail, resetLimit } from '../../services/rate-limit';
 import { requireChecklistAccess } from '../portal/access';
-import { attachFiles, checklistAccessValid, checklistCodeHash, customerView, loadBundle, lockOf, notifyOffice, refreshFinished, removeDocument } from './service';
+import {
+  attachFiles,
+  checklistAccessValid,
+  checklistCodeHash,
+  customerView,
+  loadBundle,
+  lockOf,
+  notifyOffice,
+  refreshFinished,
+  removeDocument,
+  syncChecklistBacklogs,
+} from './service';
 import { sendStoredFile } from '../../services/uploads';
 import { readChecklistUploads } from './uploads';
 
@@ -149,6 +151,7 @@ export async function checklistPublicRoutes(app: FastifyInstance) {
         ...(body.customerNote !== undefined && { customerNote: body.customerNote }),
       })
       .where(eq(checklistItems.id, item.id));
+    if (body.status !== undefined) await syncChecklistBacklogs(db, l.declaration.id);
     return view(id, req);
   });
 
@@ -182,6 +185,7 @@ export async function checklistPublicRoutes(app: FastifyInstance) {
     const docs = await db.select().from(documents).where(eq(documents.checklistItemId, item.id));
     for (const d of docs) await removeDocument(ctx, l.checklist.officeId, d);
     await db.delete(checklistItems).where(eq(checklistItems.id, item.id));
+    await syncChecklistBacklogs(db, l.declaration.id);
     return view(id, req);
   });
 
@@ -195,6 +199,7 @@ export async function checklistPublicRoutes(app: FastifyInstance) {
     const uploads = await readChecklistUploads(req);
     await attachFiles(ctx, { officeId: l.checklist.officeId, customerId: l.customer.id, declarationId: l.declaration.id, itemId: item.id, uploadedBy: 'customer', uploads });
     await db.update(checklistItems).set({ status: 'sent' }).where(eq(checklistItems.id, item.id));
+    await syncChecklistBacklogs(db, l.declaration.id);
     reply.status(201);
     return view(id, req);
   });
@@ -227,6 +232,7 @@ export async function checklistPublicRoutes(app: FastifyInstance) {
     const item = doc.checklistItemId ? await itemOf(l, doc.checklistItemId) : null;
     if (item) await openSection(l, item.section);
     await removeDocument(ctx, l.checklist.officeId, doc);
+    await syncChecklistBacklogs(db, l.declaration.id);
     return view(id, req);
   });
 
@@ -253,10 +259,10 @@ export async function checklistPublicRoutes(app: FastifyInstance) {
       .set({ status: body.status, note: body.note ?? null, finishedAt: new Date() })
       .where(and(eq(checklistSections.checklistId, l.checklist.id), eq(checklistSections.section, section)));
 
-    // pendências: a declaração em preenchimento passa para "Documentos faltantes"
-    if (body.status === 'pending_documents' && stageOfSubstatus(l.declaration.substatus as DeclarationSubstatus) === 'filling' && l.declaration.substatus !== 'missing_documents') {
-      await setDeclarationSubstatus(db, l.declaration.id, 'missing_documents');
-    }
+    // documentos pendentes viram pendências da declaração (etapa "Documentos faltantes", portal e
+    // relatório), e a declaração em preenchimento passa para "Documentos faltantes"; concluir ou
+    // finalizar "sem documentos" dá baixa nelas
+    await syncChecklistBacklogs(db, l.declaration.id, { finishedSection: section });
 
     const label = CHECKLIST_SECTIONS[section];
     const statusLabel = CHECKLIST_FINISH_OPTIONS.find((o) => o.value === body.status)?.label ?? body.status;

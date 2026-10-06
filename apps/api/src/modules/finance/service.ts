@@ -290,29 +290,45 @@ export async function issueApprovalLink(ctx: AppContext, budget: BudgetRow) {
 const valueText = (b: BudgetRow) =>
   b.installments > 1 ? `${formatMoney(b.totalCents)} (${b.installments}x de ${formatMoney(Math.ceil(b.totalCents / b.installments))})` : formatMoney(b.totalCents);
 
+/** Template do envio do orçamento (com link de aprovação online). */
+export const BUDGET_SEND_TEMPLATE = 'budget_digital';
+
+/** Valores do template `budget_digital` (o valor mostra as parcelas, como no envio do financeiro). */
+export const budgetTemplateValues = (b: BudgetRow, link: string) => ({ CATEGORIA: categoryLabel(b.category), DESCRICAO: b.description ?? '', VALOR: valueText(b), LINK: link });
+
+/**
+ * Prepara o envio do orçamento: gera um novo link de aprovação (o anterior deixa de valer), marca
+ * como enviado e avança a declaração para "Orçamento enviado". Devolve os valores do template
+ * {@link BUDGET_SEND_TEMPLATE}; quem chama enfileira o envio. Usado pelo envio do financeiro e
+ * pela mala direta.
+ */
+export async function prepareBudgetSend(ctx: AppContext, budget: BudgetRow) {
+  const issued = await issueApprovalLink(ctx, budget);
+  return { ...issued, templateKey: BUDGET_SEND_TEMPLATE, values: budgetTemplateValues(issued.budget, issued.link) };
+}
+
 /** Envia a proposta por e-mail e/ou WhatsApp com o link de aprovação (template `budget_digital`). */
 export async function sendBudget(ctx: AppContext, budget: BudgetRow, channels: Channel[], userId: string | null) {
   if (!channels.length) throw badRequest('Escolha ao menos um canal de envio.');
   const customer = await ctx.db.query.customers.findFirst({ where: eq(customers.id, budget.customerId) });
   if (!customer) throw notFound('Cliente');
   assertContacts(customer, channels);
-  const issued = await issueApprovalLink(ctx, budget);
-  const b = issued.budget;
-  const values = { CATEGORIA: categoryLabel(b.category), DESCRICAO: b.description ?? '', VALOR: valueText(b), LINK: issued.link };
+  const prepared = await prepareBudgetSend(ctx, budget);
+  const { budget: b, values, templateKey, ...issued } = prepared;
   const tokenKey = sha256(issued.token).slice(0, 16);
   for (const channel of channels) {
     await queueDelivery(ctx, {
       officeId: b.officeId,
       customerId: b.customerId,
       channel,
-      templateKey: 'budget_digital',
+      templateKey,
       values,
       exerciseYear: b.exerciseYear,
       idempotencyKey: `budget:${b.id}:${channel}:${tokenKey}`,
       userId,
     });
   }
-  return issued;
+  return { budget: b, token: issued.token, link: issued.link };
 }
 
 // ---------------------------------------------------------------------------

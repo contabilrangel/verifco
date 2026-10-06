@@ -1,7 +1,15 @@
 import { useState, type CSSProperties } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Download, Eye, File as FileIcon, FileArchive, FileImage, FileSpreadsheet, FileText, FolderOpen, Trash2 } from 'lucide-react';
-import { DOCUMENT_CATEGORIES, DOCUMENT_CATEGORY_LIST, documentCategoryLabel, documentOriginLabel } from '@verifco/shared';
+import { Download, Eye, File as FileIcon, FileArchive, FileImage, FileSpreadsheet, FileText, FolderOpen, Share2, Trash2, Undo2 } from 'lucide-react';
+import {
+  DOCUMENT_CATEGORIES,
+  DOCUMENT_CATEGORY_LIST,
+  SHARED_WITH_CUSTOMER,
+  UNSHARED_CATEGORY,
+  canShareWithCustomer,
+  documentCategoryLabel,
+  documentOriginLabel,
+} from '@verifco/shared';
 import { Alert, Button, Card, ConfirmDialog, DropFile, EmptyState, IconButton, Loading, Select, Tag, useToast, type Tone } from '../../ds';
 import { api, errorMessage, isViewableType } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
@@ -66,6 +74,11 @@ export function DocumentsStep() {
     }
   };
   const changeCategory = useAction((v: { id: string; category: string }) => api.patch(`/documents/${v.id}`, { category: v.category }), { success: 'Categoria atualizada.', onSuccess: refresh });
+  /** "Visível no portal": o arquivo aparece em "Documentos do escritório" no portal do cliente. */
+  const share = useAction((v: { id: string; shared: boolean }) => api.patch(`/documents/${v.id}`, { category: v.shared ? SHARED_WITH_CUSTOMER : UNSHARED_CATEGORY }), {
+    success: 'Visibilidade no portal atualizada.',
+    onSuccess: refresh,
+  });
   const del = useAction((d: DocumentRow) => api.del(`/documents/${d.id}`), { success: 'Arquivo excluído.', onSuccess: () => (setRemove(null), refresh()) });
   const zip = async () => {
     setZipping(true);
@@ -95,6 +108,7 @@ export function DocumentsStep() {
         >
           <div className="vf-stack">
             <DropFile multiple onFiles={(f) => void upload(f)} disabled={uploading} title={uploading ? 'Enviando...' : "Arraste os arquivos ou clique em 'Selecionar'"} hint="PDF, imagens, planilhas e outros arquivos até 25 MB cada, até 20 por vez." />
+            <span className="vf-text-xs vf-muted">Na categoria “{DOCUMENT_CATEGORIES[SHARED_WITH_CUSTOMER]}”, o cliente vê e baixa o arquivo no portal (declaração, recibo, DARF).</span>
           </div>
         </Card>
       )}
@@ -139,6 +153,7 @@ export function DocumentsStep() {
                       <span className="vf-file-cell" title={d.filename}>
                         {iconFor(d.mimeType, d.filename)}
                         <span>{d.filename}</span>
+                        {d.category === SHARED_WITH_CUSTOMER && <Tag tone="success">No portal</Tag>}
                       </span>
                     </td>
                     <td>
@@ -168,6 +183,17 @@ export function DocumentsStep() {
                       <IconButton label="Baixar" onClick={() => void api.download(`/documents/${d.id}/file`, d.filename)}>
                         <Download />
                       </IconButton>
+                      {canEdit &&
+                        canShareWithCustomer(d.uploadedBy) &&
+                        (d.category === SHARED_WITH_CUSTOMER ? (
+                          <IconButton label="Tirar do portal do cliente" disabled={share.isPending} onClick={() => share.mutate({ id: d.id, shared: false })}>
+                            <Undo2 />
+                          </IconButton>
+                        ) : (
+                          <IconButton label="Mostrar no portal do cliente" disabled={share.isPending} onClick={() => share.mutate({ id: d.id, shared: true })}>
+                            <Share2 />
+                          </IconButton>
+                        ))}
                       {canEdit && (
                         <IconButton label="Excluir" onClick={() => setRemove(d)}>
                           <Trash2 />

@@ -26,12 +26,12 @@ export const MAILING_TYPES: MailingType[] = [
     permission: 'mailing.send_checklist_digital',
     templateKey: 'checklist_digital',
     attachment: null,
-    note: 'O link e o código individuais do checklist são gerados na etapa Documentação de cada cliente. Pela mala direta, o e-mail leva o endereço do portal do cliente.',
+    note: 'Cria o checklist do exercício de quem ainda não tem e gera um link e um código individuais para cada cliente (os anteriores deixam de valer). No histórico de envios, o link e o código ficam mascarados. Clientes com o checklist só para consulta ficam de fora.',
   },
   {
     key: 'checklist_pdf',
     label: 'Checklist em PDF',
-    description: 'Lista de documentos em PDF, montada com base na declaração do ano anterior.',
+    description: 'Lista de documentos em PDF: a do checklist digital do cliente ou, se ainda não houver, a montada com base na declaração do ano anterior.',
     permission: 'mailing.send_checklist_pdf',
     templateKey: 'checklist_pdf',
     attachment: 'checklist_pdf',
@@ -65,9 +65,9 @@ export const MAILING_TYPES: MailingType[] = [
     label: 'Orçamento',
     description: 'Proposta de honorários do exercício (orçamento já cadastrado).',
     permission: 'mailing.send_budget',
-    templateKey: 'budget',
+    templateKey: 'budget_digital',
     attachment: null,
-    note: 'Usa o orçamento mais recente do exercício. O link de aprovação online é gerado na etapa Orçamento de cada cliente.',
+    note: 'Usa o orçamento mais recente do exercício, se estiver em rascunho ou já enviado (aprovados e recusados ficam de fora). Cada cliente recebe um novo link de aprovação online (o anterior deixa de valer); o orçamento passa a “Enviado” e a declaração avança para “Orçamento enviado”.',
   },
   {
     key: 'kit',
@@ -85,7 +85,8 @@ export function getMailingType(key: string): MailingType | undefined {
 
 /** Tipo de mala direta correspondente a um template (para links vindos de outras telas). */
 export function mailingTypeForTemplate(templateKey: string): MailingType | undefined {
-  if (templateKey === 'budget_digital') return getMailingType('budget');
+  // o template "Orçamento" (sem link) é o antigo da mala direta de orçamento
+  if (templateKey === 'budget') return getMailingType('budget');
   return MAILING_TYPES.find((t) => t.templateKey === templateKey && t.key !== 'kit');
 }
 
@@ -95,8 +96,27 @@ export const MAILING_SKIP_REASONS = {
   no_declaration: 'Sem declaração no exercício',
   not_transmitted: 'Declaração ainda não transmitida',
   no_budget: 'Sem orçamento no exercício',
+  budget_approved: 'Orçamento já aprovado',
+  budget_rejected: 'Orçamento recusado',
+  checklist_locked: 'Checklist só para consulta',
+  customer_removed: 'Cliente excluído antes do envio',
 } as const;
 export type MailingSkipReason = keyof typeof MAILING_SKIP_REASONS;
+
+/** Clientes por mala direta. Acima disso, o envio é recusado e o escritório divide pelos filtros. */
+export const MAILING_MAX_RECIPIENTS = 5000;
+
+/** Valor mostrado na prévia no lugar do link e do código, que só são gerados no envio. */
+export const MAILING_GENERATED_ON_SEND = '(gerado no envio)';
+
+/** Situação de uma mala direta (job na fila). */
+export const MAILING_RUN_STATUS = {
+  queued: 'Na fila',
+  running: 'Enviando',
+  done: 'Concluída',
+  failed: 'Falhou',
+} as const;
+export type MailingRunStatus = keyof typeof MAILING_RUN_STATUS;
 
 // ---------------------------------------------------------------------------
 // Relatórios individuais
