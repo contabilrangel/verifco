@@ -1,0 +1,3247 @@
+From bb5912a12182f536cb5c878dce13e811ddc7f235 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 6 Oct 2026 12:13:07 +0000
+Subject: [PATCH] =?UTF-8?q?Comunica=C3=A7=C3=A3o:=20mala=20direta=20pela?=
+ =?UTF-8?q?=20fila,=20checklist=20e=20or=C3=A7amento=20reais,=20PDF=20?=
+ =?UTF-8?q?=C3=BAnico=20e=20texto=20do=20WhatsApp?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- INT-2: issueChecklistAccess (checklist/service.ts) cria o checklist do exercício se faltar, gera link /checklist/<token> e código e grava o envio; usada pela rota POST /checklists/:id/access e pela mala direta (só na execução; a prévia mostra "(gerado no envio)"). Link e código seguem mascarados no histórico. Checklist bloqueado ou em modo consulta fica de fora (checklist_locked). Nota do tipo atualizada.
+- INT-5: mala direta "Orçamento" usa o rascunho/enviado mais recente pelo fluxo do financeiro (issueApprovalLink, template budget_digital, VALOR com as parcelas): orçamento fica "Enviado" com sentAt e a declaração avança; aprovado fica de fora (budget_approved).
+- INT-8, CON-4: removido communication/checklist-pdf.ts; mala direta e prévia do anexo usam o PDF da etapa Documentação (customerChecklistPdf em checklist/pdf.ts); previousYearItems só em checklist/service.ts.
+- CON-5: htmlToText, decodeHtmlEntities e escapeHtml únicos em packages/shared (html.ts), usados por delivery.ts, mailing.ts, finance/text.ts, templates, admin, auth/jobs, budget-routes e backlogs.
+- DAD-5: POST /mailing/send só registra o pedido no job mailing.plan (202), que grava envios, mensagens e jobs em lote com idempotência; GET /mailing/requests/:requestId mostra o andamento; aviso de truncamento acima de 5.000 clientes; pedido que falhou volta para a fila ao ser repetido. Importação de orçamentos roda no job finance.budget_import (lote "processing", leitura em lote de clientes, orçamentos e declarações); telas acompanham o andamento.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01ECPFeC4MJZxM9zmKh4M2Ks
+---
+ apps/api/src/modules/admin/routes.ts          |   4 +-
+ apps/api/src/modules/auth/jobs.ts             |   3 +-
+ apps/api/src/modules/checklist/pdf.ts         |  10 +-
+ apps/api/src/modules/checklist/routes.ts      |   7 +-
+ apps/api/src/modules/checklist/service.ts     |  31 +-
+ .../modules/communication/checklist-pdf.ts    | 122 ------
+ apps/api/src/modules/communication/jobs.ts    |   7 +-
+ apps/api/src/modules/communication/mailing.ts | 396 ++++++++++++++----
+ apps/api/src/modules/communication/routes.ts  |  66 ++-
+ apps/api/src/modules/declarations/backlogs.ts |   4 +-
+ apps/api/src/modules/finance/budget-import.ts | 292 +++++++++++++
+ apps/api/src/modules/finance/budget-routes.ts |   4 +-
+ apps/api/src/modules/finance/import-routes.ts | 228 ++--------
+ apps/api/src/modules/finance/jobs.ts          |   7 +
+ apps/api/src/modules/finance/service.ts       |   5 +-
+ apps/api/src/modules/finance/text.ts          |  22 +-
+ apps/api/src/modules/reports/kit.ts           |   9 -
+ apps/api/src/services/delivery.ts             | 174 ++++++--
+ apps/api/test/communication.test.ts           | 259 +++++++++++-
+ apps/api/test/finance.test.ts                 |  56 ++-
+ apps/api/test/pdf-text.ts                     |  38 ++
+ apps/api/test/tax-values.test.ts              |  13 +-
+ .../communication/MailingPage.test.tsx        |  87 ++++
+ .../src/modules/communication/MailingPage.tsx | 180 ++++++--
+ .../src/modules/communication/help-content.ts |   2 +-
+ .../modules/finance/BudgetImportPage.test.tsx |  65 +++
+ .../src/modules/finance/BudgetImportPage.tsx  |  60 ++-
+ apps/web/src/modules/finance/types.ts         |   2 +
+ docs/ARQUITETURA.md                           |   2 +-
+ packages/shared/src/communication.ts          |  19 +-
+ packages/shared/src/html.ts                   |  88 +++-
+ packages/shared/src/templates.ts              |   7 +-
+ packages/shared/test/communication.test.ts    |  37 ++
+ 33 files changed, 1725 insertions(+), 581 deletions(-)
+ delete mode 100644 apps/api/src/modules/communication/checklist-pdf.ts
+ create mode 100644 apps/api/src/modules/finance/budget-import.ts
+ create mode 100644 apps/api/src/modules/finance/jobs.ts
+ create mode 100644 apps/api/test/pdf-text.ts
+ create mode 100644 apps/web/src/modules/communication/MailingPage.test.tsx
+ create mode 100644 apps/web/src/modules/finance/BudgetImportPage.test.tsx
+
+diff --git a/apps/api/src/modules/admin/routes.ts b/apps/api/src/modules/admin/routes.ts
+index 18fc2ec..b419678 100644
+--- a/apps/api/src/modules/admin/routes.ts
++++ b/apps/api/src/modules/admin/routes.ts
+@@ -1,7 +1,7 @@
+ import { and, asc, count, eq, isNull, ne, sql } from 'drizzle-orm';
+ import type { FastifyInstance } from 'fastify';
+ import { z } from 'zod';
+-import { DECLARATION_SUBSTATUS, PERMISSION_CATEGORIES, isPermission, isValidCpfCnpj, isValidEmail, onlyDigits, type DeclarationSubstatus } from '@verifco/shared';
++import { DECLARATION_SUBSTATUS, PERMISSION_CATEGORIES, escapeHtml, isPermission, isValidCpfCnpj, isValidEmail, onlyDigits, type DeclarationSubstatus } from '@verifco/shared';
+ import type { AuthUser } from '../../context';
+ import { contracts, customerGroupMembers, customerGroups, customers, offices, passwordResets, roles, users } from '../../db/schema';
+ import { randomToken, sha256 } from '../../lib/crypto';
+@@ -414,8 +414,6 @@ export async function adminRoutes(app: FastifyInstance) {
+ 
+ const LOGO_MAX_BYTES = 2 * 1024 * 1024;
+ 
+-const escapeHtml = (v: string) => v.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
+-
+ const GROUP_ADMIN = ['customer_group.list', 'customer_group.create', 'customer_group.edit', 'customer_group.delete'];
+ 
+ const canSeeSettings = (user: AuthUser) => can(user, 'settings.view') || can(user, 'settings.edit');
+diff --git a/apps/api/src/modules/auth/jobs.ts b/apps/api/src/modules/auth/jobs.ts
+index f114206..c205d3a 100644
+--- a/apps/api/src/modules/auth/jobs.ts
++++ b/apps/api/src/modules/auth/jobs.ts
+@@ -1,4 +1,5 @@
+ import { eq } from 'drizzle-orm';
++import { escapeHtml } from '@verifco/shared';
+ import type { AppContext } from '../../context';
+ import { jobs, offices, users } from '../../db/schema';
+ 
+@@ -18,8 +19,6 @@ export interface EmailChangedPayload extends Record<string, unknown> {
+   changedBy: string;
+ }
+ 
+-const escapeHtml = (v: string) => v.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
+-
+ export function registerJobs(ctx: AppContext) {
+   ctx.jobs.register(PASSWORD_RESET_JOB, async (job) => {
+     const user = await ctx.db.query.users.findFirst({ where: eq(users.id, String(job.payload.userId)) });
+diff --git a/apps/api/src/modules/checklist/pdf.ts b/apps/api/src/modules/checklist/pdf.ts
+index b7620bf..4fbb195 100644
+--- a/apps/api/src/modules/checklist/pdf.ts
++++ b/apps/api/src/modules/checklist/pdf.ts
+@@ -1,7 +1,7 @@
+-import { eq } from 'drizzle-orm';
++import { and, eq } from 'drizzle-orm';
+ import { CHECKLIST_FILLABLE_SECTIONS, CHECKLIST_SECTIONS, buildChecklistDrafts, formatCpfCnpj, type ChecklistSection } from '@verifco/shared';
+ import type { AppContext } from '../../context';
+-import { checklistItems, checklists } from '../../db/schema';
++import { checklistItems, checklists, declarations } from '../../db/schema';
+ import { PdfBuilder, loadBranding } from '../../services/pdf';
+ import { previousYearItems, type CustomerRow, type DeclarationRow } from './service';
+ 
+@@ -70,3 +70,9 @@ export async function buildChecklistPdf(ctx: AppContext, customer: CustomerRow,
+   doc.y = startY + 3 * 22 + 8;
+   return pdf.finish();
+ }
++
++/** Checklist em PDF do exercício do cliente: o mesmo da etapa Documentação, usado também pela mala direta. */
++export async function customerChecklistPdf(ctx: AppContext, customer: CustomerRow, exerciseYear: number): Promise<Buffer> {
++  const declaration = await ctx.db.query.declarations.findFirst({ where: and(eq(declarations.customerId, customer.id), eq(declarations.exerciseYear, exerciseYear)) });
++  return buildChecklistPdf(ctx, customer, exerciseYear, await pdfItems(ctx, customer, declaration ?? null, exerciseYear));
++}
+diff --git a/apps/api/src/modules/checklist/routes.ts b/apps/api/src/modules/checklist/routes.ts
+index 006abc3..57f1b76 100644
+--- a/apps/api/src/modules/checklist/routes.ts
++++ b/apps/api/src/modules/checklist/routes.ts
+@@ -15,13 +15,13 @@ import {
+   attachFiles,
+   buildZip,
+   createChecklist,
++  issueChecklistAccess,
+   loadBundle,
+   lockOf,
+   officeView,
+   previousYearItems,
+   refreshFinished,
+   removeDocument,
+-  rotateAccess,
+ } from './service';
+ import { sendStoredFile } from '../../services/uploads';
+ import { readChecklistUploads } from './uploads';
+@@ -268,8 +268,8 @@ export async function checklistRoutes(app: FastifyInstance) {
+     const unique = [...new Set(channels)];
+     if (unique.includes('email') && !customer.email) throw badRequest('O cliente não tem e-mail cadastrado.');
+     if (unique.includes('whatsapp') && !customer.mobile) throw badRequest('O cliente não tem celular cadastrado.');
+-    const { token, code, expiresAt } = await rotateAccess(db, checklistId);
+-    const link = `${ctx.config.WEB_URL.replace(/\/$/, '')}/checklist/${token}`;
++    // o mesmo caminho da mala direta "Checklist digital"
++    const { token, code, expiresAt, link } = await issueChecklistAccess(ctx, { officeId: user.officeId, customer, year: declaration.exerciseYear, markSent: unique.length > 0 });
+     for (const channel of unique) {
+       await queueDelivery(ctx, {
+         officeId: user.officeId,
+@@ -283,7 +283,6 @@ export async function checklistRoutes(app: FastifyInstance) {
+         userId: user.userId,
+       });
+     }
+-    if (unique.length) await db.update(checklists).set({ sentAt: new Date() }).where(eq(checklists.id, checklistId));
+     await audit(req, unique.length ? 'send_access' : 'regenerate_access', 'checklist', checklistId, { channels: unique });
+     return { link, code, channels: unique, expiresAt };
+   });
+diff --git a/apps/api/src/modules/checklist/service.ts b/apps/api/src/modules/checklist/service.ts
+index f7e654a..1278e33 100644
+--- a/apps/api/src/modules/checklist/service.ts
++++ b/apps/api/src/modules/checklist/service.ts
+@@ -15,7 +15,7 @@ import type { Db } from '../../db/client';
+ import { checklistItems, checklistSections, checklists, customers, declarations, documents, files } from '../../db/schema';
+ import { randomCode, randomToken, sha256 } from '../../lib/crypto';
+ import { conflict } from '../../lib/errors';
+-import { listItems } from '../../services/declarations';
++import { getOrCreateDeclaration, listItems } from '../../services/declarations';
+ import { getOfficeSettings } from '../../services/settings';
+ import { notify } from '../../services/notify';
+ import { safeFilename, type UploadedFile } from '../../services/uploads';
+@@ -98,6 +98,35 @@ export async function rotateAccess(db: Db, checklistId: string) {
+   return { token, code, expiresAt };
+ }
+ 
++/** Endereço do checklist para o cliente entrar com CPF e código. */
++export const checklistLink = (ctx: AppContext, token: string) => `${ctx.config.WEB_URL.replace(/\/$/, '')}/checklist/${token}`;
++
++/**
++ * Checklist do exercício do cliente com um novo link e código de acesso. Cria o checklist (com os
++ * dados do ano anterior, como em "Criar checklist") se ainda não existir, gera o par novo (os
++ * anteriores deixam de valer) e, com `markSent`, registra a data do envio. É o mesmo caminho do
++ * envio do acesso na etapa Documentação e da mala direta "Checklist digital".
++ */
++export async function issueChecklistAccess(ctx: AppContext, input: { officeId: string; customer: CustomerRow; year: number; markSent: boolean }) {
++  const { db } = ctx;
++  const declaration = await getOrCreateDeclaration(db, input.officeId, input.customer.id, input.year);
++  let checklist = await db.query.checklists.findFirst({ where: eq(checklists.declarationId, declaration.id) });
++  let created = false;
++  if (!checklist) {
++    try {
++      checklist = (await createChecklist(db, { officeId: input.officeId, customer: input.customer, declaration })).checklist;
++      created = true;
++    } catch (err) {
++      // criado ao mesmo tempo por outra requisição: segue com o que ficou gravado
++      checklist = await db.query.checklists.findFirst({ where: eq(checklists.declarationId, declaration.id) });
++      if (!checklist) throw err;
++    }
++  }
++  const { token, code, expiresAt } = await rotateAccess(db, checklist.id);
++  if (input.markSent) await db.update(checklists).set({ sentAt: new Date() }).where(eq(checklists.id, checklist.id));
++  return { checklist, declaration, created, token, code, expiresAt, link: checklistLink(ctx, token) };
++}
++
+ export interface ChecklistDoc {
+   id: string;
+   fileId: string;
+diff --git a/apps/api/src/modules/communication/checklist-pdf.ts b/apps/api/src/modules/communication/checklist-pdf.ts
+deleted file mode 100644
+index f96ea22..0000000
+--- a/apps/api/src/modules/communication/checklist-pdf.ts
++++ /dev/null
+@@ -1,122 +0,0 @@
+-import { ASSET_GROUPS, PAYMENT_NATURES, dependentName, formatCpfCnpj, type DeclarationItem } from '@verifco/shared';
+-import type { AppContext } from '../../context';
+-import type { CustomerRow } from '../../services/customers';
+-import { PdfBuilder, loadBranding } from '../../services/pdf';
+-import { finishPdf } from '../reports/document';
+-import { previousYearItems, slug } from '../reports/kit';
+-
+-interface Group {
+-  title: string;
+-  items: { label: string; hint?: string }[];
+-}
+-
+-const uniq = <T>(list: T[], key: (t: T) => string) => {
+-  const seen = new Set<string>();
+-  return list.filter((t) => {
+-    const k = key(t);
+-    if (seen.has(k)) return false;
+-    seen.add(k);
+-    return true;
+-  });
+-};
+-
+-/** Itens do checklist a partir da declaração do ano anterior (quando houver). */
+-export function checklistGroups(items: DeclarationItem[], year: number): Group[] {
+-  const ac = year - 1;
+-  const by = (...kinds: DeclarationItem['kind'][]) => items.filter((i) => kinds.includes(i.kind));
+-  const name = (i: DeclarationItem) => i.counterpartyName || i.description || 'Fonte não identificada';
+-  const groups: Group[] = [
+-    {
+-      title: 'Documentos pessoais',
+-      items: [
+-        { label: 'Documento de identidade com CPF', hint: 'Do titular e de cada dependente' },
+-        { label: 'Comprovante de endereço atualizado' },
+-        { label: 'Recibo e cópia da última declaração entregue', hint: 'Se ela não foi feita por este escritório' },
+-        { label: 'Dados bancários para restituição ou débito automático' },
+-      ],
+-    },
+-  ];
+-  const deps = by('dependent');
+-  if (deps.length) groups.push({ title: 'Dependentes', items: deps.map((d) => ({ label: `CPF e informes de rendimentos de ${dependentName(d)}` })) });
+-
+-  const incomes = uniq(by('income_pj', 'income_pf', 'income_exclusive', 'income_exempt'), (i) => `${i.kind}|${i.counterpartyDoc ?? name(i)}`);
+-  groups.push({
+-    title: 'Rendimentos',
+-    items: [
+-      ...incomes.map((i) => ({
+-        label: i.kind === 'income_pf' ? `Recibos e carnê-leão de ${name(i)}` : `Informe de rendimentos ${ac} — ${name(i)}`,
+-        hint: i.counterpartyDoc ? formatCpfCnpj(i.counterpartyDoc) : undefined,
+-      })),
+-      { label: `Informes de bancos, corretoras e previdência privada de ${ac}` },
+-      { label: 'Rendimentos de aluguel, pensão ou do exterior recebidos no ano', hint: 'Se houver' },
+-    ],
+-  });
+-
+-  const payments = uniq(by('payment'), (p) => `${String(p.extra?.nature ?? '')}|${p.counterpartyDoc ?? name(p)}`);
+-  groups.push({
+-    title: 'Pagamentos e deduções',
+-    items: [
+-      ...payments.map((p) => ({
+-        label: `Recibos/notas de ${name(p)}`,
+-        hint: (PAYMENT_NATURES as Record<string, string>)[String(p.extra?.nature ?? '')] ?? undefined,
+-      })),
+-      { label: 'Recibos de despesas médicas, odontológicas e de planos de saúde', hint: 'Com CPF/CNPJ do prestador' },
+-      { label: 'Comprovantes de instrução (escola, faculdade, pós)' },
+-      { label: 'Informe de previdência privada (PGBL)' },
+-    ],
+-  });
+-
+-  const assets = by('asset', 'rural_asset');
+-  if (assets.length) {
+-    groups.push({
+-      title: 'Bens e direitos',
+-      items: assets.map((a) => ({
+-        label: a.description ? a.description.slice(0, 110) : (ASSET_GROUPS[String(a.groupCode ?? '99').padStart(2, '0') as keyof typeof ASSET_GROUPS] ?? 'Bem'),
+-        hint: `Saldo ou documento em 31/12/${ac}`,
+-      })),
+-    });
+-  }
+-  const debts = by('debt', 'rural_debt');
+-  if (debts.length) groups.push({ title: 'Dívidas e financiamentos', items: debts.map((d) => ({ label: d.description || name(d), hint: `Saldo devedor em 31/12/${ac}` })) });
+-
+-  groups.push({
+-    title: `Novidades de ${ac}`,
+-    items: [
+-      { label: 'Compra ou venda de imóveis, veículos e participações', hint: 'Contratos, escrituras e notas' },
+-      { label: 'Heranças, doações e empréstimos recebidos ou concedidos' },
+-      { label: 'Operações em bolsa e criptoativos', hint: 'Notas de corretagem e extratos' },
+-      { label: 'Nascimento, casamento, separação ou outras mudanças na família' },
+-    ],
+-  });
+-  return groups;
+-}
+-
+-/** PDF do checklist de documentos do exercício para um cliente. */
+-export async function buildChecklistPdf(ctx: AppContext, customer: CustomerRow, year: number): Promise<{ buffer: Buffer; filename: string }> {
+-  const brand = await loadBranding(ctx, customer.officeId);
+-  const items = await previousYearItems(ctx, customer.id, year);
+-  const groups = checklistGroups(items, year);
+-  const pdf = new PdfBuilder(brand, `Checklist de documentos · IRPF ${year}`, `${customer.name} · ano-calendário ${year - 1}`);
+-  const { doc } = pdf;
+-  pdf.paragraph(
+-    items.length
+-      ? `Lista montada a partir da sua declaração de ${year - 1}. Marque o que já separou e envie ao escritório; itens que não se aplicam mais podem ser ignorados.`
+-      : 'Marque o que já separou e envie ao escritório. Itens que não se aplicam ao seu caso podem ser ignorados.',
+-    { muted: true, size: 9.5 },
+-  );
+-  for (const g of groups) {
+-    pdf.heading(g.title);
+-    for (const it of g.items) {
+-      doc.font('Helvetica').fontSize(10);
+-      const h = doc.heightOfString(it.label, { width: pdf.width - 24 }) + (it.hint ? 12 : 0) + 8;
+-      pdf.ensureSpace(h + 4);
+-      const y = doc.y;
+-      doc.roundedRect(pdf.margin, y + 1, 10, 10, 2).lineWidth(0.8).strokeColor(brand.subtitleColor).stroke();
+-      doc.fillColor('#212429').font('Helvetica').fontSize(10).text(it.label, pdf.margin + 20, y, { width: pdf.width - 24 });
+-      if (it.hint) doc.fillColor('#636e7c').fontSize(8.5).text(it.hint, pdf.margin + 20, undefined, { width: pdf.width - 24 });
+-      doc.x = pdf.margin;
+-      doc.y = y + h;
+-    }
+-  }
+-  return { buffer: await finishPdf(pdf), filename: `checklist-irpf-${year}-${slug(customer.name)}.pdf` };
+-}
+diff --git a/apps/api/src/modules/communication/jobs.ts b/apps/api/src/modules/communication/jobs.ts
+index 8645df1..362d6de 100644
+--- a/apps/api/src/modules/communication/jobs.ts
++++ b/apps/api/src/modules/communication/jobs.ts
+@@ -1,7 +1,8 @@
+ import type { AppContext } from '../../context';
+-import { deliverWithAttachment, type MailingJobPayload } from './mailing';
++import { MAILING_DELIVER_JOB, MAILING_JOB, deliverWithAttachment, runMailingRequest, type MailingJobPayload } from './mailing';
+ 
+-/** Mala direta com anexo por cliente (kit pós-declaração, checklist em PDF). */
++/** Mala direta: o pedido inteiro (envios em lote) e o anexo por cliente (kit pós-declaração, checklist em PDF). */
+ export function registerJobs(ctx: AppContext) {
+-  ctx.jobs.register('mailing.deliver', async (job) => deliverWithAttachment(ctx, job.payload as MailingJobPayload));
++  ctx.jobs.register(MAILING_JOB, async (job, { progress }) => runMailingRequest(ctx, job, progress));
++  ctx.jobs.register(MAILING_DELIVER_JOB, async (job) => deliverWithAttachment(ctx, job.payload as MailingJobPayload));
+ }
+diff --git a/apps/api/src/modules/communication/mailing.ts b/apps/api/src/modules/communication/mailing.ts
+index 3b6dbd7..276e8fd 100644
+--- a/apps/api/src/modules/communication/mailing.ts
++++ b/apps/api/src/modules/communication/mailing.ts
+@@ -1,11 +1,12 @@
+-import { and, asc, desc, eq, exists, inArray, isNotNull, isNull, ne, notExists, notInArray, or, type SQL } from 'drizzle-orm';
++import { and, asc, count, desc, eq, exists, getTableColumns, inArray, isNotNull, isNull, like, ne, notExists, or, sql, type SQL } from 'drizzle-orm';
+ import { z } from 'zod';
+ import {
+-  BUDGET_CATEGORIES,
++  MAILING_MAX_RECIPIENTS,
+   MAILING_SKIP_REASONS,
+   MAILING_TYPES,
+-  formatMoney,
++  checklistLock,
+   getMailingType,
++  htmlToText,
+   renderTemplate,
+   type DeliveryChannel,
+   type MailingSkipReason,
+@@ -13,13 +14,18 @@ import {
+   type MailingTypeKey,
+ } from '@verifco/shared';
+ import type { AppContext, AuthUser } from '../../context';
+-import { budgets, customerGroupMembers, customers, declarations, deliveries } from '../../db/schema';
++import { budgets, customerGroupMembers, customers, declarations, deliveries, jobs } from '../../db/schema';
++import type { JobRow } from '../../jobs/queue';
++import { HttpError } from '../../lib/errors';
+ import { yearSchema } from '../../lib/http';
+ import { customerScope, type CustomerRow } from '../../services/customers';
+ import type { DeclarationRow } from '../../services/declarations';
+-import { baseTemplateValues, queueDelivery, resolveTemplate } from '../../services/delivery';
+-import { buildKitPdf } from '../reports/kit';
+-import { buildChecklistPdf } from './checklist-pdf';
++import { baseTemplateValues, createDeliveryBatch, queueDelivery, resolveTemplate, type BulkDeliveryItem } from '../../services/delivery';
++import { getOfficeSettings } from '../../services/settings';
++import { customerChecklistPdf } from '../checklist/pdf';
++import { issueChecklistAccess } from '../checklist/service';
++import { budgetDigitalValues, issueApprovalLink, type BudgetRow } from '../finance/service';
++import { buildKitPdf, slug } from '../reports/kit';
+ 
+ const TYPE_KEYS = MAILING_TYPES.map((t) => t.key) as [MailingTypeKey, ...MailingTypeKey[]];
+ 
+@@ -27,7 +33,7 @@ export const mailingSchema = z.object({
+   type: z.enum(TYPE_KEYS),
+   channel: z.enum(['email', 'whatsapp', 'both']),
+   year: yearSchema,
+-  customerIds: z.array(z.uuid()).max(5000).optional(),
++  customerIds: z.array(z.uuid()).max(MAILING_MAX_RECIPIENTS).optional(),
+   filters: z
+     .object({
+       groups: z.array(z.uuid()).optional(),
+@@ -43,9 +49,14 @@ export const mailingSchema = z.object({
+ });
+ export type MailingInput = z.infer<typeof mailingSchema>;
+ 
++/** Texto da prévia no lugar do link e do código, que só existem depois do envio. */
++export const GENERATED_ON_SEND = '(gerado no envio)';
++
+ export interface PlanEntry {
+   customer: CustomerRow;
+   declaration: DeclarationRow | null;
++  /** Orçamento que vai na proposta (tipo "Orçamento"). */
++  budget: BudgetRow | null;
+   channels: DeliveryChannel[];
+   skips: MailingSkipReason[];
+   values: Record<string, string | number>;
+@@ -55,8 +66,12 @@ const hasText = (v: string | null | undefined) => Boolean(v && v.trim());
+ const filled = (col: typeof customers.email | typeof customers.mobile) => and(isNotNull(col), ne(col, ''))!;
+ const empty = (col: typeof customers.email | typeof customers.mobile) => or(isNull(col), eq(col, ''))!;
+ 
+-/** Clientes do envio: os ids informados (dentro do escopo) ou os ativos que atendem aos filtros. */
+-export async function findRecipients(ctx: AppContext, user: AuthUser, input: MailingInput): Promise<CustomerRow[]> {
++/**
++ * Clientes do envio: os ids informados (dentro do escopo) ou os ativos que atendem aos filtros,
++ * em ordem alfabética e até {@link MAILING_MAX_RECIPIENTS}. Acima do limite, `truncated` avisa e
++ * `matched` diz quantos atendiam à seleção.
++ */
++export async function findRecipients(ctx: AppContext, user: AuthUser, input: MailingInput): Promise<{ customers: CustomerRow[]; truncated: boolean; matched: number }> {
+   const { db } = ctx;
+   const conds: SQL[] = [await customerScope(ctx, user)];
+   if (input.customerIds?.length) {
+@@ -85,49 +100,63 @@ export async function findRecipients(ctx: AppContext, user: AuthUser, input: Mai
+       conds.push(wantsNotStarted ? or(match, none)! : match);
+     }
+   }
+-  return db.select().from(customers).where(and(...conds)).orderBy(asc(customers.name)).limit(5000);
++  const where = and(...conds);
++  const rows = await db.select().from(customers).where(where).orderBy(asc(customers.name), asc(customers.id)).limit(MAILING_MAX_RECIPIENTS + 1);
++  if (rows.length <= MAILING_MAX_RECIPIENTS) return { customers: rows, truncated: false, matched: rows.length };
++  const [{ n }] = await db.select({ n: count() }).from(customers).where(where);
++  return { customers: rows.slice(0, MAILING_MAX_RECIPIENTS), truncated: true, matched: Number(n) };
+ }
+ 
+-/** Decide, cliente a cliente, por quais canais o envio sai e por que alguns ficam de fora. */
+-export async function planMailing(ctx: AppContext, user: AuthUser, input: MailingInput): Promise<{ type: MailingType; entries: PlanEntry[] }> {
+-  const type = getMailingType(input.type)!;
+-  const recipients = await findRecipients(ctx, user, input);
++/**
++ * Decide, cliente a cliente, por quais canais o envio sai e por que alguns ficam de fora. Só lê:
++ * link, código, link de aprovação e anexos são gerados no envio (a prévia mostra
++ * {@link GENERATED_ON_SEND}).
++ */
++async function planEntries(ctx: AppContext, officeId: string, type: MailingType, input: { channel: MailingInput['channel']; year: number }, recipients: CustomerRow[]) {
+   const ids = recipients.map((c) => c.id);
+   const decls = new Map<string, DeclarationRow>();
+-  const budgetBy = new Map<string, typeof budgets.$inferSelect>();
++  const budgetBy = new Map<string, { pending?: BudgetRow; approved?: boolean }>();
++  let settings: Awaited<ReturnType<typeof getOfficeSettings>> | null = null;
+   if (ids.length) {
+-    const rows = await ctx.db.select().from(declarations).where(and(inArray(declarations.customerId, ids), eq(declarations.exerciseYear, input.year)));
++    const rows = await ctx.db.select().from(declarations).where(and(eq(declarations.officeId, officeId), inArray(declarations.customerId, ids), eq(declarations.exerciseYear, input.year)));
+     for (const d of rows) decls.set(d.customerId, d);
+     if (type.key === 'budget') {
++      // proposta: o rascunho ou enviado mais recente; quem já aprovou fica de fora
+       const bs = await ctx.db
+         .select()
+         .from(budgets)
+-        .where(and(eq(budgets.officeId, user.officeId), inArray(budgets.customerId, ids), eq(budgets.exerciseYear, input.year), notInArray(budgets.status, ['canceled', 'rejected'])))
++        .where(and(eq(budgets.officeId, officeId), inArray(budgets.customerId, ids), eq(budgets.exerciseYear, input.year), inArray(budgets.status, ['draft', 'sent', 'approved'])))
+         .orderBy(desc(budgets.createdAt));
+-      for (const b of bs) if (!budgetBy.has(b.customerId)) budgetBy.set(b.customerId, b);
++      for (const b of bs) {
++        const cur = budgetBy.get(b.customerId) ?? {};
++        if (b.status === 'approved') cur.approved = true;
++        else cur.pending ??= b;
++        budgetBy.set(b.customerId, cur);
++      }
+     }
++    if (type.key === 'checklist_digital') settings = await getOfficeSettings(ctx.db, officeId);
+   }
+   const wanted: DeliveryChannel[] = input.channel === 'both' ? ['email', 'whatsapp'] : [input.channel];
+-  const entries = recipients.map((customer): PlanEntry => {
++  return recipients.map((customer): PlanEntry => {
+     const declaration = decls.get(customer.id) ?? null;
+     const skips: MailingSkipReason[] = [];
+-    const values: Record<string, string | number> = {};
++    let values: Record<string, string | number> = {};
++    let budget: BudgetRow | null = null;
+     if (type.key === 'kit') {
+       if (!declaration) skips.push('no_declaration');
+       else if (!['transmitted', 'finished'].includes(declaration.stage)) skips.push('not_transmitted');
+     }
+     if (type.key === 'budget') {
+       const b = budgetBy.get(customer.id);
+-      if (!b) skips.push('no_budget');
+-      else {
+-        values.CATEGORIA = BUDGET_CATEGORIES[b.category as keyof typeof BUDGET_CATEGORIES] ?? b.category;
+-        values.DESCRICAO = b.description ?? '';
+-        values.VALOR = formatMoney(b.totalCents);
+-      }
++      if (b?.pending) {
++        budget = b.pending;
++        values = budgetDigitalValues(b.pending, GENERATED_ON_SEND);
++      } else skips.push(b?.approved ? 'budget_approved' : 'no_budget');
+     }
+     if (type.key === 'checklist_digital') {
+-      values.LINK = `${ctx.config.WEB_URL}/portal`;
+-      values.CODIGO = 'enviado pelo seu contador';
++      // mesma regra do checklist do cliente: bloqueado ou em modo consulta não recebe novo acesso
++      if (checklistLock(settings!, declaration ?? { substatus: 'not_started', checklistLocked: false }).readOnly) skips.push('checklist_locked');
++      else values = { LINK: GENERATED_ON_SEND, CODIGO: GENERATED_ON_SEND };
+     }
+     const channels: DeliveryChannel[] = [];
+     if (!skips.length) {
+@@ -137,9 +166,16 @@ export async function planMailing(ctx: AppContext, user: AuthUser, input: Mailin
+         else skips.push(ch === 'email' ? 'no_email' : 'no_mobile');
+       }
+     }
+-    return { customer, declaration, channels, skips, values };
++    return { customer, declaration, budget, channels, skips, values };
+   });
+-  return { type, entries };
++}
++
++/** Revisão do envio: destinatários (no escopo do usuário) e o plano de cada um. */
++export async function planMailing(ctx: AppContext, user: AuthUser, input: MailingInput) {
++  const type = getMailingType(input.type)!;
++  const recipients = await findRecipients(ctx, user, input);
++  const entries = await planEntries(ctx, user.officeId, type, input, recipients.customers);
++  return { type, entries, truncated: recipients.truncated, matched: recipients.matched };
+ }
+ 
+ export function summarize(entries: PlanEntry[]) {
+@@ -163,21 +199,7 @@ export function summarize(entries: PlanEntry[]) {
+   };
+ }
+ 
+-export const htmlToText = (html: string) =>
+-  html
+-    .replace(/<br\s*\/?>/gi, '\n')
+-    .replace(/<\/(p|li|h\d|div)>/gi, '\n')
+-    .replace(/<li[^>]*>/gi, '• ')
+-    .replace(/<a [^>]*href="([^"]+)"[^>]*>(.*?)<\/a>/gi, '$2: $1')
+-    .replace(/<[^>]+>/g, '')
+-    .replace(/&nbsp;/g, ' ')
+-    .replace(/&amp;/g, '&')
+-    .replace(/&lt;/g, '<')
+-    .replace(/&gt;/g, '>')
+-    .replace(/\n{3,}/g, '\n\n')
+-    .trim();
+-
+-/** Mensagem como o cliente vai receber (template do escritório com os valores dele). */
++/** Mensagem como o cliente vai receber (template do escritório com os valores dele; no WhatsApp, o mesmo texto do envio). */
+ export async function renderForCustomer(ctx: AppContext, officeId: string, type: MailingType, entry: PlanEntry, year: number) {
+   const tpl = await resolveTemplate(ctx, officeId, type.templateKey);
+   const values = { ...(await baseTemplateValues(ctx, officeId, entry.customer.id, year)), ...entry.values };
+@@ -187,64 +209,255 @@ export async function renderForCustomer(ctx: AppContext, officeId: string, type:
+ 
+ export const deliveryKey = (requestId: string, customerId: string, channel: string) => `mailing:${requestId}:${customerId}:${channel}`;
+ 
+-export interface MailingJobPayload {
++/** Nome do checklist em PDF anexado pela mala direta. */
++export const checklistPdfFilename = (customer: CustomerRow, year: number) => `checklist-irpf-${year}-${slug(customer.name)}.pdf`;
++
++// ---------------------------------------------------------------------------
++// Pedido e execução (fila de tarefas)
++// ---------------------------------------------------------------------------
++
++/** Job que prepara a mala direta inteira; um por pedido. */
++export const MAILING_JOB = 'mailing.plan';
++/** Job que gera o anexo de um cliente (kit ou checklist em PDF) e enfileira os envios dele. */
++export const MAILING_DELIVER_JOB = 'mailing.deliver';
++
++/** Chave do job do pedido: o id do pedido vem do navegador, por isso vai junto do escritório. */
++const requestKey = (officeId: string, requestId: string) => `${officeId}:${requestId}`;
++
++export type MailingSummary = ReturnType<typeof summarize>;
++
++/** Pedido de mala direta guardado no job: destinatários já resolvidos no escopo de quem pediu. */
++export interface MailingRequestPayload {
+   [k: string]: unknown;
+   officeId: string;
+   userId: string;
+-  customerId: string;
+-  declarationId: string | null;
++  requestId: string;
+   type: MailingTypeKey;
++  channel: MailingInput['channel'];
+   year: number;
+-  channels: DeliveryChannel[];
+-  requestId: string;
++  customerIds: string[];
++  /** Revisão no momento do pedido (o job refaz o plano com os dados do momento do envio). */
++  planned: { customers: number; deliveries: MailingSummary['deliveries']; skipped: MailingSummary['skipped']; truncated: boolean; matched: number };
++}
++
++export interface MailingJobResult {
++  [k: string]: unknown;
++  queued: number;
++  alreadyQueued: number;
++  failed: { customerId: string; name: string; message: string }[];
++}
++
++/** O pedido do escritório, sem a lista de destinatários (a tela consulta o andamento a cada segundo e meio). */
++export async function findMailingRequest(ctx: AppContext, officeId: string, requestId: string): Promise<JobRow | undefined> {
++  const [row] = await ctx.db
++    .select({ ...getTableColumns(jobs), payload: sql<Record<string, unknown>>`${jobs.payload} - 'customerIds'` })
++    .from(jobs)
++    .where(and(eq(jobs.type, MAILING_JOB), eq(jobs.idempotencyKey, requestKey(officeId, requestId)), eq(jobs.officeId, officeId)))
++    .limit(1);
++  return row;
++}
++
++/**
++ * Registra o pedido: só grava o job `mailing.plan`, que gera link, código, anexos, envios,
++ * mensagens e jobs de envio fora da requisição. O mesmo pedido repetido devolve o job já gravado.
++ */
++export async function requestMailing(
++  ctx: AppContext,
++  user: AuthUser,
++  input: MailingInput & { requestId: string },
++  plan: Awaited<ReturnType<typeof planMailing>>,
++  summary: MailingSummary,
++): Promise<JobRow> {
++  const payload: MailingRequestPayload = {
++    officeId: user.officeId,
++    userId: user.userId,
++    requestId: input.requestId,
++    type: input.type,
++    channel: input.channel,
++    year: input.year,
++    customerIds: plan.entries.filter((e) => e.channels.length).map((e) => e.customer.id),
++    planned: { customers: summary.customers, deliveries: summary.deliveries, skipped: summary.skipped, truncated: plan.truncated, matched: plan.matched },
++  };
++  try {
++    return await ctx.jobs.enqueue(MAILING_JOB, payload, { officeId: user.officeId, idempotencyKey: requestKey(user.officeId, input.requestId), userId: user.userId });
++  } catch (err) {
++    // dois cliques ao mesmo tempo: a chave única segura o segundo, que segue o primeiro
++    const again = await findMailingRequest(ctx, user.officeId, input.requestId);
++    if (!again) throw err;
++    return again;
++  }
++}
++
++/**
++ * Pedido que falhou (esgotou as tentativas) volta para a fila quando é repetido: o job pula o que
++ * já foi gravado, então tentar de novo não duplica envios nem gera outro link para quem já recebeu.
++ */
++export async function retryMailingRequest(ctx: AppContext, job: JobRow): Promise<JobRow> {
++  if (job.status !== 'failed') return job;
++  await ctx.db
++    .update(jobs)
++    .set({ status: 'queued', attempts: 0, error: null, runAt: new Date(), finishedAt: null })
++    .where(and(eq(jobs.id, job.id), eq(jobs.status, 'failed')));
++  return { ...job, status: 'queued', attempts: 0, error: null, finishedAt: null };
+ }
+ 
+-/** Enfileira os envios planejados. Repetir a mesma operação (mesmo requestId) não duplica. */
+-export async function executeMailing(ctx: AppContext, user: AuthUser, input: MailingInput & { requestId: string }) {
+-  const { type, entries } = await planMailing(ctx, user, input);
++/** Anexos gerados até agora (kit ou checklist em PDF, um job por cliente). */
++async function attachmentProgress(ctx: AppContext, p: MailingRequestPayload) {
++  const rows = await ctx.db
++    .select({ status: jobs.status, n: count() })
++    .from(jobs)
++    .where(and(eq(jobs.type, MAILING_DELIVER_JOB), eq(jobs.officeId, p.officeId), like(jobs.idempotencyKey, `mailing:${p.requestId}:%`)))
++    .groupBy(jobs.status);
++  const by = (s: string) => Number(rows.find((r) => r.status === s)?.n ?? 0);
++  return { total: rows.reduce((a, r) => a + Number(r.n), 0), done: by('done'), failed: by('failed') };
++}
++
++/** Andamento do pedido para a tela: preparação (job) e, com anexo, a geração dos PDFs. */
++export async function mailingRequestView(ctx: AppContext, job: JobRow) {
++  const p = job.payload as MailingRequestPayload;
++  const type = getMailingType(p.type);
++  const done = job.status === 'done';
++  return {
++    requestId: p.requestId,
++    jobId: job.id,
++    type: p.type,
++    channel: p.channel,
++    year: p.year,
++    status: job.status as 'queued' | 'running' | 'done' | 'failed',
++    progress: job.progress,
++    error: job.status === 'failed' ? 'Não foi possível preparar os envios. Tente de novo: o que já foi preparado não se repete.' : null,
++    createdAt: job.createdAt,
++    finishedAt: job.finishedAt,
++    ...p.planned,
++    result: done ? ((job.result ?? null) as MailingJobResult | null) : null,
++    attachments: type?.attachment && done ? await attachmentProgress(ctx, p) : null,
++  };
++}
++
++/** Clientes por bloco na execução: acessos, envios e jobs de um bloco são gravados juntos. */
++const EXEC_CHUNK = 200;
++
++/**
++ * Executor do job `mailing.plan`. Refaz o plano com os dados atuais (só os clientes do pedido),
++ * carrega template, escritório e responsáveis uma vez e grava em lote, bloco a bloco, com a
++ * chave de idempotência de cada envio: repetir o job não duplica nada nem gera outro link ou
++ * código para quem já recebeu.
++ */
++export async function runMailingRequest(ctx: AppContext, job: JobRow, progress: (pct: number) => Promise<void>): Promise<MailingJobResult> {
++  const p = job.payload as MailingRequestPayload;
++  const type = getMailingType(p.type);
++  if (!type) throw new Error(`Tipo de mala direta desconhecido: ${p.type}`);
++  const ids = Array.isArray(p.customerIds) ? p.customerIds.map(String) : [];
++  const recipients = ids.length
++    ? await ctx.db
++        .select()
++        .from(customers)
++        .where(and(eq(customers.officeId, p.officeId), isNull(customers.deletedAt), inArray(customers.id, ids)))
++        .orderBy(asc(customers.name), asc(customers.id))
++    : [];
++  const entries = await planEntries(ctx, p.officeId, type, p, recipients);
+   const targets = entries.filter((e) => e.channels.length);
+-  const keys = targets.flatMap((e) => e.channels.map((ch) => deliveryKey(input.requestId, e.customer.id, ch)));
+-  const existing = new Set<string>();
+-  for (let i = 0; i < keys.length; i += 500) {
+-    const rows = await ctx.db
++  const result: MailingJobResult = { queued: 0, alreadyQueued: 0, failed: [] };
++  const batch = type.attachment
++    ? null
++    : await createDeliveryBatch(ctx, { officeId: p.officeId, templateKey: type.templateKey, exerciseYear: p.year, userId: p.userId, customers: targets.map((e) => e.customer) });
++  for (let i = 0; i < targets.length; i += EXEC_CHUNK) {
++    const chunk = targets.slice(i, i + EXEC_CHUNK);
++    const keys = chunk.flatMap((e) => e.channels.map((ch) => deliveryKey(p.requestId, e.customer.id, ch)));
++    const existing = await ctx.db
+       .select({ k: deliveries.idempotencyKey })
+       .from(deliveries)
+-      .where(and(eq(deliveries.officeId, user.officeId), inArray(deliveries.idempotencyKey, keys.slice(i, i + 500))));
+-    for (const r of rows) if (r.k) existing.add(r.k);
++      .where(and(eq(deliveries.officeId, p.officeId), inArray(deliveries.idempotencyKey, keys)));
++    const sent = new Set(existing.map((r) => r.k));
++    const pendingOf = (e: PlanEntry) => e.channels.filter((ch) => !sent.has(deliveryKey(p.requestId, e.customer.id, ch)));
++    if (batch) await queueChunk(ctx, p, type, chunk, pendingOf, batch, result);
++    else await enqueueAttachments(ctx, p, type, chunk, pendingOf, result);
++    await progress(((i + chunk.length) / targets.length) * 100);
+   }
+-  let queued = 0;
+-  for (const e of targets) {
+-    const pending = e.channels.filter((ch) => !existing.has(deliveryKey(input.requestId, e.customer.id, ch)));
+-    if (!pending.length) continue;
+-    if (type.attachment) {
+-      const payload: MailingJobPayload = {
+-        officeId: user.officeId,
+-        userId: user.userId,
+-        customerId: e.customer.id,
+-        declarationId: e.declaration?.id ?? null,
+-        type: type.key,
+-        year: input.year,
+-        channels: pending,
+-        requestId: input.requestId,
+-      };
+-      await ctx.jobs.enqueue('mailing.deliver', payload, { officeId: user.officeId, idempotencyKey: `mailing:${input.requestId}:${e.customer.id}`, userId: user.userId });
+-    } else {
+-      for (const ch of pending) {
+-        await queueDelivery(ctx, {
+-          officeId: user.officeId,
+-          customerId: e.customer.id,
+-          channel: ch,
+-          templateKey: type.templateKey,
+-          values: e.values,
+-          exerciseYear: input.year,
+-          idempotencyKey: deliveryKey(input.requestId, e.customer.id, ch),
+-          userId: user.userId,
+-        });
++  return result;
++}
++
++/** Um bloco de envios sem anexo: gera link e código (ou o link de aprovação) de cada cliente e grava tudo em lote. */
++async function queueChunk(
++  ctx: AppContext,
++  p: MailingRequestPayload,
++  type: MailingType,
++  chunk: PlanEntry[],
++  pendingOf: (e: PlanEntry) => DeliveryChannel[],
++  batch: Awaited<ReturnType<typeof createDeliveryBatch>>,
++  result: MailingJobResult,
++) {
++  // tipos com link próprio: um par novo invalidaria o já enviado, então quem já recebeu não ganha outro
++  const ownLink = type.key === 'checklist_digital' || type.key === 'budget';
++  const items: BulkDeliveryItem[] = [];
++  for (const e of chunk) {
++    const pending = pendingOf(e);
++    result.alreadyQueued += e.channels.length - pending.length;
++    if (!pending.length || (ownLink && pending.length < e.channels.length)) continue;
++    try {
++      let values: BulkDeliveryItem['values'] = e.values;
++      let redact: string[] | undefined;
++      if (type.key === 'checklist_digital') {
++        const access = await issueChecklistAccess(ctx, { officeId: p.officeId, customer: e.customer, year: p.year, markSent: true });
++        values = { LINK: access.link, CODIGO: access.code };
++        // link e código só na mensagem entregue; o histórico (envios e mensagens) guarda a versão mascarada
++        redact = [access.token, access.code];
++      } else if (type.key === 'budget' && e.budget) {
++        // o mesmo envio do financeiro: novo link de aprovação, orçamento "Enviado" e etapa da declaração
++        const issued = await issueApprovalLink(ctx, e.budget);
++        values = budgetDigitalValues(issued.budget, issued.link);
+       }
++      for (const channel of pending) items.push({ customer: e.customer, channel, values, redact, idempotencyKey: deliveryKey(p.requestId, e.customer.id, channel) });
++    } catch (err) {
++      result.failed.push({ customerId: e.customer.id, name: e.customer.name, message: err instanceof HttpError ? err.message : 'Não foi possível preparar o envio deste cliente.' });
+     }
+-    queued += pending.length;
+   }
+-  return { type, entries, queued, alreadyQueued: keys.length - queued };
++  const r = await batch.queue(items);
++  result.queued += r.queued;
++  result.alreadyQueued += r.existing;
++  for (const m of r.missing) {
++    result.failed.push({ customerId: m.customer.id, name: m.customer.name, message: m.channel === 'email' ? 'O cliente não tem e-mail cadastrado.' : 'O cliente não tem celular cadastrado.' });
++  }
++}
++
++export interface MailingJobPayload {
++  [k: string]: unknown;
++  officeId: string;
++  userId: string;
++  customerId: string;
++  declarationId: string | null;
++  type: MailingTypeKey;
++  year: number;
++  channels: DeliveryChannel[];
++  requestId: string;
++}
++
++/** Um bloco de envios com anexo: um job por cliente (o PDF é gerado uma vez e vai em todos os canais dele), gravados em lote. */
++async function enqueueAttachments(ctx: AppContext, p: MailingRequestPayload, type: MailingType, chunk: PlanEntry[], pendingOf: (e: PlanEntry) => DeliveryChannel[], result: MailingJobResult) {
++  const rows = chunk.flatMap((e) => {
++    const pending = pendingOf(e);
++    result.alreadyQueued += e.channels.length - pending.length;
++    if (!pending.length) return [];
++    const payload: MailingJobPayload = {
++      officeId: p.officeId,
++      userId: p.userId,
++      customerId: e.customer.id,
++      declarationId: e.declaration?.id ?? null,
++      type: type.key,
++      year: p.year,
++      channels: pending,
++      requestId: p.requestId,
++    };
++    return [{ type: MAILING_DELIVER_JOB, payload, officeId: p.officeId, idempotencyKey: `mailing:${p.requestId}:${e.customer.id}`, createdByUserId: p.userId }];
++  });
++  if (!rows.length) return;
++  // em lote, como ctx.jobs.enqueue faria um a um (a chave única não deixa duplicar)
++  const created = await ctx.db.insert(jobs).values(rows).onConflictDoNothing({ target: [jobs.type, jobs.idempotencyKey] }).returning({ key: jobs.idempotencyKey });
++  const isNew = new Set(created.map((r) => r.key));
++  for (const r of rows) {
++    if (isNew.has(r.idempotencyKey)) result.queued += r.payload.channels.length;
++    else result.alreadyQueued += r.payload.channels.length;
++  }
+ }
+ 
+ /** Executor do job: gera o anexo (kit ou checklist em PDF) uma vez e enfileira os envios do cliente. */
+@@ -268,7 +481,8 @@ export async function deliverWithAttachment(ctx: AppContext, p: MailingJobPayloa
+     if (!declaration) return { skipped: true, reason: 'declaration_not_found' };
+     file = await buildKitPdf(ctx, declaration, customer);
+   } else {
+-    file = await buildChecklistPdf(ctx, customer, p.year);
++    // o mesmo PDF da etapa Documentação (itens do checklist digital do cliente)
++    file = { buffer: await customerChecklistPdf(ctx, customer, p.year), filename: checklistPdfFilename(customer, p.year) };
+   }
+   const saved = await ctx.files.save({ officeId: p.officeId, data: file.buffer, filename: file.filename, mimeType: 'application/pdf', userId: p.userId });
+   const errors: string[] = [];
+diff --git a/apps/api/src/modules/communication/routes.ts b/apps/api/src/modules/communication/routes.ts
+index 52b3bc9..1f864ce 100644
+--- a/apps/api/src/modules/communication/routes.ts
++++ b/apps/api/src/modules/communication/routes.ts
+@@ -5,6 +5,7 @@ import { z } from 'zod';
+ import {
+   DELIVERY_CHANNELS,
+   DELIVERY_STATUS,
++  MAILING_MAX_RECIPIENTS,
+   MAILING_TYPES,
+   TEMPLATES,
+   getMailingType,
+@@ -21,9 +22,19 @@ import { audit, can, dateStr, guard, paginate, parse, requirePermission, require
+ import { getCustomerForUser } from '../../services/customers';
+ import { resolveTemplate } from '../../services/delivery';
+ import { getOfficeSettings } from '../../services/settings';
++import { customerChecklistPdf } from '../checklist/pdf';
+ import { buildKitPdf } from '../reports/kit';
+-import { buildChecklistPdf } from './checklist-pdf';
+-import { executeMailing, mailingSchema, planMailing, renderForCustomer, summarize } from './mailing';
++import {
++  checklistPdfFilename,
++  findMailingRequest,
++  mailingRequestView,
++  mailingSchema,
++  planMailing,
++  renderForCustomer,
++  requestMailing,
++  retryMailingRequest,
++  summarize,
++} from './mailing';
+ 
+ const keyParam = z.object({ key: z.string().refine((k) => Boolean(getTemplateDef(k)), 'Template desconhecido') });
+ const SEND_PERMS = [...new Set([...MAILING_TYPES.map((t) => t.permission), 'message.send'])];
+@@ -258,7 +269,7 @@ export async function communicationRoutes(app: FastifyInstance) {
+   app.post('/mailing/preview', async (req) => {
+     const input = parse(mailingSchema, req.body);
+     const user = typePermission(req, input.type);
+-    const { type, entries } = await planMailing(ctx, user, input);
++    const { type, entries, truncated, matched } = await planMailing(ctx, user, input);
+     const wanted = input.channel === 'both' ? 2 : 1;
+     // exemplo: o cliente escolhido ou, de preferência, um que receba por todos os canais pedidos
+     const sampleEntry =
+@@ -282,6 +293,10 @@ export async function communicationRoutes(app: FastifyInstance) {
+     return {
+       type: { key: type.key, label: type.label, templateKey: type.templateKey, note: type.note ?? null, attachment: type.attachment },
+       ...summarize(entries),
++      // acima do limite, o envio vai só para os primeiros: a tela avisa quantos ficam de fora
++      truncated,
++      matched,
++      limit: MAILING_MAX_RECIPIENTS,
+       recipients: entries.slice(0, 300).map((e) => ({
+         id: e.customer.id,
+         name: e.customer.name,
+@@ -295,15 +310,45 @@ export async function communicationRoutes(app: FastifyInstance) {
+     };
+   });
+ 
+-  /** Envia: um envio por cliente e canal. Devolve quantos enfileirou e quantos ficaram de fora e por quê. */
+-  app.post('/mailing/send', async (req) => {
++  /**
++   * Envia: registra o pedido e coloca na fila o job que gera um envio por cliente e canal (link,
++   * código e anexos também são gerados lá, fora da requisição). Devolve a revisão do pedido; a
++   * tela acompanha o andamento em `/mailing/requests/:requestId`. Repetir o mesmo pedido
++   * (mesmo `requestId`) devolve o já registrado, sem duplicar envios.
++   */
++  app.post('/mailing/send', async (req, reply) => {
+     const input = parse(mailingSchema.extend({ requestId: z.uuid() }), req.body);
+     const user = typePermission(req, input.type);
+-    const result = await executeMailing(ctx, user, input);
+-    const summary = summarize(result.entries);
++    const previous = await findMailingRequest(ctx, user.officeId, input.requestId);
++    if (previous) {
++      if (previous.payload.type !== input.type) throw conflict('Este pedido de envio já foi registrado com outro tipo.');
++      // repetir um pedido que falhou o coloca de novo na fila (sem duplicar o que já foi gravado)
++      return { ...(await mailingRequestView(ctx, await retryMailingRequest(ctx, previous))), repeated: true };
++    }
++    const plan = await planMailing(ctx, user, input);
++    const summary = summarize(plan.entries);
+     if (!summary.customers) throw badRequest('Nenhum cliente selecionado pode receber este envio.');
+-    await audit(req, 'mailing_send', 'mailing', input.requestId, { type: input.type, channel: input.channel, queued: result.queued, year: input.year });
+-    return { queued: result.queued, alreadyQueued: result.alreadyQueued, customers: summary.customers, deliveries: summary.deliveries, skipped: summary.skipped };
++    const job = await requestMailing(ctx, user, input, plan, summary);
++    await audit(req, 'mailing_send', 'mailing', input.requestId, {
++      type: input.type,
++      channel: input.channel,
++      year: input.year,
++      customers: summary.customers,
++      deliveries: summary.deliveries.total,
++      truncated: plan.truncated,
++    });
++    reply.status(202);
++    return { ...(await mailingRequestView(ctx, job)), repeated: false };
++  });
++
++  /** Andamento de uma mala direta: preparação dos envios e, com anexo, a geração dos PDFs. */
++  app.get('/mailing/requests/:requestId', async (req) => {
++    const user = requireUser(req);
++    const { requestId } = parse(z.object({ requestId: z.uuid() }), req.params);
++    const job = await findMailingRequest(ctx, user.officeId, requestId);
++    if (!job) throw notFound('Envio');
++    typePermission(req, String(job.payload.type));
++    return mailingRequestView(ctx, job);
+   });
+ 
+   /** Anexo de exemplo (kit ou checklist em PDF) de um cliente, para conferir antes do envio. */
+@@ -317,7 +362,8 @@ export async function communicationRoutes(app: FastifyInstance) {
+       if (!declaration) throw badRequest('O cliente não tem declaração neste exercício.');
+       file = await buildKitPdf(ctx, declaration, customer);
+     } else {
+-      file = await buildChecklistPdf(ctx, customer, q.year);
++      // o mesmo PDF da etapa Documentação e do envio pela mala direta
++      file = { buffer: await customerChecklistPdf(ctx, customer, q.year), filename: checklistPdfFilename(customer, q.year) };
+     }
+     return reply.header('Content-Type', 'application/pdf').header('Content-Disposition', `inline; filename="${file.filename}"`).send(file.buffer);
+   });
+diff --git a/apps/api/src/modules/declarations/backlogs.ts b/apps/api/src/modules/declarations/backlogs.ts
+index 4d03371..4a03e50 100644
+--- a/apps/api/src/modules/declarations/backlogs.ts
++++ b/apps/api/src/modules/declarations/backlogs.ts
+@@ -1,7 +1,7 @@
+ import { and, asc, eq, isNull, sql } from 'drizzle-orm';
+ import type { FastifyInstance } from 'fastify';
+ import { z } from 'zod';
+-import { brazilToday, formatDate } from '@verifco/shared';
++import { brazilToday, escapeHtml, formatDate } from '@verifco/shared';
+ import type { AppContext, AuthUser } from '../../context';
+ import { backlogs, declarations } from '../../db/schema';
+ import { HttpError, badRequest, notFound } from '../../lib/errors';
+@@ -16,8 +16,6 @@ type BacklogRow = typeof backlogs.$inferSelect;
+ const description = z.string().trim().min(2, 'Descreva o documento').max(2000);
+ const dueDate = z.preprocess((v) => (v === '' ? null : v), dateStr.nullable().optional());
+ 
+-const escapeHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+-
+ /** Lista HTML das pendências em aberto para o template `missing_document`. */
+ export function backlogListHtml(items: { description: string; dueDate: string | null }[]): string {
+   const li = items.map((b) => `<li>${escapeHtml(b.description)}${b.dueDate ? ` <em>(até ${formatDate(b.dueDate)})</em>` : ''}</li>`);
+diff --git a/apps/api/src/modules/finance/budget-import.ts b/apps/api/src/modules/finance/budget-import.ts
+new file mode 100644
+index 0000000..780f3af
+--- /dev/null
++++ b/apps/api/src/modules/finance/budget-import.ts
+@@ -0,0 +1,292 @@
++/**
++ * Importação de orçamentos em lote, executada na fila de tarefas: a requisição só confere e guarda
++ * a planilha e registra o lote ("processing"); o job lê as linhas, cria ou atualiza os orçamentos
++ * e grava o resultado linha a linha no lote, que a tela acompanha.
++ */
++import { and, desc, eq, inArray } from 'drizzle-orm';
++import {
++  BUDGET_CATEGORIES,
++  BUDGET_STATUS,
++  formatCpfCnpj,
++  isValidCpfCnpj,
++  onlyDigits,
++  type BudgetCategory,
++  type BudgetStatus,
++} from '@verifco/shared';
++import type { AppContext, AuthUser } from '../../context';
++import { budgets, customers, declarations, importBatches, paymentMethods, roles, users } from '../../db/schema';
++import type { JobRow } from '../../jobs/queue';
++import { HttpError } from '../../lib/errors';
++import { can } from '../../lib/http';
++import { customerScope, type CustomerRow } from '../../services/customers';
++import { getOrCreateDeclaration, type DeclarationRow } from '../../services/declarations';
++import { notify } from '../../services/notify';
++import { parseDate, readSheet, sheetMoneyToCents, type SheetRow } from '../../services/xlsx';
++import { applyStatus, resolveBudgetValues, type BudgetRow, type PaymentMethodRow } from './service';
++
++export const BUDGET_IMPORT_JOB = 'finance.budget_import';
++
++export interface BudgetImportPayload {
++  [k: string]: unknown;
++  batchId: string;
++  officeId: string;
++  userId: string;
++  year: number;
++}
++
++type LineResult = { row: number; ok: boolean; message: string };
++
++const fold = (s: string) =>
++  s
++    .normalize('NFD')
++    .replace(/[̀-ͯ]/g, '')
++    .trim()
++    .toLowerCase();
++
++const IMPORT_STATUSES: BudgetStatus[] = ['draft', 'approved', 'rejected', 'canceled'];
++
++function matchOption<T extends string>(value: string, options: Record<T, string>): T | null {
++  const v = fold(value);
++  for (const [k, label] of Object.entries(options) as [T, string][]) if (fold(k) === v || fold(label) === v) return k;
++  return null;
++}
++
++/** Linhas com valor são importadas; as sem valor são ignoradas (contadas à parte). */
++export const hasAmount = (line: SheetRow) => Boolean((line.values.valor ?? '').trim());
++
++/** Quem enviou a planilha, com as permissões atuais (o job roda fora da requisição). */
++async function requester(ctx: AppContext, officeId: string, userId: string): Promise<AuthUser | null> {
++  const user = await ctx.db.query.users.findFirst({ where: and(eq(users.id, userId), eq(users.officeId, officeId)) });
++  if (!user?.isActive) return null;
++  const role = user.roleId ? await ctx.db.query.roles.findFirst({ where: eq(roles.id, user.roleId) }) : null;
++  return {
++    kind: 'user',
++    userId: user.id,
++    officeId: user.officeId,
++    name: user.name,
++    email: user.email,
++    isOwner: user.isOwner,
++    roleId: user.roleId,
++    permissions: new Set(role?.permissions ?? []),
++  };
++}
++
++/** Linhas processadas entre uma atualização do andamento e outra. */
++const PROGRESS_EVERY = 50;
++
++/**
++ * Executor do job. Clientes, orçamentos e declarações do exercício são carregados de uma vez
++ * (não uma consulta por linha); cada linha grava o próprio orçamento (e o aprova, se pedido).
++ */
++export async function runBudgetImport(ctx: AppContext, job: JobRow, progress: (pct: number) => Promise<void>) {
++  const { db } = ctx;
++  const p = job.payload as BudgetImportPayload;
++  const batch = await db.query.importBatches.findFirst({ where: and(eq(importBatches.id, p.batchId), eq(importBatches.officeId, p.officeId)) });
++  if (!batch || batch.status !== 'processing') return { skipped: true };
++  const finish = async (status: 'done' | 'failed', results: LineResult[]) => {
++    const succeeded = results.filter((r) => r.ok).length;
++    await db.update(importBatches).set({ status, total: results.length, succeeded, failed: results.length - succeeded, results }).where(eq(importBatches.id, batch.id));
++    return succeeded;
++  };
++  const user = await requester(ctx, p.officeId, p.userId);
++  if (!user || !can(user, 'worksheet.budget')) {
++    await finish('failed', [{ row: 1, ok: false, message: 'Quem enviou a planilha não tem mais acesso à importação de orçamentos.' }]);
++    return { failed: 'user' };
++  }
++  let lines: SheetRow[] = [];
++  const results: LineResult[] = [];
++  try {
++    const { row: fileRow, data } = await ctx.files.get(p.officeId, batch.fileId!);
++    lines = (await readSheet(data, fileRow.filename)).filter(hasAmount);
++    const errors: { row: number; error: string }[] = [];
++    await processLines(ctx, user, p.year, lines, results, errors, async (done) => {
++      if (done % PROGRESS_EVERY) return;
++      const succeeded = results.filter((r) => r.ok).length;
++      await db.update(importBatches).set({ succeeded, failed: results.length - succeeded }).where(eq(importBatches.id, batch.id));
++      await progress((done / Math.max(1, lines.length)) * 100);
++    });
++    const succeeded = await finish('done', results);
++    await notify(db, {
++      officeId: p.officeId,
++      userId: p.userId,
++      title: 'Importação de orçamentos concluída',
++      body: `${succeeded} linha(s) gravada(s)${results.length - succeeded ? `, ${results.length - succeeded} com erro` : ''}.`,
++      link: '/importacoes/orcamentos',
++    });
++    // erros inesperados ficam só no job (a tela mostra a mensagem genérica)
++    return { total: results.length, succeeded, errors };
++  } catch (err) {
++    // as linhas já gravadas ficam no resultado; a última diz onde a importação parou
++    const stop = lines[results.length]?.rowNumber ?? 1;
++    const message = results.length
++      ? 'A importação parou nesta linha. As anteriores já foram gravadas; envie a planilha de novo para concluir (o que já foi gravado é atualizado, não duplicado).'
++      : 'Não foi possível concluir a importação. Envie a planilha de novo.';
++    await finish('failed', [...results, { row: stop, ok: false, message }]);
++    throw err;
++  }
++}
++
++/** Cria ou atualiza os orçamentos linha a linha, com as mesmas regras e mensagens da importação. */
++async function processLines(
++  ctx: AppContext,
++  user: AuthUser,
++  year: number,
++  lines: SheetRow[],
++  results: LineResult[],
++  errors: { row: number; error: string }[],
++  afterLine: (done: number) => Promise<void>,
++) {
++  const { db } = ctx;
++  const scope = await customerScope(ctx, user);
++  const methods = await db.select().from(paymentMethods).where(eq(paymentMethods.officeId, user.officeId));
++  const defaultMethod = methods.find((m) => m.isDefault && m.active) ?? null;
++  const canApprove = can(user, 'budget.approve');
++
++  // clientes, orçamentos e declarações do exercício de uma vez
++  const docs = [...new Set(lines.map((l) => onlyDigits((l.values.cpf_cnpj ?? '').trim())).filter((d) => d && isValidCpfCnpj(d)))];
++  const byDoc = new Map<string, CustomerRow>();
++  for (let i = 0; i < docs.length; i += 1000) {
++    for (const c of await db.select().from(customers).where(and(scope, inArray(customers.cpfCnpj, docs.slice(i, i + 1000))))) byDoc.set(c.cpfCnpj, c);
++  }
++  const ids = [...byDoc.values()].map((c) => c.id);
++  const budgetsBy = new Map<string, BudgetRow[]>();
++  const declBy = new Map<string, DeclarationRow>();
++  for (let i = 0; i < ids.length; i += 1000) {
++    const slice = ids.slice(i, i + 1000);
++    const rows = await db
++      .select()
++      .from(budgets)
++      .where(and(eq(budgets.officeId, user.officeId), eq(budgets.exerciseYear, year), inArray(budgets.customerId, slice)))
++      .orderBy(desc(budgets.createdAt));
++    for (const b of rows) budgetsBy.set(`${b.customerId}|${b.category}`, [...(budgetsBy.get(`${b.customerId}|${b.category}`) ?? []), b]);
++    for (const d of await db.select().from(declarations).where(and(eq(declarations.officeId, user.officeId), eq(declarations.exerciseYear, year), inArray(declarations.customerId, slice)))) {
++      declBy.set(d.customerId, d);
++    }
++  }
++  const declarationOf = async (customer: CustomerRow) => {
++    let d = declBy.get(customer.id);
++    if (!d) {
++      d = await getOrCreateDeclaration(db, user.officeId, customer.id, year);
++      declBy.set(customer.id, d);
++    }
++    return d;
++  };
++  /** Mantém o mapa em dia (do mais novo para o mais antigo): a mesma planilha pode ter duas linhas do mesmo orçamento. */
++  const remember = (row: BudgetRow) => {
++    const key = `${row.customerId}|${row.category}`;
++    const list = budgetsBy.get(key) ?? [];
++    budgetsBy.set(key, list.some((b) => b.id === row.id) ? list.map((b) => (b.id === row.id ? row : b)) : [row, ...list]);
++  };
++
++  for (const [index, line] of lines.entries()) {
++    const { rowNumber, values: v } = line;
++    const cell = (k: string) => (v[k] ?? '').trim();
++    const fail = (message: string) => results.push({ row: rowNumber, ok: false, message });
++    try {
++      await importLine();
++    } catch (err) {
++      // erros de regra (HttpError) já vêm em português; erro de banco não vai para o resultado
++      if (err instanceof HttpError) fail(err.message);
++      else {
++        errors.push({ row: rowNumber, error: err instanceof Error ? err.message : String(err) });
++        fail('Erro ao gravar a linha. Confira os valores e tente novamente.');
++      }
++    }
++    await afterLine(index + 1);
++
++    async function importLine() {
++      const amountText = cell('valor');
++      const doc = onlyDigits(cell('cpf_cnpj'));
++      if (!doc || !isValidCpfCnpj(doc)) return fail('CPF/CNPJ inválido.');
++      const customer = byDoc.get(doc);
++      if (!customer) return fail(`Cliente ${formatCpfCnpj(doc)} não encontrado.`);
++      // célula numérica do .xlsx pelo número cru ("104.895" é R$ 104,90, não 104 mil); texto e CSV pelo parser de reais
++      const amountCents = sheetMoneyToCents(line, 'valor');
++      if (amountCents === null || amountCents <= 0) return fail(`Valor "${amountText}" inválido. Use o formato 1.500,00 (ou 1500,00).`);
++      const category: BudgetCategory | null = cell('categoria') ? matchOption(cell('categoria'), BUDGET_CATEGORIES) : 'irpf';
++      if (!category) return fail(`Categoria "${cell('categoria')}" não reconhecida.`);
++      const discountText = cell('desconto').replace('%', '').replace(',', '.');
++      const discount = discountText ? Number(discountText) : 0;
++      if (!Number.isFinite(discount) || discount < 0 || discount > 100) return fail('Desconto deve estar entre 0 e 100.');
++      let method: PaymentMethodRow | null = defaultMethod;
++      if (cell('forma_de_pagamento')) {
++        const name = fold(cell('forma_de_pagamento'));
++        method = methods.find((m) => fold(m.name) === name) ?? methods.find((m) => fold(m.type) === name) ?? null;
++        if (!method) return fail(`Forma de pagamento "${cell('forma_de_pagamento')}" não cadastrada.`);
++      }
++      const installmentsText = cell('parcelas');
++      const installments = installmentsText ? Number(installmentsText) : 1;
++      if (!Number.isInteger(installments) || installments < 1 || installments > 60) return fail('Parcelas inválidas.');
++      const startText = cell('inicio_da_cobranca');
++      const start = startText ? parseDate(startText) : null;
++      if (startText && !start) return fail(`Início da cobrança "${startText}" inválido: use uma data que exista, no formato DD/MM/AAAA.`);
++      const statusText = cell('status');
++      const status = statusText ? matchOption(statusText, BUDGET_STATUS) : null;
++      if (statusText && !status) return fail(`Status "${statusText}" não reconhecido.`);
++
++      const candidates = budgetsBy.get(`${customer.id}|${category}`) ?? [];
++      const current: BudgetRow | undefined = candidates.find((b) => b.status !== 'canceled') ?? candidates[0];
++      const target = (status ?? current?.status ?? 'draft') as BudgetStatus;
++      if (target === 'sent' && current?.status !== 'sent') return fail('O status "Enviado" só é definido pelo envio ao cliente no sistema.');
++      if (!IMPORT_STATUSES.includes(target) && target !== 'sent') return fail('Status inválido.');
++      if (target === 'approved' && current?.status !== 'approved' && !canApprove) return fail('Você não tem permissão para aprovar orçamentos.');
++      const description = cell('descricao') || null;
++      const internalNote = cell('observacao_interna') || null;
++
++      if (current?.status === 'approved') {
++        const changed =
++          current.amountCents !== amountCents ||
++          Number(current.discountPercent) !== discount ||
++          (current.paymentMethodId ?? null) !== (method?.id ?? null) ||
++          current.installments !== installments ||
++          (start !== null && current.billingStartDate !== start) ||
++          target !== 'approved';
++        if (changed) return fail('Orçamento já aprovado: valores e status não podem ser alterados.');
++        if ((current.description ?? null) !== description || (current.internalNote ?? null) !== internalNote) {
++          const [row] = await db.update(budgets).set({ description, internalNote, updatedAt: new Date() }).where(eq(budgets.id, current.id)).returning();
++          remember(row);
++          results.push({ row: rowNumber, ok: true, message: 'Orçamento aprovado: descrição e observação atualizadas.' });
++        } else {
++          results.push({ row: rowNumber, ok: true, message: 'Sem alterações.' });
++        }
++        return;
++      }
++      const decl = await declarationOf(customer);
++      const values = await resolveBudgetValues(
++        ctx,
++        user.officeId,
++        decl,
++        {
++          type: current?.type === 'integration' ? 'integration' : 'fixed',
++          category,
++          description,
++          priceTableId: current?.priceTableId ?? null,
++          pricingInputs: current?.pricingInputs ?? {},
++          amountCents,
++          discountPercent: discount,
++          paymentMethodId: method?.id ?? null,
++          billingStartDate: start ?? current?.billingStartDate ?? null,
++          installments,
++          internalNote,
++        },
++        current,
++      );
++      let row: BudgetRow;
++      if (current) {
++        [row] = await db.update(budgets).set({ ...values, updatedAt: new Date() }).where(eq(budgets.id, current.id)).returning();
++      } else {
++        [row] = await db
++          .insert(budgets)
++          .values({ ...values, officeId: user.officeId, customerId: customer.id, declarationId: decl.id, exerciseYear: year, status: 'draft', createdByUserId: user.userId })
++          .returning();
++      }
++      remember(row);
++      if (target !== row.status) {
++        row = await applyStatus(ctx, row, target, user.name);
++        remember(row);
++      }
++      const verb = current ? 'atualizado' : 'criado';
++      results.push({ row: rowNumber, ok: true, message: row.status === 'approved' && current?.status !== 'approved' ? `Orçamento ${verb} e aprovado (faturamento gerado).` : `Orçamento ${verb}.` });
++    }
++  }
++}
+diff --git a/apps/api/src/modules/finance/budget-routes.ts b/apps/api/src/modules/finance/budget-routes.ts
+index c496c1b..2dc06a1 100644
+--- a/apps/api/src/modules/finance/budget-routes.ts
++++ b/apps/api/src/modules/finance/budget-routes.ts
+@@ -2,7 +2,7 @@
+ import { and, desc, eq } from 'drizzle-orm';
+ import type { FastifyInstance } from 'fastify';
+ import { z } from 'zod';
+-import { BUDGET_CATEGORIES, computeBudgetAmount, todayIso, type BudgetCategory } from '@verifco/shared';
++import { BUDGET_CATEGORIES, computeBudgetAmount, escapeHtml, todayIso, type BudgetCategory } from '@verifco/shared';
+ import { budgets, declarations, installments, priceTables } from '../../db/schema';
+ import { badRequest, conflict, forbidden, notFound } from '../../lib/errors';
+ import { audit, can, centsSchema, dateStr, guard, optionalText, parse, requireUser, uuidParam, yearSchema } from '../../lib/http';
+@@ -348,5 +348,3 @@ export async function budgetRoutes(app: FastifyInstance) {
+     return { ok: true };
+   });
+ }
+-
+-const escapeHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+diff --git a/apps/api/src/modules/finance/import-routes.ts b/apps/api/src/modules/finance/import-routes.ts
+index b465d25..f8dc999 100644
+--- a/apps/api/src/modules/finance/import-routes.ts
++++ b/apps/api/src/modules/finance/import-routes.ts
+@@ -1,44 +1,21 @@
+ /**
+  * Orçamentos em lote: modelo .xlsx pré-preenchido com os clientes e orçamentos do ano,
+- * e importação que cria/atualiza orçamentos por CPF/CNPJ com resultado por linha.
++ * e importação que cria/atualiza orçamentos por CPF/CNPJ com resultado por linha. A importação
++ * roda na fila de tarefas (`budget-import.ts`); a requisição só confere e guarda a planilha.
+  */
+ import { and, asc, desc, eq, inArray } from 'drizzle-orm';
+ import type { FastifyInstance } from 'fastify';
+ import { z } from 'zod';
+-import {
+-  BUDGET_CATEGORIES,
+-  BUDGET_STATUS,
+-  formatCpfCnpj,
+-  isValidCpfCnpj,
+-  onlyDigits,
+-  type BudgetCategory,
+-  type BudgetStatus,
+-} from '@verifco/shared';
++import { BUDGET_CATEGORIES, formatCpfCnpj } from '@verifco/shared';
+ import { budgets, customers, importBatches, paymentMethods } from '../../db/schema';
+-import { HttpError, badRequest } from '../../lib/errors';
+-import { audit, can, guard, parse, requireUser, yearSchema } from '../../lib/http';
++import { badRequest, notFound } from '../../lib/errors';
++import { audit, guard, parse, requireUser, uuidParam, yearSchema } from '../../lib/http';
+ import { customerScope } from '../../services/customers';
+-import { getOrCreateDeclaration } from '../../services/declarations';
+ import { SHEET_TYPES, readUploads } from '../../services/uploads';
+-import { buildWorkbook, parseDate, readSheet, sheetMoneyToCents } from '../../services/xlsx';
+-import { applyStatus, resolveBudgetValues, userName, type BudgetRow, type PaymentMethodRow } from './service';
++import { buildWorkbook, readSheet } from '../../services/xlsx';
++import { BUDGET_IMPORT_JOB, hasAmount, type BudgetImportPayload } from './budget-import';
+ import { brDate, budgetStatusLabel, categoryLabel } from './text';
+ 
+-const fold = (s: string) =>
+-  s
+-    .normalize('NFD')
+-    .replace(/[̀-ͯ]/g, '')
+-    .trim()
+-    .toLowerCase();
+-
+-const IMPORT_STATUSES: BudgetStatus[] = ['draft', 'approved', 'rejected', 'canceled'];
+-
+-function matchOption<T extends string>(value: string, options: Record<T, string>): T | null {
+-  const v = fold(value);
+-  for (const [k, label] of Object.entries(options) as [T, string][]) if (fold(k) === v || fold(label) === v) return k;
+-  return null;
+-}
+-
+ const COLUMNS = [
+   { header: 'CPF/CNPJ', key: 'doc', width: 18 },
+   { header: 'Cliente', key: 'name', width: 34 },
+@@ -125,6 +102,19 @@ export async function importRoutes(app: FastifyInstance) {
+       .limit(10);
+   });
+ 
++  /** Um lote do escritório: a tela acompanha a importação até o resultado. */
++  app.get('/finance/budget-import/batches/:id', { preHandler: guard('worksheet.budget') }, async (req) => {
++    const user = requireUser(req);
++    const { id } = parse(uuidParam, req.params);
++    const batch = await db.query.importBatches.findFirst({ where: and(eq(importBatches.id, id), eq(importBatches.officeId, user.officeId), eq(importBatches.kind, 'budget')) });
++    if (!batch) throw notFound('Importação');
++    return batch;
++  });
++
++  /**
++   * Recebe a planilha: confere se ela abre, guarda o arquivo, registra o lote ("processing") e põe
++   * a importação na fila. As linhas são gravadas pelo job; a tela acompanha o lote até o resultado.
++   */
+   app.post('/finance/budget-import', { preHandler: guard('worksheet.budget') }, async (req) => {
+     const user = requireUser(req);
+     // o tipo gravado sai da extensão conferida com o conteúdo, nunca do que o navegador informa
+@@ -142,181 +132,17 @@ export async function importRoutes(app: FastifyInstance) {
+       throw badRequest('Não foi possível ler a planilha. Use o modelo baixado do sistema.');
+     }
+     if (sheet.length > 5000) throw badRequest('A planilha tem linhas demais (máximo de 5.000).');
+-
+-    const scope = await customerScope(ctx, user);
+-    const methods = await db.select().from(paymentMethods).where(eq(paymentMethods.officeId, user.officeId));
+-    const defaultMethod = methods.find((m) => m.isDefault && m.active) ?? null;
+-    const approver = await userName(ctx, user.userId);
+-    const canApprove = can(user, 'budget.approve');
+-    const results: { row: number; ok: boolean; message: string }[] = [];
+-    let skipped = 0;
+-
+-    for (const line of sheet) {
+-      const { rowNumber, values: v } = line;
+-      const cell = (k: string) => (v[k] ?? '').trim();
+-      const fail = (message: string) => results.push({ row: rowNumber, ok: false, message });
+-      const amountText = cell('valor');
+-      if (!amountText) {
+-        skipped++;
+-        continue;
+-      }
+-      const doc = onlyDigits(cell('cpf_cnpj'));
+-      if (!doc || !isValidCpfCnpj(doc)) {
+-        fail('CPF/CNPJ inválido.');
+-        continue;
+-      }
+-      const customer = await db.query.customers.findFirst({ where: and(scope, eq(customers.cpfCnpj, doc)) });
+-      if (!customer) {
+-        fail(`Cliente ${formatCpfCnpj(doc)} não encontrado.`);
+-        continue;
+-      }
+-      // célula numérica do .xlsx pelo número cru ("104.895" é R$ 104,90, não 104 mil); texto e CSV pelo parser de reais
+-      const amountCents = sheetMoneyToCents(line, 'valor');
+-      if (amountCents === null || amountCents <= 0) {
+-        fail(`Valor "${amountText}" inválido. Use o formato 1.500,00 (ou 1500,00).`);
+-        continue;
+-      }
+-      const category: BudgetCategory | null = cell('categoria') ? matchOption(cell('categoria'), BUDGET_CATEGORIES) : 'irpf';
+-      if (!category) {
+-        fail(`Categoria "${cell('categoria')}" não reconhecida.`);
+-        continue;
+-      }
+-      const discountText = cell('desconto').replace('%', '').replace(',', '.');
+-      const discount = discountText ? Number(discountText) : 0;
+-      if (!Number.isFinite(discount) || discount < 0 || discount > 100) {
+-        fail('Desconto deve estar entre 0 e 100.');
+-        continue;
+-      }
+-      let method: PaymentMethodRow | null = defaultMethod;
+-      if (cell('forma_de_pagamento')) {
+-        const name = fold(cell('forma_de_pagamento'));
+-        method = methods.find((m) => fold(m.name) === name) ?? methods.find((m) => fold(m.type) === name) ?? null;
+-        if (!method) {
+-          fail(`Forma de pagamento "${cell('forma_de_pagamento')}" não cadastrada.`);
+-          continue;
+-        }
+-      }
+-      const installmentsText = cell('parcelas');
+-      const installments = installmentsText ? Number(installmentsText) : 1;
+-      if (!Number.isInteger(installments) || installments < 1 || installments > 60) {
+-        fail('Parcelas inválidas.');
+-        continue;
+-      }
+-      const startText = cell('inicio_da_cobranca');
+-      const start = startText ? parseDate(startText) : null;
+-      if (startText && !start) {
+-        fail(`Início da cobrança "${startText}" inválido: use uma data que exista, no formato DD/MM/AAAA.`);
+-        continue;
+-      }
+-      const statusText = cell('status');
+-      const status = statusText ? matchOption(statusText, BUDGET_STATUS) : null;
+-      if (statusText && !status) {
+-        fail(`Status "${statusText}" não reconhecido.`);
+-        continue;
+-      }
+-
+-      const candidates = await db
+-        .select()
+-        .from(budgets)
+-        .where(and(eq(budgets.officeId, user.officeId), eq(budgets.customerId, customer.id), eq(budgets.exerciseYear, year), eq(budgets.category, category)))
+-        .orderBy(desc(budgets.createdAt));
+-      const current: BudgetRow | undefined = candidates.find((b) => b.status !== 'canceled') ?? candidates[0];
+-      const target = (status ?? current?.status ?? 'draft') as BudgetStatus;
+-      if (target === 'sent' && current?.status !== 'sent') {
+-        fail('O status "Enviado" só é definido pelo envio ao cliente no sistema.');
+-        continue;
+-      }
+-      if (!IMPORT_STATUSES.includes(target) && target !== 'sent') {
+-        fail('Status inválido.');
+-        continue;
+-      }
+-      if (target === 'approved' && current?.status !== 'approved' && !canApprove) {
+-        fail('Você não tem permissão para aprovar orçamentos.');
+-        continue;
+-      }
+-      const description = cell('descricao') || null;
+-      const internalNote = cell('observacao_interna') || null;
+-
+-      try {
+-        if (current?.status === 'approved') {
+-          const changed =
+-            current.amountCents !== amountCents ||
+-            Number(current.discountPercent) !== discount ||
+-            (current.paymentMethodId ?? null) !== (method?.id ?? null) ||
+-            current.installments !== installments ||
+-            (start !== null && current.billingStartDate !== start) ||
+-            target !== 'approved';
+-          if (changed) {
+-            fail('Orçamento já aprovado: valores e status não podem ser alterados.');
+-            continue;
+-          }
+-          if ((current.description ?? null) !== description || (current.internalNote ?? null) !== internalNote) {
+-            await db.update(budgets).set({ description, internalNote, updatedAt: new Date() }).where(eq(budgets.id, current.id));
+-            results.push({ row: rowNumber, ok: true, message: 'Orçamento aprovado: descrição e observação atualizadas.' });
+-          } else {
+-            results.push({ row: rowNumber, ok: true, message: 'Sem alterações.' });
+-          }
+-          continue;
+-        }
+-        const decl = await getOrCreateDeclaration(db, user.officeId, customer.id, year);
+-        const values = await resolveBudgetValues(
+-          ctx,
+-          user.officeId,
+-          decl,
+-          {
+-            type: current?.type === 'integration' ? 'integration' : 'fixed',
+-            category,
+-            description,
+-            priceTableId: current?.priceTableId ?? null,
+-            pricingInputs: current?.pricingInputs ?? {},
+-            amountCents,
+-            discountPercent: discount,
+-            paymentMethodId: method?.id ?? null,
+-            billingStartDate: start ?? current?.billingStartDate ?? null,
+-            installments,
+-            internalNote,
+-          },
+-          current,
+-        );
+-        let row: BudgetRow;
+-        if (current) {
+-          [row] = await db.update(budgets).set({ ...values, updatedAt: new Date() }).where(eq(budgets.id, current.id)).returning();
+-        } else {
+-          [row] = await db
+-            .insert(budgets)
+-            .values({ ...values, officeId: user.officeId, customerId: customer.id, declarationId: decl.id, exerciseYear: year, status: 'draft', createdByUserId: user.userId })
+-            .returning();
+-        }
+-        if (target !== row.status) row = await applyStatus(ctx, row, target, approver);
+-        const verb = current ? 'atualizado' : 'criado';
+-        results.push({ row: rowNumber, ok: true, message: row.status === 'approved' && current?.status !== 'approved' ? `Orçamento ${verb} e aprovado (faturamento gerado).` : `Orçamento ${verb}.` });
+-      } catch (err) {
+-        // erros de regra (HttpError) já vêm em português; erro de banco não vai para o resultado
+-        if (err instanceof HttpError) fail(err.message);
+-        else {
+-          req.log.error({ err, row: rowNumber }, 'Falha ao gravar linha da importação de orçamentos');
+-          fail('Erro ao gravar a linha. Confira os valores e tente novamente.');
+-        }
+-      }
+-    }
++    const total = sheet.filter(hasAmount).length;
+ 
+     const saved = await ctx.files.save({ officeId: user.officeId, data: file.data, filename: file.filename, mimeType: file.mimeType, userId: user.userId });
+-    const succeeded = results.filter((r) => r.ok).length;
+     const [batch] = await db
+       .insert(importBatches)
+-      .values({
+-        officeId: user.officeId,
+-        kind: 'budget',
+-        fileId: saved.id,
+-        status: 'done',
+-        total: results.length,
+-        succeeded,
+-        failed: results.length - succeeded,
+-        results,
+-        createdByUserId: user.userId,
+-      })
++      .values({ officeId: user.officeId, kind: 'budget', fileId: saved.id, status: 'processing', total, createdByUserId: user.userId })
+       .returning();
+-    await audit(req, 'import', 'budget', batch.id, { year, total: results.length, succeeded });
+-    return { ...batch, skipped, year };
++    const payload: BudgetImportPayload = { batchId: batch.id, officeId: user.officeId, userId: user.userId, year };
++    // uma tentativa só: a importação refeita do zero mudaria as mensagens das linhas já gravadas
++    await ctx.jobs.enqueue(BUDGET_IMPORT_JOB, payload, { officeId: user.officeId, idempotencyKey: batch.id, userId: user.userId, maxAttempts: 1 });
++    await audit(req, 'import', 'budget', batch.id, { year, total });
++    return { ...batch, skipped: sheet.length - total, year };
+   });
+ }
+diff --git a/apps/api/src/modules/finance/jobs.ts b/apps/api/src/modules/finance/jobs.ts
+new file mode 100644
+index 0000000..15a65ca
+--- /dev/null
++++ b/apps/api/src/modules/finance/jobs.ts
+@@ -0,0 +1,7 @@
++import type { AppContext } from '../../context';
++import { BUDGET_IMPORT_JOB, runBudgetImport } from './budget-import';
++
++/** Importação de orçamentos em lote (fora da requisição). */
++export function registerJobs(ctx: AppContext) {
++  ctx.jobs.register(BUDGET_IMPORT_JOB, async (job, { progress }) => runBudgetImport(ctx, job, progress));
++}
+diff --git a/apps/api/src/modules/finance/service.ts b/apps/api/src/modules/finance/service.ts
+index b32d526..b264b92 100644
+--- a/apps/api/src/modules/finance/service.ts
++++ b/apps/api/src/modules/finance/service.ts
+@@ -290,6 +290,9 @@ export async function issueApprovalLink(ctx: AppContext, budget: BudgetRow) {
+ const valueText = (b: BudgetRow) =>
+   b.installments > 1 ? `${formatMoney(b.totalCents)} (${b.installments}x de ${formatMoney(Math.ceil(b.totalCents / b.installments))})` : formatMoney(b.totalCents);
+ 
++/** Valores do template `budget_digital` (proposta com o link de aprovação); também usados pela mala direta. */
++export const budgetDigitalValues = (b: BudgetRow, link: string) => ({ CATEGORIA: categoryLabel(b.category), DESCRICAO: b.description ?? '', VALOR: valueText(b), LINK: link });
++
+ /** Envia a proposta por e-mail e/ou WhatsApp com o link de aprovação (template `budget_digital`). */
+ export async function sendBudget(ctx: AppContext, budget: BudgetRow, channels: Channel[], userId: string | null) {
+   if (!channels.length) throw badRequest('Escolha ao menos um canal de envio.');
+@@ -298,7 +301,7 @@ export async function sendBudget(ctx: AppContext, budget: BudgetRow, channels: C
+   assertContacts(customer, channels);
+   const issued = await issueApprovalLink(ctx, budget);
+   const b = issued.budget;
+-  const values = { CATEGORIA: categoryLabel(b.category), DESCRICAO: b.description ?? '', VALOR: valueText(b), LINK: issued.link };
++  const values = budgetDigitalValues(b, issued.link);
+   const tokenKey = sha256(issued.token).slice(0, 16);
+   for (const channel of channels) {
+     await queueDelivery(ctx, {
+diff --git a/apps/api/src/modules/finance/text.ts b/apps/api/src/modules/finance/text.ts
+index 69e3bf0..3f0031a 100644
+--- a/apps/api/src/modules/finance/text.ts
++++ b/apps/api/src/modules/finance/text.ts
+@@ -1,24 +1,8 @@
+-import { BUDGET_CATEGORIES, BUDGET_STATUS, BUDGET_TYPES, formatCep, type BudgetCategory } from '@verifco/shared';
++import { BUDGET_CATEGORIES, BUDGET_STATUS, BUDGET_TYPES, formatCep, htmlToText, type BudgetCategory } from '@verifco/shared';
+ import type { Address } from '../../db/schema';
+ 
+-/** Converte o HTML dos templates em texto simples (para PDF). */
+-export function htmlToPlain(html: string): string {
+-  return html
+-    .replace(/<br\s*\/?>/gi, '\n')
+-    .replace(/<\/(p|li|h\d|div)>/gi, '\n\n')
+-    .replace(/<li>/gi, '• ')
+-    .replace(/<a [^>]*href="([^"]+)"[^>]*>(.*?)<\/a>/gi, '$2 ($1)')
+-    .replace(/<[^>]+>/g, '')
+-    .replace(/&nbsp;/g, ' ')
+-    .replace(/&lt;/g, '<')
+-    .replace(/&gt;/g, '>')
+-    .replace(/&quot;/g, '"')
+-    .replace(/&#39;/g, "'")
+-    .replace(/&amp;/g, '&')
+-    .replace(/[ \t]+\n/g, '\n')
+-    .replace(/\n{3,}/g, '\n\n')
+-    .trim();
+-}
++/** Converte o HTML dos templates em texto corrido para PDF (parágrafos separados por linha em branco). */
++export const htmlToPlain = (html: string): string => htmlToText(html, { blankLines: true, linksInParens: true });
+ 
+ export const categoryLabel = (c: string) => BUDGET_CATEGORIES[c as BudgetCategory] ?? c;
+ export const budgetTypeLabel = (t: string) => BUDGET_TYPES[t as keyof typeof BUDGET_TYPES] ?? t;
+diff --git a/apps/api/src/modules/reports/kit.ts b/apps/api/src/modules/reports/kit.ts
+index 6f365b4..66bb449 100644
+--- a/apps/api/src/modules/reports/kit.ts
++++ b/apps/api/src/modules/reports/kit.ts
+@@ -9,7 +9,6 @@ import {
+   formatCpfCnpj,
+   formatDate,
+   formatMoney,
+-  type DeclarationItem,
+   type DeclarationSubstatus,
+ } from '@verifco/shared';
+ import type { AppContext } from '../../context';
+@@ -259,11 +258,3 @@ export async function buildKitPdf(ctx: AppContext, declaration: DeclarationRow,
+   renderPdf(pdf, brand, sections);
+   return { buffer: await finishPdf(pdf), filename: kitFilename(customer, year) };
+ }
+-
+-/** Itens da declaração do ano anterior, usados no checklist de documentos. */
+-export async function previousYearItems(ctx: AppContext, customerId: string, year: number): Promise<DeclarationItem[]> {
+-  const prev = await ctx.db.query.declarations.findFirst({
+-    where: (d, { and, eq }) => and(eq(d.customerId, customerId), eq(d.exerciseYear, year - 1)),
+-  });
+-  return prev ? loadItems(ctx, prev.id) : [];
+-}
+diff --git a/apps/api/src/services/delivery.ts b/apps/api/src/services/delivery.ts
+index fa54e6c..76dd5ab 100644
+--- a/apps/api/src/services/delivery.ts
++++ b/apps/api/src/services/delivery.ts
+@@ -1,10 +1,13 @@
+-import { and, eq, sql } from 'drizzle-orm';
+-import { getTemplateDef, renderTemplate, onlyDigits, type DeliveryChannel } from '@verifco/shared';
++import { and, eq, inArray, sql } from 'drizzle-orm';
++import { getTemplateDef, htmlToText, renderTemplate, onlyDigits, type DeliveryChannel } from '@verifco/shared';
+ import type { AppContext } from '../context';
+ import { customers, deliveries, emailTemplates, jobs, messages, offices, users } from '../db/schema';
+ import { badRequest } from '../lib/errors';
+ 
+ export type DeliveryRow = typeof deliveries.$inferSelect;
++type CustomerRow = typeof customers.$inferSelect;
++type OfficeRow = typeof offices.$inferSelect;
++type TemplateValues = Record<string, string | number | null | undefined>;
+ 
+ /** Template efetivo do escritório: o personalizado ou o padrão do sistema. */
+ export async function resolveTemplate(ctx: AppContext, officeId: string, key: string) {
+@@ -16,16 +19,13 @@ export async function resolveTemplate(ctx: AppContext, officeId: string, key: st
+   return { def, subject: custom?.subject ?? def.defaultSubject, body: custom?.body ?? def.defaultBody, customized: Boolean(custom) };
+ }
+ 
+-/** Valores comuns a todos os templates (cliente, escritório, contador, anos). */
+-export async function baseTemplateValues(ctx: AppContext, officeId: string, customerId: string | null, exerciseYear?: number) {
+-  const office = await ctx.db.query.offices.findFirst({ where: eq(offices.id, officeId) });
+-  const customer = customerId ? await ctx.db.query.customers.findFirst({ where: eq(customers.id, customerId) }) : null;
+-  const responsible = customer?.responsibleUserId ? await ctx.db.query.users.findFirst({ where: eq(users.id, customer.responsibleUserId) }) : null;
++/** Valores comuns a todos os templates a partir do escritório, do cliente e do nome do responsável já carregados. */
++function commonValues(office: OfficeRow | null | undefined, customer: CustomerRow | null | undefined, responsibleName: string | null | undefined, exerciseYear?: number) {
+   const year = exerciseYear ?? new Date().getFullYear();
+   return {
+     CLIENTE: customer?.name ?? '',
+     ESCRITORIO: office?.name ?? '',
+-    CONTADOR: responsible?.name ?? office?.name ?? '',
++    CONTADOR: responsibleName ?? office?.name ?? '',
+     ANO_EXERCICIO: year,
+     ANO_CALENDARIO: year - 1,
+     ANO_ANTERIOR: year - 1,
+@@ -35,19 +35,26 @@ export async function baseTemplateValues(ctx: AppContext, officeId: string, cust
+   } as Record<string, string | number>;
+ }
+ 
+-const htmlToText = (html: string) =>
+-  html
+-    .replace(/<br\s*\/?>/gi, '\n')
+-    .replace(/<\/(p|li|h\d)>/gi, '\n')
+-    .replace(/<li>/gi, '• ')
+-    .replace(/<a [^>]*href="([^"]+)"[^>]*>(.*?)<\/a>/gi, '$2: $1')
+-    .replace(/<[^>]+>/g, '')
+-    .replace(/&nbsp;/g, ' ')
+-    .replace(/&amp;/g, '&')
+-    .replace(/&lt;/g, '<')
+-    .replace(/&gt;/g, '>')
+-    .replace(/\n{3,}/g, '\n\n')
+-    .trim();
++/** Valores comuns a todos os templates (cliente, escritório, contador, anos). */
++export async function baseTemplateValues(ctx: AppContext, officeId: string, customerId: string | null, exerciseYear?: number) {
++  const office = await ctx.db.query.offices.findFirst({ where: eq(offices.id, officeId) });
++  const customer = customerId ? await ctx.db.query.customers.findFirst({ where: eq(customers.id, customerId) }) : null;
++  const responsible = customer?.responsibleUserId ? await ctx.db.query.users.findFirst({ where: eq(users.id, customer.responsibleUserId) }) : null;
++  return commonValues(office, customer, responsible?.name, exerciseYear);
++}
++
++/** Destino do cliente no canal: o e-mail ou o celular com o código do país, só dígitos. */
++function addressOf(customer: CustomerRow | null | undefined, channel: DeliveryChannel): string | null {
++  if (!customer) return null;
++  if (channel === 'email') return customer.email || null;
++  return customer.mobile ? `${onlyDigits(customer.mobileCountry ?? '55')}${onlyDigits(customer.mobile)}` : null;
++}
++
++/** Assunto e corpo do template com os valores (escapados para HTML); no WhatsApp, o corpo vai em texto simples. */
++function renderContent(tpl: { subject: string; body: string }, values: TemplateValues, channel: DeliveryChannel, rawHtml?: string[]) {
++  const body = renderTemplate(tpl.body, values, { rawHtml });
++  return { subject: renderTemplate(tpl.subject, values, { html: false }), body: channel === 'whatsapp' ? htmlToText(body) : body };
++}
+ 
+ export interface QueueDeliveryInput {
+   officeId: string;
+@@ -83,6 +90,15 @@ export function redactSecrets(text: string, secrets: readonly string[]): string
+   return out;
+ }
+ 
++/** O que fica gravado (segredos mascarados) e, havendo segredo, a versão real cifrada para o job de envio. */
++function protect(ctx: AppContext, content: { subject: string; body: string }, redact: string[] | undefined) {
++  const secrets = (redact ?? []).filter((v) => v.length >= 4);
++  const storedSubject = redactSecrets(content.subject, secrets);
++  const storedBody = redactSecrets(content.body, secrets);
++  const sealed = storedSubject !== content.subject || storedBody !== content.body ? ctx.secrets.encrypt(JSON.stringify(content)) : undefined;
++  return { storedSubject, storedBody, sealed };
++}
++
+ const JOB_TYPE = 'delivery.send';
+ 
+ /**
+@@ -98,25 +114,18 @@ export async function queueDelivery(ctx: AppContext, input: QueueDeliveryInput):
+     if (existing) return existing;
+   }
+   const customer = input.customerId ? await db.query.customers.findFirst({ where: eq(customers.id, input.customerId) }) : null;
+-  let to = input.to ?? null;
+-  if (!to && customer) {
+-    to = input.channel === 'email' ? customer.email : customer.mobile ? `${onlyDigits(customer.mobileCountry ?? '55')}${onlyDigits(customer.mobile)}` : null;
+-  }
++  const to = input.to || addressOf(customer, input.channel);
+   if (!to) throw badRequest(input.channel === 'email' ? 'O cliente não tem e-mail cadastrado.' : 'O cliente não tem celular cadastrado.');
+ 
+-  let subject = input.subject ?? '';
+-  let body = input.body ?? '';
++  let content = { subject: input.subject ?? '', body: input.body ?? '' };
+   if (input.templateKey) {
+     const tpl = await resolveTemplate(ctx, input.officeId, input.templateKey);
+     const values = { ...(await baseTemplateValues(ctx, input.officeId, input.customerId, input.exerciseYear)), ...(input.values ?? {}) };
+-    subject = renderTemplate(tpl.subject, values, { html: false });
+-    body = renderTemplate(tpl.body, values, { rawHtml: input.rawHtml });
++    content = renderContent(tpl, values, input.channel, input.rawHtml);
++  } else if (input.channel === 'whatsapp') {
++    content.body = htmlToText(content.body);
+   }
+-  if (input.channel === 'whatsapp') body = htmlToText(body);
+-  const secrets = (input.redact ?? []).filter((v) => v.length >= 4);
+-  const storedSubject = redactSecrets(subject, secrets);
+-  const storedBody = redactSecrets(body, secrets);
+-  const sealed = storedSubject !== subject || storedBody !== body ? ctx.secrets.encrypt(JSON.stringify({ subject, body })) : undefined;
++  const { storedSubject, storedBody, sealed } = protect(ctx, content, input.redact);
+ 
+   const [row] = await db
+     .insert(deliveries)
+@@ -149,6 +158,103 @@ export async function queueDelivery(ctx: AppContext, input: QueueDeliveryInput):
+   return row;
+ }
+ 
++export interface BulkDeliveryItem {
++  customer: CustomerRow;
++  channel: DeliveryChannel;
++  /** Valores próprios deste envio, somados aos comuns (cliente, escritório, contador, anos). */
++  values?: TemplateValues;
++  /** Trechos secretos, como em {@link QueueDeliveryInput.redact}. */
++  redact?: string[];
++  idempotencyKey: string;
++}
++
++/**
++ * Envio em lote do mesmo template (mala direta): o template, o escritório e os responsáveis pelos
++ * clientes são carregados uma vez só, na criação. Cada `queue` grava um bloco de envios (algumas
++ * centenas), com as mensagens do WhatsApp e os jobs de envio, numa transação: o bloco nunca fica
++ * pela metade. Chaves de idempotência já usadas são ignoradas, então repetir a operação não
++ * duplica nada. Itens sem contato no canal não são gravados e voltam em `missing`.
++ */
++export async function createDeliveryBatch(
++  ctx: AppContext,
++  input: { officeId: string; templateKey: string; exerciseYear?: number; userId?: string | null; customers: CustomerRow[] },
++) {
++  const { db } = ctx;
++  const tpl = await resolveTemplate(ctx, input.officeId, input.templateKey);
++  const office = await db.query.offices.findFirst({ where: eq(offices.id, input.officeId) });
++  const responsibleIds = [...new Set(input.customers.flatMap((c) => (c.responsibleUserId ? [c.responsibleUserId] : [])))];
++  const responsibles = new Map<string, string>();
++  for (let i = 0; i < responsibleIds.length; i += 1000) {
++    const rows = await db.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, responsibleIds.slice(i, i + 1000)));
++    for (const u of rows) responsibles.set(u.id, u.name);
++  }
++
++  async function insertBlock(block: { item: BulkDeliveryItem; to: string; storedSubject: string; storedBody: string; sealed?: string }[]) {
++    return db.transaction(async (tx) => {
++      const rows = await tx
++        .insert(deliveries)
++        .values(
++          block.map((p) => ({
++            officeId: input.officeId,
++            customerId: p.item.customer.id,
++            channel: p.item.channel,
++            templateKey: input.templateKey,
++            subject: p.storedSubject,
++            toAddress: p.to,
++            toName: p.item.customer.name,
++            body: p.storedBody,
++            idempotencyKey: p.item.idempotencyKey,
++            createdByUserId: input.userId ?? null,
++          })),
++        )
++        .onConflictDoNothing({ target: [deliveries.officeId, deliveries.idempotencyKey] })
++        .returning({ id: deliveries.id, customerId: deliveries.customerId, channel: deliveries.channel, body: deliveries.body, idempotencyKey: deliveries.idempotencyKey });
++      const whatsapp = rows.filter((r) => r.channel === 'whatsapp' && r.customerId);
++      if (whatsapp.length) {
++        await tx.insert(messages).values(
++          whatsapp.map((r) => ({ officeId: input.officeId, customerId: r.customerId!, direction: 'out', channel: 'whatsapp', body: r.body, authorUserId: input.userId ?? null, deliveryId: r.id })),
++        );
++      }
++      if (rows.length) {
++        // os mesmos jobs que ctx.jobs.enqueue grava um a um (chave de idempotência = id do envio)
++        const sealedBy = new Map(block.map((p) => [p.item.idempotencyKey, p.sealed]));
++        await tx
++          .insert(jobs)
++          .values(
++            rows.map((r) => {
++              const sealed = sealedBy.get(r.idempotencyKey ?? '');
++              return { type: JOB_TYPE, payload: sealed ? { deliveryId: r.id, sealed } : { deliveryId: r.id }, officeId: input.officeId, idempotencyKey: r.id };
++            }),
++          )
++          .onConflictDoNothing({ target: [jobs.type, jobs.idempotencyKey] });
++      }
++      return rows.length;
++    });
++  }
++
++  return {
++    async queue(items: BulkDeliveryItem[]) {
++      const result = { queued: 0, existing: 0, missing: [] as BulkDeliveryItem[] };
++      const prepared = items.flatMap((item) => {
++        const to = addressOf(item.customer, item.channel);
++        if (!to) {
++          result.missing.push(item);
++          return [];
++        }
++        const responsible = item.customer.responsibleUserId ? responsibles.get(item.customer.responsibleUserId) : null;
++        const values = { ...commonValues(office, item.customer, responsible, input.exerciseYear), ...(item.values ?? {}) };
++        return [{ item, to, ...protect(ctx, renderContent(tpl, values, item.channel), item.redact) }];
++      });
++      if (prepared.length) {
++        const created = await insertBlock(prepared);
++        result.queued += created;
++        result.existing += prepared.length - created;
++      }
++      return result;
++    },
++  };
++}
++
+ /** Conteúdo real (cifrado) guardado no job original do envio, se houver trechos secretos. */
+ async function sealedContent(ctx: AppContext, deliveryId: string) {
+   const job = await ctx.db.query.jobs.findFirst({ where: and(eq(jobs.type, JOB_TYPE), eq(jobs.idempotencyKey, deliveryId)) });
+diff --git a/apps/api/test/communication.test.ts b/apps/api/test/communication.test.ts
+index 5a8da01..feafd2b 100644
+--- a/apps/api/test/communication.test.ts
++++ b/apps/api/test/communication.test.ts
+@@ -1,7 +1,9 @@
+ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+-import { eq, sql } from 'drizzle-orm';
+-import { budgets, darfs, declarationItems, declarations, deliveries } from '../src/db/schema';
++import { and, eq, sql } from 'drizzle-orm';
++import { budgets, checklists, customers, darfs, declarationItems, declarations, deliveries, jobs, messages } from '../src/db/schema';
+ import { VALID_CPFS, createEmployee, createTestEnv, registerOffice, type Api, type TestEnv } from './helpers';
++import { pdfContent } from './pdf-text';
++import { customerLogin } from './portal-helpers';
+ 
+ let env: TestEnv;
+ beforeAll(async () => {
+@@ -112,15 +114,19 @@ describe('mala direta', () => {
+ 
+     const requestId = uuid();
+     const sent = await api.post('/api/mailing/send', { ...body, requestId });
+-    expect(sent.status).toBe(200);
+-    expect(sent.body.queued).toBe(1);
++    // o envio vira um pedido na fila: a resposta traz a revisão e o andamento
++    expect(sent.status).toBe(202);
++    expect(sent.body).toMatchObject({ status: 'queued', repeated: false, customers: 1, deliveries: { email: 1, whatsapp: 0, total: 1 } });
+     expect(sent.body.skipped[0].count).toBe(2);
+     const again = await api.post('/api/mailing/send', { ...body, requestId });
+-    expect(again.body.queued).toBe(0);
+-    expect(again.body.alreadyQueued).toBe(1);
++    expect(again.body).toMatchObject({ repeated: true, jobId: sent.body.jobId });
++    await env.ctx.jobs.drain();
++    const status = await api.get(`/api/mailing/requests/${requestId}`);
++    expect(status.body).toMatchObject({ status: 'done', progress: 100, result: { queued: 1, alreadyQueued: 0, failed: [] } });
++    await api.post('/api/mailing/send', { ...body, requestId });
++    await env.ctx.jobs.drain();
+     const rows = await env.ctx.db.select().from(deliveries).where(eq(deliveries.officeId, officeId));
+     expect(rows).toHaveLength(1);
+-    await env.ctx.jobs.drain();
+     expect(env.providers.sentEmails.filter((e) => e.officeId === officeId)).toHaveLength(1);
+ 
+     // ambos os canais: e-mail para quem tem, WhatsApp para quem tem celular
+@@ -177,8 +183,9 @@ describe('mala direta', () => {
+ 
+     const requestId = uuid();
+     const sent = await api.post('/api/mailing/send', { ...body, requestId });
+-    expect(sent.body.queued).toBe(1);
++    expect(sent.body.deliveries.total).toBe(1);
+     await env.ctx.jobs.drain();
++    expect((await api.get(`/api/mailing/requests/${requestId}`)).body).toMatchObject({ status: 'done', result: { queued: 1 }, attachments: { total: 1, done: 1, failed: 0 } });
+     await api.post('/api/mailing/send', { ...body, requestId });
+     await env.ctx.jobs.drain();
+     const emails = env.providers.sentEmails.filter((e) => e.officeId === officeId);
+@@ -198,7 +205,7 @@ describe('mala direta', () => {
+     expect(prev.body.sample.subject).toContain('Declaração IRPF');
+ 
+     const sent = await api.post('/api/mailing/send', { type: 'checklist_pdf', channel: 'email', year: 2026, customerIds: [a], requestId: uuid() });
+-    expect(sent.body.queued).toBe(1);
++    expect(sent.body.deliveries.total).toBe(1);
+     await env.ctx.jobs.drain();
+     const email = env.providers.sentEmails.find((e) => e.officeId === officeId)!;
+     expect(email.attachments?.[0].filename).toMatch(/^checklist-irpf-2026-helena-orc\.pdf$/);
+@@ -258,6 +265,7 @@ describe('e-mails enviados', () => {
+     const b = await registerOffice(env);
+     const c = await customer(a.api, 6);
+     await a.api.post('/api/mailing/send', { type: 'marketing', channel: 'email', year: 2026, customerIds: [c], requestId: uuid() });
++    await env.ctx.jobs.drain();
+     const id = (await a.api.get('/api/deliveries')).body.data[0].id;
+     expect((await b.api.get(`/api/deliveries/${id}`)).status).toBe(404);
+     expect((await b.api.get('/api/deliveries')).body.total).toBe(0);
+@@ -269,3 +277,236 @@ describe('e-mails enviados', () => {
+     expect((await viewer.api.post(`/api/deliveries/${id}/resend`)).status).toBe(403);
+   });
+ });
++
++describe('mala direta: checklist digital (INT-2)', () => {
++  it('gera link e código que funcionam, libera o checklist e guarda o histórico mascarado; a prévia não gera acesso', async () => {
++    const { api, officeId } = await registerOffice(env);
++    const rita = await customer(api, 0, { name: 'Rita Checklist', mobile: '31977770000' });
++    const locked = await customer(api, 1, { name: 'Sergio Bloqueado' });
++    await env.ctx.db.insert(declarations).values({ officeId, customerId: locked, exerciseYear: 2026, checklistLocked: true });
++    const body = { type: 'checklist_digital', channel: 'both', year: 2026, customerIds: [rita, locked] };
++
++    const preview = await api.post('/api/mailing/preview', body);
++    expect(preview.body.sample.customerName).toBe('Rita Checklist');
++    expect(preview.body.sample.html).toContain('<strong>(gerado no envio)</strong>');
++    expect(preview.body.sample.text).toContain('(gerado no envio)');
++    expect(preview.body.skipped).toEqual([expect.objectContaining({ reason: 'checklist_locked', count: 1, names: ['Sergio Bloqueado'] })]);
++    // a prévia não cria checklist nem gera link
++    expect(await env.ctx.db.select().from(checklists).where(eq(checklists.officeId, officeId))).toHaveLength(0);
++
++    const requestId = uuid();
++    expect((await api.post('/api/mailing/send', { ...body, requestId })).status).toBe(202);
++    await env.ctx.jobs.drain();
++    const mail = env.providers.sentEmails.find((m) => m.officeId === officeId)!;
++    const [, link, token] = /href="([^"]*\/checklist\/([\w-]+))"/.exec(mail.html)!;
++    const code = /<strong>(\d{6})<\/strong>/.exec(mail.html)![1];
++    expect(link).not.toContain('/portal');
++    const wa = env.providers.sentWhatsApp.find((w) => w.officeId === officeId)!;
++    expect(wa.text).toContain(link);
++    expect(wa.text).toContain(code);
++
++    // o link e o código abrem o checklist do exercício, criado no envio
++    const login = await customerLogin(env, token, VALID_CPFS[0], code);
++    expect(login.status).toBe(200);
++    const view = await login.api!.get(`/api/portal/checklists/${login.body.checklistId}`);
++    expect(view.status).toBe(200);
++    expect(view.body).toMatchObject({ exerciseYear: 2026, readOnly: false });
++    const office = await api.get(`/api/customers/${rita}/checklist?year=2026`);
++    expect(office.body.checklist.sentAt).not.toBeNull();
++    expect(office.body.checklist.accessExpiresAt).not.toBeNull();
++
++    // histórico (envios e mensagens) com link e código mascarados
++    const stored = await env.ctx.db.select().from(deliveries).where(eq(deliveries.officeId, officeId));
++    expect(stored).toHaveLength(2);
++    for (const d of stored) {
++      expect(d.body).not.toContain(token);
++      expect(d.body).not.toContain(code);
++      expect(d.body).toContain('••••••');
++    }
++    const chat = await env.ctx.db.select().from(messages).where(eq(messages.officeId, officeId));
++    expect(chat).toHaveLength(1);
++    expect(chat[0].body).not.toContain(code);
++    // o conteúdo real, cifrado no job de envio, é apagado depois da entrega
++    const sendJobs = await env.ctx.db.select().from(jobs).where(and(eq(jobs.officeId, officeId), eq(jobs.type, 'delivery.send')));
++    expect(sendJobs).toHaveLength(2);
++    expect(sendJobs.every((j) => j.status === 'done' && !('sealed' in j.payload))).toBe(true);
++
++    // repetir o pedido não gera outro acesso: o enviado continua valendo
++    await api.post('/api/mailing/send', { ...body, requestId });
++    await env.ctx.jobs.drain();
++    expect(await env.ctx.db.select().from(deliveries).where(eq(deliveries.officeId, officeId))).toHaveLength(2);
++    expect((await customerLogin(env, token, VALID_CPFS[0], code)).status).toBe(200);
++    // quem estava bloqueado não ganhou checklist
++    expect(await env.ctx.db.select().from(checklists).where(eq(checklists.officeId, officeId))).toHaveLength(1);
++  });
++});
++
++describe('mala direta: orçamento (INT-5)', () => {
++  it('envia pelo fluxo do financeiro (link de aprovação, "Enviado", etapa) e pula quem já aprovou', async () => {
++    const { api, officeId } = await registerOffice(env);
++    const paula = await customer(api, 2, { name: 'Paula Rascunho' });
++    const quintino = await customer(api, 3, { name: 'Quintino Aprovado' });
++    const renato = await customer(api, 4, { name: 'Renato Recusado' });
++    const boleto = (await api.get('/api/finance/payment-methods')).body.find((m: any) => m.type === 'boleto');
++    const draft = await api.post('/api/finance/budgets', { customerId: paula, exerciseYear: 2026, category: 'irpf', amountCents: 60_000, paymentMethodId: boleto.id, installments: 3, description: 'Declaração completa' });
++    expect(draft.status).toBe(201);
++    const approved = await api.post('/api/finance/budgets', { customerId: quintino, exerciseYear: 2026, category: 'irpf', amountCents: 50_000, status: 'approved' });
++    expect(approved.body.status).toBe('approved');
++    await env.ctx.db.insert(budgets).values({ officeId, customerId: renato, exerciseYear: 2026, amountCents: 40_000, totalCents: 40_000, status: 'rejected' });
++    const body = { type: 'budget', channel: 'email', year: 2026, customerIds: [paula, quintino, renato] };
++
++    const preview = await api.post('/api/mailing/preview', body);
++    expect(preview.body.type.templateKey).toBe('budget_digital');
++    expect(preview.body.skipped).toEqual(
++      expect.arrayContaining([
++        expect.objectContaining({ reason: 'budget_approved', count: 1, names: ['Quintino Aprovado'] }),
++        expect.objectContaining({ reason: 'no_budget', count: 1, names: ['Renato Recusado'] }),
++      ]),
++    );
++    expect(preview.body.sample.html).toMatch(/600,00 \(3x de R\$\s200,00\)/);
++    expect(preview.body.sample.html).toContain('href="(gerado no envio)"');
++    // a prévia não gera link nem muda o orçamento
++    expect(await env.ctx.db.query.budgets.findFirst({ where: eq(budgets.id, draft.body.id) })).toMatchObject({ status: 'draft', approvalTokenHash: null, sentAt: null });
++
++    const sent = await api.post('/api/mailing/send', { ...body, requestId: uuid() });
++    expect(sent.body.customers).toBe(1);
++    await env.ctx.jobs.drain();
++    const row = await env.ctx.db.query.budgets.findFirst({ where: eq(budgets.id, draft.body.id) });
++    expect(row?.status).toBe('sent');
++    expect(row?.sentAt).not.toBeNull();
++    const mails = env.providers.sentEmails.filter((m) => m.officeId === officeId);
++    expect(mails).toHaveLength(1);
++    expect(mails[0].subject).toContain('Declaração IRPF');
++    expect(mails[0].html).toMatch(/600,00 \(3x de R\$\s200,00\)/);
++    const token = /\/orcamento\/([\w-]+)"/.exec(mails[0].html)![1];
++    const pub = await env.app.inject({ method: 'GET', url: `/api/public/budgets/${token}` });
++    expect(pub.statusCode).toBe(200);
++    expect(pub.json().budget).toMatchObject({ status: 'sent', totalCents: 60_000, installments: 3 });
++    const decl = await env.ctx.db.query.declarations.findFirst({ where: and(eq(declarations.customerId, paula), eq(declarations.exerciseYear, 2026)) });
++    expect(decl?.substatus).toBe('budget_sent');
++    expect((await env.ctx.db.query.budgets.findFirst({ where: eq(budgets.id, approved.body.id) }))?.status).toBe('approved');
++  });
++});
++
++describe('checklist em PDF na mala direta (INT-8, CON-4)', () => {
++  it('é o mesmo PDF da etapa Documentação: sem os itens removidos e com os acrescentados pelo escritório', async () => {
++    const { api, officeId } = await registerOffice(env);
++    const lia = await customer(api, 7, { name: 'Lia Documentos' });
++    await transmittedDeclaration(officeId, lia, 2025);
++    const created = await api.post(`/api/customers/${lia}/checklist`, { year: 2026 });
++    expect(created.status).toBe(201);
++    const alfa = created.body.sections.flatMap((s: any) => s.items).find((i: any) => i.title.includes('Empresa Alfa'));
++    expect((await api.put(`/api/checklists/${created.body.id}/items/${alfa.id}`, { status: 'removed' })).status).toBe(200);
++    expect((await api.post(`/api/checklists/${created.body.id}/items`, { section: 'income', title: 'Recibo do aluguel de junho' })).status).toBe(201);
++
++    await api.post('/api/mailing/send', { type: 'checklist_pdf', channel: 'email', year: 2026, customerIds: [lia], requestId: uuid() });
++    await env.ctx.jobs.drain();
++    const attachment = env.providers.sentEmails.find((m) => m.officeId === officeId)!.attachments![0];
++    expect(attachment.filename).toBe('checklist-irpf-2026-lia-documentos.pdf');
++    const mailed = pdfContent(attachment.content);
++    expect(mailed.join('\n')).not.toContain('Empresa Alfa');
++    expect(mailed).toContain('Recibo do aluguel de junho');
++    expect(mailed).toContain('Bem: Apartamento');
++
++    const step = await api.get(`/api/customers/${lia}/checklist-pdf?year=2026`);
++    expect(mailed).toEqual(pdfContent(step.raw.rawPayload));
++    const sample = await api.get(`/api/mailing/attachment-preview?type=checklist_pdf&customerId=${lia}&year=2026`);
++    expect(pdfContent(sample.raw.rawPayload)).toEqual(mailed);
++  });
++});
++
++describe('texto do WhatsApp (CON-5)', () => {
++  it('decodifica apóstrofo, aspas e &amp; e quebra a linha em <div>, igual na prévia e no envio', async () => {
++    const { api, officeId } = await registerOffice(env);
++    const maria = await customer(api, 5, { name: "Maria D'Ávila", mobile: '31966660000' });
++    await api.put('/api/email-templates/monthly', {
++      subject: 'Novidades',
++      body: '<div>Olá, {{CLIENTE}}!</div><div class="aviso">Lembretes do "mês" &amp; prazos</div><ul><li class="item">Informe de rendimentos</li></ul>',
++    });
++    const body = { type: 'monthly', channel: 'whatsapp', year: 2026, customerIds: [maria] };
++    const expected = `Olá, Maria D'Ávila!\nLembretes do "mês" & prazos\n• Informe de rendimentos`;
++    const preview = await api.post('/api/mailing/preview', body);
++    expect(preview.body.sample.text).toBe(expected);
++
++    await api.post('/api/mailing/send', { ...body, requestId: uuid() });
++    await env.ctx.jobs.drain();
++    expect(env.providers.sentWhatsApp.find((w) => w.officeId === officeId)?.text).toBe(expected);
++    const [stored] = await env.ctx.db.select().from(deliveries).where(eq(deliveries.officeId, officeId));
++    expect(stored.body).toBe(expected);
++    const [chat] = await env.ctx.db.select().from(messages).where(eq(messages.officeId, officeId));
++    expect(chat.body).toBe(expected);
++
++    // o envio avulso, de um cliente só, passa pelo mesmo conversor
++    expect((await api.post(`/api/customers/${maria}/checklist-pdf/send`, { year: 2026, channel: 'whatsapp' })).status).toBe(200);
++    await env.ctx.jobs.drain();
++    const single = env.providers.sentWhatsApp.filter((w) => w.officeId === officeId).at(-1)!;
++    expect(single.text).toContain("Olá, Maria D'Ávila!");
++    expect(single.text).not.toMatch(/&#39;|&quot;|&amp;/);
++  });
++});
++
++describe('mala direta em lote (DAD-5)', () => {
++  it('a requisição só registra o pedido; o job grava envios, mensagens e jobs em lote e não duplica ao repetir', async () => {
++    const { api, officeId, userId } = await registerOffice(env);
++    await env.ctx.jobs.drain();
++    const many = Array.from({ length: 450 }, (_, i) => ({
++      officeId,
++      name: `Lote ${String(i).padStart(3, '0')}`,
++      cpfCnpj: `9${String(i).padStart(10, '0')}`,
++      email: `lote${i}@ex.com`,
++      mobile: '31955550000',
++      responsibleUserId: userId,
++    }));
++    await env.ctx.db.insert(customers).values(many);
++    const body = { type: 'monthly', channel: 'both', year: 2026 };
++    const requestId = uuid();
++    const sent = await api.post('/api/mailing/send', { ...body, requestId });
++    expect(sent.status).toBe(202);
++    expect(sent.body).toMatchObject({ status: 'queued', customers: 450, deliveries: { email: 450, whatsapp: 450, total: 900 }, truncated: false });
++    // a requisição não grava envios: só o pedido
++    const countOf = async () => (await env.ctx.db.select({ id: deliveries.id }).from(deliveries).where(eq(deliveries.officeId, officeId))).length;
++    expect(await countOf()).toBe(0);
++    expect((await api.post('/api/mailing/send', { ...body, requestId })).body).toMatchObject({ repeated: true, jobId: sent.body.jobId });
++
++    // roda só o job do pedido: os envios ficam na fila do job de envio
++    expect(await env.ctx.jobs.runNext()).toBe(true);
++    const status = (await api.get(`/api/mailing/requests/${requestId}`)).body;
++    expect(status).toMatchObject({ status: 'done', progress: 100, result: { queued: 900, alreadyQueued: 0, failed: [] } });
++    expect(await countOf()).toBe(900);
++    expect(await env.ctx.db.select({ id: messages.id }).from(messages).where(eq(messages.officeId, officeId))).toHaveLength(450);
++    const queued = await env.ctx.db.select({ id: jobs.id }).from(jobs).where(and(eq(jobs.officeId, officeId), eq(jobs.type, 'delivery.send'), eq(jobs.status, 'queued')));
++    expect(queued).toHaveLength(900);
++    const [one] = await env.ctx.db.select().from(deliveries).where(and(eq(deliveries.officeId, officeId), eq(deliveries.channel, 'email'))).limit(1);
++    expect(one.body).toContain('Ana Dona');
++
++    // os envios na fila não interessam ao resto do teste
++    await env.ctx.db.update(jobs).set({ status: 'done' }).where(and(eq(jobs.officeId, officeId), eq(jobs.type, 'delivery.send')));
++
++    // pedido que falhou volta para a fila quando é repetido e não duplica o que já foi gravado
++    await env.ctx.db.update(jobs).set({ status: 'failed', error: 'conexão perdida' }).where(eq(jobs.id, sent.body.jobId));
++    expect((await api.get(`/api/mailing/requests/${requestId}`)).body).toMatchObject({ status: 'failed', error: expect.stringMatching(/Tente de novo/) });
++    const retry = await api.post('/api/mailing/send', { ...body, requestId });
++    expect(retry.body).toMatchObject({ repeated: true, status: 'queued', jobId: sent.body.jobId });
++    expect(await env.ctx.jobs.runNext()).toBe(true);
++    expect((await api.get(`/api/mailing/requests/${requestId}`)).body).toMatchObject({ status: 'done', result: { queued: 0, alreadyQueued: 900 } });
++    expect(await countOf()).toBe(900);
++    expect(await env.ctx.db.select({ id: jobs.id }).from(jobs).where(and(eq(jobs.officeId, officeId), eq(jobs.type, 'mailing.plan')))).toHaveLength(1);
++  });
++
++  it('avisa quando a seleção passa do limite de destinatários em vez de cortar em silêncio', async () => {
++    const { api, officeId } = await registerOffice(env);
++    const rows = Array.from({ length: 5001 }, (_, i) => ({ officeId, name: `Cliente ${String(i).padStart(4, '0')}`, cpfCnpj: `8${String(i).padStart(10, '0')}`, email: `c${i}@lote.com` }));
++    for (let i = 0; i < rows.length; i += 1000) await env.ctx.db.insert(customers).values(rows.slice(i, i + 1000));
++    const body = { type: 'marketing', channel: 'email', year: 2026 };
++    const preview = await api.post('/api/mailing/preview', body);
++    expect(preview.body).toMatchObject({ truncated: true, matched: 5001, limit: 5000, total: 5000 });
++    const sent = await api.post('/api/mailing/send', { ...body, requestId: uuid() });
++    expect(sent.status).toBe(202);
++    expect(sent.body).toMatchObject({ truncated: true, matched: 5001, customers: 5000 });
++    // o aviso já está no pedido; o envio em si não precisa rodar aqui
++    await env.ctx.db.delete(jobs).where(eq(jobs.id, sent.body.jobId));
++    // dentro do limite, sem aviso
++    const few = await api.post('/api/mailing/preview', { ...body, filters: { email: 'without' } });
++    expect(few.body).toMatchObject({ truncated: false, total: 0 });
++  });
++});
+diff --git a/apps/api/test/finance.test.ts b/apps/api/test/finance.test.ts
+index 9a7b57e..92f398c 100644
+--- a/apps/api/test/finance.test.ts
++++ b/apps/api/test/finance.test.ts
+@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+ import { and, eq } from 'drizzle-orm';
+ import ExcelJS from 'exceljs';
+ import { addMonthsIso, todayIso } from '@verifco/shared';
+-import { billings, budgets, declarations, importBatches, installments, jobs } from '../src/db/schema';
++import { billings, budgets, customers, declarations, importBatches, installments, jobs } from '../src/db/schema';
+ import { signCustomerToken } from '../src/plugins/auth';
+ import { buildWorkbook } from '../src/services/xlsx';
+ import { VALID_CPFS, client, createEmployee, createTestEnv, registerOffice, type Api, type TestEnv } from './helpers';
+@@ -442,8 +442,13 @@ describe('orçamentos em lote', () => {
+     const mp = multipart({ year: '2026' }, { name: 'orcamentos.xlsx', data: sheet, type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+     const res = await env.app.inject({ method: 'POST', url: '/api/finance/budget-import', payload: mp.payload, headers: { ...mp.headers, authorization: `Bearer ${token}` } });
+     expect(res.statusCode).toBe(200);
+-    const body = res.json();
+-    expect(body).toMatchObject({ total: 5, succeeded: 2, failed: 3, skipped: 1 });
++    // a requisição só guarda a planilha e registra o lote; o job grava as linhas
++    const queued = res.json();
++    expect(queued).toMatchObject({ status: 'processing', total: 5, succeeded: 0, failed: 0, skipped: 1 });
++    expect((await api.get(`/api/finance/customers/${c2.body.id}/budgets?year=2026`)).body.data).toHaveLength(0);
++    await env.ctx.jobs.drain();
++    const body = (await api.get(`/api/finance/budget-import/batches/${queued.id}`)).body;
++    expect(body).toMatchObject({ status: 'done', total: 5, succeeded: 2, failed: 3 });
+     expect(body.results.map((r: { ok: boolean }) => r.ok)).toEqual([true, true, false, false, false]);
+     expect(body.results[2].message).toContain('não encontrado');
+     expect(body.results[3].message).toContain('parcela');
+@@ -458,9 +463,54 @@ describe('orçamentos em lote', () => {
+     const batches = await env.ctx.db.select().from(importBatches).where(eq(importBatches.kind, 'budget'));
+     expect(batches.some((b) => b.id === body.id && b.failed === 3)).toBe(true);
+     expect((await api.get('/api/finance/budget-import/batches')).body[0].id).toBe(body.id);
++    // o resultado chega também pelo sino de quem importou
++    const notes = await env.ctx.db.query.notifications.findMany({ where: (t, { eq: e }) => e(t.officeId, queued.officeId) });
++    expect(notes.some((n) => n.title === 'Importação de orçamentos concluída' && n.body === '2 linha(s) gravada(s), 3 com erro.')).toBe(true);
++    // outro escritório não vê o lote
++    expect((await (await registerOffice(env)).api.get(`/api/finance/budget-import/batches/${body.id}`)).status).toBe(404);
++  });
++
++  it('importação grande roda no job, lê clientes e orçamentos de uma vez e atualiza a mesma linha repetida (DAD-5)', async () => {
++    const { api, token, officeId, userId } = await setup('Escritório Lote');
++    // 300 clientes cadastrados direto no banco, um orçamento por linha
++    const valid = Array.from({ length: 300 }, (_, i) => validCpf(String(123_456_000 + i)));
++    await env.ctx.db.insert(customers).values(valid.map((cpf, i) => ({ officeId, name: `Lote ${i}`, cpfCnpj: cpf, responsibleUserId: userId })));
++    const rows = valid.map((cpf) => ({ c0: cpf, c4: '100,00' }));
++    // a mesma pessoa duas vezes na planilha: a segunda linha atualiza o orçamento criado pela primeira
++    rows.push({ c0: valid[0], c4: '150,00' });
++    const sheet = await buildWorkbook([{ name: 'Orçamentos', columns: ['CPF/CNPJ', 'Cliente', 'Categoria', 'Descrição', 'Valor'].map((h, i) => ({ header: h, key: `c${i}` })), rows }]);
++    const mp = multipart({ year: '2026' }, { name: 'orcamentos.xlsx', data: sheet, type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
++    const res = await env.app.inject({ method: 'POST', url: '/api/finance/budget-import', payload: mp.payload, headers: { ...mp.headers, authorization: `Bearer ${token}` } });
++    expect(res.json()).toMatchObject({ status: 'processing', total: 301 });
++    const before = await env.ctx.db.select({ id: budgets.id }).from(budgets).where(eq(budgets.officeId, officeId));
++    expect(before).toHaveLength(0);
++    const job = await env.ctx.db.query.jobs.findFirst({ where: (t, { and: a, eq: e }) => a(e(t.type, 'finance.budget_import'), e(t.idempotencyKey, res.json().id)) });
++    expect(job).toMatchObject({ status: 'queued', maxAttempts: 1 });
++
++    await env.ctx.jobs.drain();
++    const batch = (await api.get(`/api/finance/budget-import/batches/${res.json().id}`)).body;
++    expect(batch).toMatchObject({ status: 'done', total: 301, succeeded: 301, failed: 0 });
++    expect(batch.results.at(-1)).toMatchObject({ ok: true, message: 'Orçamento atualizado.' });
++    const after = await env.ctx.db.select().from(budgets).where(eq(budgets.officeId, officeId));
++    expect(after).toHaveLength(300);
++    const first = (await env.ctx.db.select().from(customers).where(and(eq(customers.officeId, officeId), eq(customers.cpfCnpj, valid[0]))))[0];
++    expect(after.find((b) => b.customerId === first.id)?.amountCents).toBe(15_000);
+   });
+ });
+ 
++/** CPF válido: os 9 dígitos informados mais os dígitos verificadores. */
++function validCpf(seed: string): string {
++  const base = seed.slice(0, 9).split('').map(Number);
++  const digit = (nums: number[]) => {
++    const sum = nums.reduce((acc, n, i) => acc + n * (nums.length + 1 - i), 0);
++    const r = (sum * 10) % 11;
++    return r === 10 ? 0 : r;
++  };
++  const d1 = digit(base);
++  const d2 = digit([...base, d1]);
++  return [...base, d1, d2].join('');
++}
++
+ describe('permissões e isolamento', () => {
+   it('bloqueia sem permissão (403) e esconde dados de outro escritório (404)', async () => {
+     const a = await setup('Escritório A');
+diff --git a/apps/api/test/pdf-text.ts b/apps/api/test/pdf-text.ts
+new file mode 100644
+index 0000000..1204f7e
+--- /dev/null
++++ b/apps/api/test/pdf-text.ts
+@@ -0,0 +1,38 @@
++import { inflateSync } from 'node:zlib';
++
++/** Caracteres 0x80–0x9F da codificação WinAnsi (os demais coincidem com o Latin-1). */
++const WIN_ANSI: Record<number, string> = {
++  0x80: '€', 0x82: '‚', 0x83: 'ƒ', 0x84: '„', 0x85: '…', 0x86: '†', 0x87: '‡', 0x88: 'ˆ', 0x89: '‰', 0x8a: 'Š', 0x8b: '‹', 0x8c: 'Œ', 0x8e: 'Ž',
++  0x91: '‘', 0x92: '’', 0x93: '“', 0x94: '”', 0x95: '•', 0x96: '–', 0x97: '—', 0x98: '˜', 0x99: '™', 0x9a: 'š', 0x9b: '›', 0x9c: 'œ', 0x9e: 'ž', 0x9f: 'Ÿ',
++};
++
++const decodeHex = (hex: string) =>
++  (hex.match(/../g) ?? [])
++    .map((h) => parseInt(h, 16))
++    .map((b) => WIN_ANSI[b] ?? String.fromCharCode(b))
++    .join('');
++
++/**
++ * Linhas de texto de um PDF gerado pelo pdfkit com as fontes padrão (cada linha desenhada é um
++ * bloco `TJ`), para os testes compararem o conteúdo de dois PDFs.
++ */
++export function pdfLines(pdf: Buffer): string[] {
++  const raw = pdf.toString('latin1');
++  const lines: string[] = [];
++  for (const m of raw.matchAll(/stream\r?\n([\s\S]*?)\r?\nendstream/g)) {
++    let content: string;
++    try {
++      content = inflateSync(Buffer.from(m[1], 'latin1')).toString('latin1');
++    } catch {
++      continue;
++    }
++    for (const t of content.matchAll(/\[((?:<[0-9a-fA-F]*>|[^\]<])*)\]\s*TJ|<([0-9a-fA-F]*)>\s*Tj/g)) {
++      const parts = t[1] !== undefined ? [...t[1].matchAll(/<([0-9a-fA-F]*)>/g)].map((h) => h[1]) : [t[2]];
++      lines.push(parts.map(decodeHex).join(''));
++    }
++  }
++  return lines;
++}
++
++/** Linhas do PDF sem o rodapé ("gerado em" com data e hora, que muda a cada geração). */
++export const pdfContent = (pdf: Buffer) => pdfLines(pdf).filter((l) => !l.includes('gerado em'));
+diff --git a/apps/api/test/tax-values.test.ts b/apps/api/test/tax-values.test.ts
+index b295123..88963bd 100644
+--- a/apps/api/test/tax-values.test.ts
++++ b/apps/api/test/tax-values.test.ts
+@@ -132,9 +132,12 @@ describe('orçamentos em lote por CSV do Excel', () => {
+     ].join('\r\n');
+     const res = await upload(env, token, '/api/finance/budget-import', [{ name: 'orcamentos.csv', content: Buffer.from(csv, 'latin1'), type: 'text/csv' }], { year: '2026' });
+     expect(res.status).toBe(200);
+-    expect(res.body).toMatchObject({ total: 3, succeeded: 1, failed: 2 });
+-    expect(res.body.results[1].message).toBe('Início da cobrança "31/02/2026" inválido: use uma data que exista, no formato DD/MM/AAAA.');
+-    expect(res.body.results[2].message).toMatch(/Valor "1,500" inválido/);
++    // a importação roda no job; o resultado fica no lote
++    await env.ctx.jobs.drain();
++    const batch = (await api.get(`/api/finance/budget-import/batches/${res.body.id}`)).body;
++    expect(batch).toMatchObject({ total: 3, succeeded: 1, failed: 2 });
++    expect(batch.results[1].message).toBe('Início da cobrança "31/02/2026" inválido: use uma data que exista, no formato DD/MM/AAAA.');
++    expect(batch.results[2].message).toMatch(/Valor "1,500" inválido/);
+     const list = (await api.get(`/api/finance/customers/${maria.body.id}/budgets?year=2026`)).body.data;
+     expect(list).toHaveLength(1);
+     expect(list[0]).toMatchObject({ amountCents: 150_000, description: 'Declaração completa', internalNote: 'Cliente antigo', billingStartDate: '2026-11-10', category: 'irpf' });
+@@ -165,7 +168,9 @@ describe('importações por .xlsx com células numéricas', () => {
+     const xlsx = Buffer.from(await wb.xlsx.writeBuffer());
+     const res = await upload(env, token, '/api/finance/budget-import', [{ name: 'orcamentos.xlsx', content: xlsx }], { year: '2026' });
+     expect(res.status).toBe(200);
+-    expect(res.body).toMatchObject({ total: 5, succeeded: 5, failed: 0 });
++    // a importação roda no job; o resultado fica no lote
++    await env.ctx.jobs.drain();
++    expect((await api.get(`/api/finance/budget-import/batches/${res.body.id}`)).body).toMatchObject({ total: 5, succeeded: 5, failed: 0 });
+     const amounts: number[] = [];
+     for (const id of ids) {
+       const list = (await api.get(`/api/finance/customers/${id}/budgets?year=2026`)).body.data;
+diff --git a/apps/web/src/modules/communication/MailingPage.test.tsx b/apps/web/src/modules/communication/MailingPage.test.tsx
+new file mode 100644
+index 0000000..f4e296d
+--- /dev/null
++++ b/apps/web/src/modules/communication/MailingPage.test.tsx
+@@ -0,0 +1,87 @@
++import { afterEach, describe, expect, it, vi } from 'vitest';
++import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
++import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
++import { MemoryRouter } from 'react-router';
++import { MAILING_TYPES } from '@verifco/shared';
++import { ToastProvider } from '../../ds';
++import { MailingPage } from './MailingPage';
++
++/**
++ * DAD-5: a mala direta é preparada na fila de tarefas. A tela avisa quando a seleção passa do
++ * limite de destinatários e acompanha o pedido até o resumo final.
++ */
++vi.mock('../../lib/auth', () => ({
++  useAuth: () => ({ can: () => true, me: { favorites: [] }, refresh: async () => {} }),
++}));
++
++const CUSTOMER = '6f9619ff-8b86-4d01-b42d-00cf4fc964ff';
++const planned = { customers: 5000, deliveries: { email: 5000, whatsapp: 0, total: 5000 }, skipped: [], truncated: true, matched: 5200 };
++const polls: object[] = [
++  { requestId: 'r1', status: 'running', progress: 40, error: null, ...planned, result: null, attachments: null },
++  { requestId: 'r1', status: 'done', progress: 100, error: null, ...planned, result: { queued: 5000, alreadyQueued: 0, failed: [] }, attachments: null },
++];
++const sent: unknown[] = [];
++
++vi.mock('../../lib/api', async (importOriginal) => {
++  const original = await importOriginal<typeof import('../../lib/api')>();
++  const get = async (path: string) => {
++    if (path === '/mailing/types') return MAILING_TYPES.map((t) => ({ ...t, allowed: true }));
++    if (path === '/mailing/requests/r1') return polls.length > 1 ? polls.shift() : polls[0];
++    return [];
++  };
++  const post = async (path: string, body: unknown) => {
++    if (path === '/mailing/preview') {
++      return {
++        type: { key: 'marketing', label: 'Marketing', templateKey: 'marketing', note: null, attachment: null },
++        total: 5000,
++        withEmail: 5000,
++        withoutEmail: 0,
++        withMobile: 0,
++        withoutMobile: 5000,
++        customers: 5000,
++        deliveries: planned.deliveries,
++        skipped: [],
++        truncated: true,
++        matched: 5200,
++        limit: 5000,
++        recipients: [{ id: CUSTOMER, name: 'Ana Lima', email: 'ana@ex.com', mobile: null, channels: ['email'], skips: [], stage: 'not_started' }],
++        sample: { customerId: CUSTOMER, customerName: 'Ana Lima', email: 'ana@ex.com', mobile: null, subject: 'Novidade', html: '<p>Olá</p>', text: 'Olá', attachment: null },
++      };
++    }
++    if (path === '/mailing/send') {
++      sent.push(body);
++      return { requestId: 'r1', status: 'queued', progress: 0, error: null, ...planned, result: null, attachments: null, repeated: false };
++    }
++    throw new Error(`rota inesperada: ${path}`);
++  };
++  return { ...original, api: { ...original.api, get, post } };
++});
++
++afterEach(cleanup);
++
++describe('MailingPage: envio pela fila e aviso de limite (DAD-5)', () => {
++  it('avisa o corte acima do limite e acompanha o pedido até o resumo', async () => {
++    render(
++      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
++        <ToastProvider>
++          <MemoryRouter initialEntries={[`/comunicacao/mala-direta?tipo=marketing&clientes=${CUSTOMER}`]}>
++            <MailingPage />
++          </MemoryRouter>
++        </ToastProvider>
++      </QueryClientProvider>,
++    );
++    expect(await screen.findByText(/A seleção tem 5\.200 clientes, mais que o limite de 5\.000 por envio/)).toBeTruthy();
++
++    fireEvent.click(await screen.findByRole('button', { name: /Enviar para 5000 cliente/ }));
++    const dialog = await screen.findByRole('dialog');
++    expect(within(dialog).getByText(/Outros 200 cliente\(s\) da seleção ficam de fora pelo limite de 5\.000 por envio/)).toBeTruthy();
++    fireEvent.click(within(dialog).getByRole('button', { name: 'Enviar agora' }));
++
++    expect(await screen.findByText('Preparando os envios...')).toBeTruthy();
++    expect(sent).toHaveLength(1);
++    expect((await screen.findByRole('progressbar')).getAttribute('aria-valuenow')).toBe('40');
++    expect(await screen.findByText('5.000 envio(s) na fila para 5.000 cliente(s)', undefined, { timeout: 4000 })).toBeTruthy();
++    expect(screen.queryByRole('progressbar')).toBeNull();
++    expect(screen.getByText(/refine os filtros e faça outro envio para os demais/)).toBeTruthy();
++  });
++});
+diff --git a/apps/web/src/modules/communication/MailingPage.tsx b/apps/web/src/modules/communication/MailingPage.tsx
+index f404097..83e7368 100644
+--- a/apps/web/src/modules/communication/MailingPage.tsx
++++ b/apps/web/src/modules/communication/MailingPage.tsx
+@@ -18,9 +18,10 @@ import {
+   Send,
+   TrendingUp,
+   Users,
++  XCircle,
+ } from 'lucide-react';
+-import { DECLARATION_STAGES, formatPhone, mailingTypeForTemplate, type MailingType, type MailingTypeKey } from '@verifco/shared';
+-import { Alert, Button, Card, Checkbox, ConfirmDialog, EmptyState, Loading, Select, Stat, Tag, cx, useToast } from '../../ds';
++import { DECLARATION_STAGES, MAILING_MAX_RECIPIENTS, formatPhone, mailingTypeForTemplate, type MailingType, type MailingTypeKey } from '@verifco/shared';
++import { Alert, Button, Card, Checkbox, ConfirmDialog, EmptyState, Loading, Progress, Select, Stat, Tag, cx, useToast } from '../../ds';
+ import { PageHeader } from '../../app/Shell';
+ import { ApiError, api } from '../../lib/api';
+ import { useAuth } from '../../lib/auth';
+@@ -44,6 +45,10 @@ interface PreviewResult {
+   customers: number;
+   deliveries: { email: number; whatsapp: number; total: number };
+   skipped: { reason: string; label: string; count: number; names: string[] }[];
++  /** A seleção passou do limite: o envio vai só para os primeiros `limit` (de `matched`). */
++  truncated: boolean;
++  matched: number;
++  limit: number;
+   recipients: { id: string; name: string; email: string | null; mobile: string | null; channels: string[]; skips: string[]; stage: string }[];
+   sample: null | {
+     customerId: string;
+@@ -57,14 +62,33 @@ interface PreviewResult {
+   };
+ }
+ 
+-interface SendResult {
+-  queued: number;
+-  alreadyQueued: number;
++/** Pedido de mala direta: preparado na fila de tarefas, acompanhado pela tela. */
++interface MailingRequest {
++  requestId: string;
++  status: 'queued' | 'running' | 'done' | 'failed';
++  progress: number;
++  error: string | null;
+   customers: number;
+   deliveries: { email: number; whatsapp: number; total: number };
+   skipped: PreviewResult['skipped'];
++  truncated: boolean;
++  matched: number;
++  result: null | { queued: number; alreadyQueued: number; failed: { customerId: string; name: string; message: string }[] };
++  /** Anexos em PDF (um job por cliente), contados depois da preparação. */
++  attachments: null | { total: number; done: number; failed: number };
++  repeated?: boolean;
+ }
+ 
++/** Terminou a preparação e, com anexo, a geração dos PDFs? */
++const finished = (r: MailingRequest) =>
++  r.status === 'failed' || (r.status === 'done' && (!r.attachments || r.attachments.done + r.attachments.failed >= r.attachments.total));
++
++const int = (n: number) => n.toLocaleString('pt-BR');
++
++/** Aviso de corte: acima do limite, o envio vai só para os primeiros em ordem alfabética. */
++const truncatedText = (matched: number, limit: number) =>
++  `A seleção tem ${int(matched)} clientes, mais que o limite de ${int(limit)} por envio. Esta mala direta vai para os ${int(limit)} primeiros em ordem alfabética; refine os filtros e faça outro envio para os demais.`;
++
+ const ICONS: Record<MailingTypeKey, ReactNode> = {
+   checklist_digital: <ClipboardList />,
+   checklist_pdf: <FileText />,
+@@ -101,7 +125,7 @@ export function MailingPage() {
+   const [sampleId, setSampleId] = useState<string>('');
+   const [confirm, setConfirm] = useState(false);
+   const [requestId, setRequestId] = useState(() => crypto.randomUUID());
+-  const [result, setResult] = useState<SendResult | null>(null);
++  const [result, setResult] = useState<MailingRequest | null>(null);
+ 
+   const selected = types.data?.find((t) => t.key === type);
+   // tipo vindo da URL sem permissão: volta para a escolha
+@@ -132,13 +156,20 @@ export function MailingPage() {
+   });
+   const p = preview.data;
+ 
+-  const send = useAction(() => api.post<SendResult>('/mailing/send', { ...body, previewCustomerId: undefined, requestId }), {
++  const send = useAction(() => api.post<MailingRequest>('/mailing/send', { ...body, previewCustomerId: undefined, requestId }), {
+     invalidate: [['deliveries']],
+     onSuccess: (r) => {
+       setConfirm(false);
+       setResult(r);
+     },
+   });
++  // o servidor prepara os envios na fila: acompanha até terminar (e, com anexo, até gerar os PDFs)
++  const tracking = useApi<MailingRequest>(['mailing', 'request', result?.requestId], result ? `/mailing/requests/${result.requestId}` : null, {
++    refetchInterval: result && !finished(result) ? 1500 : undefined,
++  });
++  useEffect(() => {
++    if (tracking.data) setResult(tracking.data);
++  }, [tracking.data]);
+ 
+   const restart = () => {
+     setResult(null);
+@@ -164,34 +195,14 @@ export function MailingPage() {
+         crumbs={[{ label: 'Início', to: '/' }, { label: 'Comunicação' }, { label: 'Mala direta' }]}
+       />
+       {result ? (
+-        <Card>
+-          <EmptyState
+-            icon={<CircleCheck />}
+-            title={result.queued ? `${result.queued} envio(s) na fila para ${result.customers} cliente(s)` : 'Este envio já tinha sido feito'}
+-            description={
+-              <div className="vf-stack" style={{ '--gap': '8px' } as React.CSSProperties}>
+-                <span>
+-                  {result.deliveries.email} por e-mail e {result.deliveries.whatsapp} por WhatsApp.
+-                  {result.alreadyQueued > 0 && ` ${result.alreadyQueued} já estavam na fila e não foram duplicados.`}
+-                  {selected?.attachment && ' Os anexos em PDF são gerados um a um e podem levar alguns minutos.'}
+-                </span>
+-                {result.skipped.map((s) => (
+-                  <span key={s.reason} className="vf-text-xs">
+-                    {s.count} sem envio — {s.label.toLowerCase()}: {names(s.names, s.count)}
+-                  </span>
+-                ))}
+-              </div>
+-            }
+-            action={
+-              <div className="vf-inline">
+-                <Button onClick={() => navigate('/comunicacao/envios')}>Acompanhar envios</Button>
+-                <Button kind="secondary" onClick={restart}>
+-                  Nova mala direta
+-                </Button>
+-              </div>
+-            }
+-          />
+-        </Card>
++        <MailingProgress
++          request={result}
++          withAttachment={Boolean(selected?.attachment)}
++          retrying={send.isPending}
++          onRetry={() => send.mutate(undefined)}
++          onTrack={() => navigate('/comunicacao/envios')}
++          onRestart={restart}
++        />
+       ) : (
+         <>
+           <nav className="vf-wizard-steps" aria-label="Etapas">
+@@ -309,6 +320,11 @@ export function MailingPage() {
+                         <Stat label="WhatsApp" value={p.deliveries.whatsapp} hint={`${p.withoutMobile} cliente(s) sem celular`} />
+                       </div>
+                       {p.type.note && <Alert>{p.type.note}</Alert>}
++                      {p.truncated && (
++                        <Alert tone="warning" title="Limite de destinatários">
++                          {truncatedText(p.matched, p.limit)}
++                        </Alert>
++                      )}
+                       {p.skipped.length > 0 && (
+                         <Alert tone="warning" title={`${p.skipped.reduce((a, s) => a + s.count, 0)} situação(ões) sem envio`}>
+                           <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+@@ -406,6 +422,7 @@ export function MailingPage() {
+                 <strong>{selected?.label}</strong> para <strong>{p.customers}</strong> cliente(s): {p.deliveries.email} e-mail(s) e {p.deliveries.whatsapp} WhatsApp.
+               </span>
+               {p.total - p.customers > 0 && <span>{p.total - p.customers} cliente(s) ficarão de fora por falta de contato ou de dados.</span>}
++              {p.truncated && <span>Outros {int(p.matched - p.limit)} cliente(s) da seleção ficam de fora pelo limite de {int(p.limit)} por envio.</span>}
+               {!can('mailing.list') && <span>Depois do envio, acompanhe a situação com quem tem acesso a E-mails enviados.</span>}
+             </div>
+           )
+@@ -495,6 +512,13 @@ function RecipientsStep({
+         <div style={{ padding: '0 24px 12px' }} className="vf-text-xs vf-muted">
+           {mode === 'selected' ? `Clientes escolhidos na lista de clientes (${ids.length}).` : 'Clientes ativos que atendem aos filtros. Sem filtros, todos os clientes ativos.'}
+         </div>
++        {preview?.truncated && (
++          <div style={{ padding: '0 24px 12px' }}>
++            <Alert tone="warning" title="Limite de destinatários">
++              {truncatedText(preview.matched, preview.limit)}
++            </Alert>
++          </div>
++        )}
+         {!preview ? (
+           <Loading />
+         ) : preview.recipients.length === 0 ? (
+@@ -539,6 +563,92 @@ function RecipientsStep({
+   );
+ }
+ 
++/** Andamento do pedido: preparação na fila, anexos em PDF e o resumo final. */
++function MailingProgress({
++  request: r,
++  withAttachment,
++  retrying,
++  onRetry,
++  onTrack,
++  onRestart,
++}: {
++  request: MailingRequest;
++  withAttachment: boolean;
++  retrying: boolean;
++  onRetry: () => void;
++  onTrack: () => void;
++  onRestart: () => void;
++}) {
++  const done = finished(r);
++  const att = r.attachments;
++  const generating = r.status === 'done' && !done;
++  const title =
++    r.status === 'failed'
++      ? 'Não foi possível preparar os envios'
++      : r.status !== 'done'
++        ? 'Preparando os envios...'
++        : generating
++          ? 'Gerando os anexos em PDF...'
++          : r.result?.queued
++            ? `${int(r.result.queued)} envio(s) na fila para ${int(r.customers)} cliente(s)`
++            : 'Este envio já tinha sido feito';
++  const progress = generating && att ? ((att.done + att.failed) / Math.max(1, att.total)) * 100 : r.progress;
++  const failed = r.result?.failed ?? [];
++  return (
++    <Card>
++      <EmptyState
++        icon={r.status === 'failed' ? <XCircle /> : done ? <CircleCheck /> : <Send />}
++        title={title}
++        description={
++          <div className="vf-stack" style={{ '--gap': '8px' } as React.CSSProperties}>
++            {!done && <Progress value={progress} />}
++            {r.error && <span>{r.error}</span>}
++            <span>
++              {int(r.deliveries.email)} por e-mail e {int(r.deliveries.whatsapp)} por WhatsApp.
++              {r.result && r.result.alreadyQueued > 0 && ` ${int(r.result.alreadyQueued)} já estavam na fila e não foram duplicados.`}
++              {!done && ' Você pode sair desta tela: a preparação continua e os envios aparecem em E-mails enviados.'}
++            </span>
++            {withAttachment &&
++              (att ? (
++                <span>
++                  Anexos em PDF gerados: {int(att.done)} de {int(att.total)}
++                  {att.failed > 0 && ` (${int(att.failed)} com erro)`}.
++                </span>
++              ) : (
++                !done && <span>Os anexos em PDF são gerados um a um e podem levar alguns minutos.</span>
++              ))}
++            {r.truncated && <span className="vf-text-xs">{truncatedText(r.matched, MAILING_MAX_RECIPIENTS)}</span>}
++            {r.skipped.map((s) => (
++              <span key={s.reason} className="vf-text-xs">
++                {s.count} sem envio — {s.label.toLowerCase()}: {names(s.names, s.count)}
++              </span>
++            ))}
++            {failed.length > 0 && (
++              <span className="vf-text-xs">
++                {failed.length} sem envio por erro: {names(failed.slice(0, 8).map((f) => `${f.name} (${f.message})`), failed.length)}
++              </span>
++            )}
++          </div>
++        }
++        action={
++          <div className="vf-inline">
++            {r.status === 'failed' ? (
++              <Button loading={retrying} onClick={onRetry}>
++                Tentar de novo
++              </Button>
++            ) : (
++              <Button onClick={onTrack}>Acompanhar envios</Button>
++            )}
++            <Button kind="secondary" onClick={onRestart}>
++              Nova mala direta
++            </Button>
++          </div>
++        }
++      />
++    </Card>
++  );
++}
++
+ function FilterGroup({ title, children }: { title: string; children: ReactNode }) {
+   return (
+     <fieldset style={{ border: 0, padding: 0, margin: 0 }}>
+diff --git a/apps/web/src/modules/communication/help-content.ts b/apps/web/src/modules/communication/help-content.ts
+index 1c5b0b6..e5141c0 100644
+--- a/apps/web/src/modules/communication/help-content.ts
++++ b/apps/web/src/modules/communication/help-content.ts
+@@ -58,7 +58,7 @@ export const HELP_SECTIONS: HelpSection[] = [
+     title: 'Comunicação',
+     faqs: [
+       { q: 'Como personalizo os e-mails?', a: 'Em Comunicação › Templates de e-mail, edite o assunto e o conteúdo. Clique nas variáveis para inserir dados do cliente, como {{CLIENTE}}. Use Pré-visualizar para conferir e Restaurar modelo padrão para desfazer.' },
+-      { q: 'Como envio uma mala direta?', a: 'Em Comunicação › Mala direta, escolha o tipo, os destinatários (por filtros ou pela seleção feita na lista de clientes) e o canal. A revisão mostra quantos clientes não têm e-mail ou celular antes de enviar.' },
++      { q: 'Como envio uma mala direta?', a: 'Em Comunicação › Mala direta, escolha o tipo, os destinatários (por filtros ou pela seleção feita na lista de clientes) e o canal. A revisão mostra quantos clientes não têm e-mail ou celular antes de enviar. Depois de confirmar, os envios são preparados em segundo plano e a tela mostra o andamento. Cada mala direta vai para até 5.000 clientes; acima disso, a revisão avisa quantos ficam de fora.' },
+       { q: 'O mesmo envio pode sair duas vezes?', a: 'Não. Cada envio tem uma identificação única; se a tela for confirmada duas vezes, o sistema reconhece a repetição e não duplica.' },
+       { q: 'Como sei se o e-mail chegou?', a: 'Em Comunicação › E-mails enviados você vê a situação de cada envio e o conteúdo enviado. Envios que falharam podem ser reenviados.' },
+     ],
+diff --git a/apps/web/src/modules/finance/BudgetImportPage.test.tsx b/apps/web/src/modules/finance/BudgetImportPage.test.tsx
+new file mode 100644
+index 0000000..fd552cf
+--- /dev/null
++++ b/apps/web/src/modules/finance/BudgetImportPage.test.tsx
+@@ -0,0 +1,65 @@
++import { afterEach, describe, expect, it, vi } from 'vitest';
++import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
++import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
++import { MemoryRouter } from 'react-router';
++import { ToastProvider } from '../../ds';
++import { BudgetImportPage } from './BudgetImportPage';
++
++/** DAD-5: a importação de orçamentos roda na fila; a tela acompanha o lote até o resultado. */
++vi.mock('../../lib/auth', () => ({
++  useAuth: () => ({ can: () => true, me: { favorites: [] }, refresh: async () => {} }),
++}));
++
++const base = { id: 'b1', createdAt: '2026-10-06T12:00:00Z', total: 3 };
++const polls: object[] = [
++  { ...base, status: 'processing', succeeded: 1, failed: 0, results: [] },
++  {
++    ...base,
++    status: 'done',
++    succeeded: 2,
++    failed: 1,
++    results: [
++      { row: 2, ok: true, message: 'Orçamento criado.' },
++      { row: 3, ok: false, message: 'Cliente 111.444.777-35 não encontrado.' },
++      { row: 4, ok: true, message: 'Orçamento atualizado.' },
++    ],
++  },
++];
++
++vi.mock('../../lib/api', async (importOriginal) => {
++  const original = await importOriginal<typeof import('../../lib/api')>();
++  const get = async (path: string) => {
++    if (path === '/finance/budget-import/batches/b1') return polls.length > 1 ? polls.shift() : polls[0];
++    if (path === '/finance/budget-import/batches') return [];
++    throw new Error(`rota inesperada: ${path}`);
++  };
++  const upload = async () => ({ ...base, status: 'processing', succeeded: 0, failed: 0, results: [], skipped: 1, year: 2026 });
++  return { ...original, api: { ...original.api, get, upload } };
++});
++
++afterEach(cleanup);
++
++describe('BudgetImportPage: importação acompanhada pela fila (DAD-5)', () => {
++  it('mostra o andamento do lote e depois o resultado linha a linha', async () => {
++    render(
++      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
++        <ToastProvider>
++          <MemoryRouter>
++            <BudgetImportPage />
++          </MemoryRouter>
++        </ToastProvider>
++      </QueryClientProvider>,
++    );
++    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
++    fireEvent.change(input, { target: { files: [new File(['x'], 'orcamentos.xlsx')] } });
++    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Importar' }));
++
++    expect(await screen.findByText('Importando a planilha')).toBeTruthy();
++    expect(await screen.findByText(/1 de 3 linha\(s\) processada\(s\)/)).toBeTruthy();
++    expect(await screen.findByText('Resultado da importação', undefined, { timeout: 4000 })).toBeTruthy();
++    expect(screen.getByText('Cliente 111.444.777-35 não encontrado.')).toBeTruthy();
++    // a contagem de linhas sem valor vem da resposta do envio e continua no resultado
++    expect(screen.getByText('Ignoradas (sem valor)')).toBeTruthy();
++    expect(screen.queryByText('Importando a planilha')).toBeNull();
++  });
++});
+diff --git a/apps/web/src/modules/finance/BudgetImportPage.tsx b/apps/web/src/modules/finance/BudgetImportPage.tsx
+index fcfe4a8..93f4e68 100644
+--- a/apps/web/src/modules/finance/BudgetImportPage.tsx
++++ b/apps/web/src/modules/finance/BudgetImportPage.tsx
+@@ -1,6 +1,7 @@
+-import { useState } from 'react';
++import { useEffect, useState } from 'react';
++import { useQueryClient } from '@tanstack/react-query';
+ import { CheckCircle2, Download, FileSpreadsheet, XCircle } from 'lucide-react';
+-import { Alert, Button, Card, ConfirmDialog, DropFile, EmptyState, Loading, Select, Stat, Tag, useToast } from '../../ds';
++import { Alert, Button, Card, ConfirmDialog, DropFile, EmptyState, Loading, Progress, Select, Stat, Tag, useToast } from '../../ds';
+ import { PageHeader } from '../../app/Shell';
+ import { api } from '../../lib/api';
+ import { useAuth } from '../../lib/auth';
+@@ -16,6 +17,7 @@ export function BudgetImportPage() {
+   const { can } = useAuth();
+   const { year: globalYear } = useYear();
+   const toast = useToast();
++  const qc = useQueryClient();
+   const [year, setYear] = useState(String(globalYear));
+   const [file, setFile] = useState<File | null>(null);
+   const [result, setResult] = useState<ImportBatch | null>(null);
+@@ -23,13 +25,29 @@ export function BudgetImportPage() {
+   const batches = useApi<ImportBatch[]>(KEY, can('worksheet.budget') ? '/finance/budget-import/batches' : null);
+ 
+   const upload = useAction((f: File) => api.upload<ImportBatch>('/finance/budget-import', f, { year }), {
+-    success: (r) => `Importação concluída: ${r.succeeded} linha(s) gravada(s)${r.failed ? `, ${r.failed} com erro` : ''}.`,
+-    invalidate: [KEY, ['finance', 'budgets']],
++    success: 'Planilha recebida: a importação continua em segundo plano.',
++    invalidate: [KEY],
+     onSuccess: (r) => {
+       setResult(r);
+       setFile(null);
+     },
+   });
++  // as linhas são gravadas na fila de tarefas: acompanha o lote até o resultado
++  const processing = result?.status === 'processing';
++  const tracking = useApi<ImportBatch>(['finance', 'budget-import', 'batch', result?.id], processing ? `/finance/budget-import/batches/${result.id}` : null, {
++    refetchInterval: processing ? 1500 : undefined,
++  });
++  useEffect(() => {
++    const b = tracking.data;
++    if (!b || !result || b.id !== result.id || (b.status === result.status && b.succeeded === result.succeeded && b.failed === result.failed)) return;
++    // a contagem de linhas sem valor só vem na resposta do envio
++    setResult({ ...b, skipped: result.skipped, year: result.year });
++    if (b.status === 'processing') return;
++    for (const key of [KEY, ['finance', 'budgets']]) void qc.invalidateQueries({ queryKey: key });
++    if (b.status === 'done') toast.success(`Importação concluída: ${b.succeeded} linha(s) gravada(s)${b.failed ? `, ${b.failed} com erro` : ''}.`);
++    else toast.error('Não foi possível concluir a importação.');
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++  }, [tracking.data]);
+ 
+   if (!can('worksheet.budget')) {
+     return <EmptyState title="Sem acesso" description="Seu perfil não tem permissão para importar orçamentos em lote." />;
+@@ -71,20 +89,21 @@ export function BudgetImportPage() {
+             <ul className="vf-fin-rules">
+               <li>O cliente é identificado pelo CPF/CNPJ.</li>
+               <li>Se já houver orçamento da mesma categoria no ano, ele é atualizado; senão, um novo é criado.</li>
+-              <li>Status “Aprovado” gera o faturamento. O envio ao cliente é feito pela tela do orçamento.</li>
++              <li>Status “Aprovado” gera o faturamento. O envio ao cliente é feito pela tela do orçamento ou pela mala direta.</li>
++              <li>A importação roda em segundo plano: acompanhe o andamento aqui ou saia da tela e veja o resultado depois.</li>
+               <li>Orçamentos já aprovados não mudam de valor pela planilha.</li>
+             </ul>
+           </div>
+         </Card>
+         <Card title="2. Envie a planilha preenchida">
+           <div className="vf-stack">
+-            <DropFile accept=".xlsx,.csv" onFiles={(fs) => fs[0] && setFile(fs[0])} disabled={upload.isPending} hint={`Formatos .xlsx ou .csv · exercício ${year}`} />
+-            {upload.isPending && <Loading label="Importando orçamentos..." />}
++            <DropFile accept=".xlsx,.csv" onFiles={(fs) => fs[0] && setFile(fs[0])} disabled={upload.isPending || processing} hint={`Formatos .xlsx ou .csv · exercício ${year}`} />
++            {upload.isPending && <Loading label="Enviando a planilha..." />}
+           </div>
+         </Card>
+       </div>
+ 
+-      {result && <ImportResult key={result.id} batch={result} />}
++      {result && <ImportResult key={`${result.id}:${result.status}`} batch={result} />}
+ 
+       <Card title="Importações recentes" flush style={{ marginTop: 24 }}>
+         {batches.isLoading ? (
+@@ -106,7 +125,10 @@ export function BudgetImportPage() {
+               <tbody>
+                 {batches.data.map((b) => (
+                   <tr key={b.id}>
+-                    <td>{formatDateTime(b.createdAt)}</td>
++                    <td>
++                      {formatDateTime(b.createdAt)} {b.status === 'processing' && <Tag tone="primary">Em andamento</Tag>}
++                      {b.status === 'failed' && <Tag tone="danger">Não concluída</Tag>}
++                    </td>
+                     <td className="num">{b.total}</td>
+                     <td className="num">{b.succeeded}</td>
+                     <td className="num">{b.failed ? <Tag tone="danger">{b.failed}</Tag> : 0}</td>
+@@ -139,6 +161,21 @@ export function BudgetImportPage() {
+ function ImportResult({ batch }: { batch: ImportBatch }) {
+   const [onlyErrors, setOnlyErrors] = useState(batch.failed > 0);
+   const rows = onlyErrors ? batch.results.filter((r) => !r.ok) : batch.results;
++  if (batch.status === 'processing') {
++    const done = batch.succeeded + batch.failed;
++    return (
++      <Card title="Importando a planilha" style={{ marginTop: 24 }}>
++        <div className="vf-stack">
++          <Progress value={(done / Math.max(1, batch.total)) * 100} />
++          <span className="vf-muted">
++            {done} de {batch.total} linha(s) processada(s). Você pode sair desta tela: a importação continua e o resultado fica em “Importações recentes”.
++          </span>
++        </div>
++      </Card>
++    );
++  }
++  // importação interrompida: a última linha do resultado diz onde e por quê
++  const stopped = batch.status === 'failed' ? (batch.results.at(-1)?.message ?? 'Não foi possível concluir a importação.') : null;
+   return (
+     <Card
+       title="Resultado da importação"
+@@ -152,6 +189,11 @@ function ImportResult({ batch }: { batch: ImportBatch }) {
+       }
+     >
+       <div className="vf-stack">
++        {stopped && (
++          <Alert tone="danger" title="A importação não foi concluída">
++            {stopped}
++          </Alert>
++        )}
+         <div className="vf-fin-stats">
+           <Stat label="Linhas processadas" value={batch.total} />
+           <Stat label="Gravadas" value={batch.succeeded} tone="success" />
+diff --git a/apps/web/src/modules/finance/types.ts b/apps/web/src/modules/finance/types.ts
+index 94ead93..e3b28d4 100644
+--- a/apps/web/src/modules/finance/types.ts
++++ b/apps/web/src/modules/finance/types.ts
+@@ -148,6 +148,8 @@ export interface BillingReport {
+ export interface ImportBatch {
+   id: string;
+   createdAt: string;
++  /** "processing" enquanto a fila de tarefas importa as linhas. */
++  status: 'processing' | 'done' | 'failed';
+   total: number;
+   succeeded: number;
+   failed: number;
+diff --git a/docs/ARQUITETURA.md b/docs/ARQUITETURA.md
+index 787592b..33b9324 100644
+--- a/docs/ARQUITETURA.md
++++ b/docs/ARQUITETURA.md
+@@ -65,7 +65,7 @@ Não há registro central para editar: criar a pasta basta.
+ | --- | --- |
+ | `customers.ts` | `customerScope`, `getCustomerForUser`, `publicCustomer` |
+ | `declarations.ts` | `getOrCreateDeclaration`, `setDeclarationSubstatus`, `advanceDeclaration`, `recomputeTotals`, `listItems` |
+-| `delivery.ts` | `queueDelivery` (e-mail/WhatsApp por template ou texto, com idempotência e anexos) |
++| `delivery.ts` | `queueDelivery` (e-mail/WhatsApp por template ou texto, com idempotência e anexos); `createDeliveryBatch` (mala direta: envios, mensagens e jobs gravados em lote). O texto do WhatsApp sai de `htmlToText` (`packages/shared`), o mesmo da prévia e dos PDFs; para montar HTML, use `escapeHtml` de lá |
+ | `pdf.ts` | `PdfBuilder` + `loadBranding` (logo e cores do escritório) |
+ | `xlsx.ts` | `buildWorkbook`, `readSheet`, `parseMoneyToCents`, `parseDate` |
+ | `settings.ts` | `getOfficeSettings` com os padrões aplicados |
+diff --git a/packages/shared/src/communication.ts b/packages/shared/src/communication.ts
+index 33dff61..4d0b117 100644
+--- a/packages/shared/src/communication.ts
++++ b/packages/shared/src/communication.ts
+@@ -26,15 +26,16 @@ export const MAILING_TYPES: MailingType[] = [
+     permission: 'mailing.send_checklist_digital',
+     templateKey: 'checklist_digital',
+     attachment: null,
+-    note: 'O link e o código individuais do checklist são gerados na etapa Documentação de cada cliente. Pela mala direta, o e-mail leva o endereço do portal do cliente.',
++    note: 'Cada cliente recebe o link e o código do próprio checklist do exercício, gerados no envio e válidos por 30 dias (o acesso enviado antes deixa de valer). Para quem ainda não tem, o checklist é criado com os dados da declaração do ano anterior. Clientes com o checklist bloqueado ou só para consulta ficam de fora.',
+   },
+   {
+     key: 'checklist_pdf',
+     label: 'Checklist em PDF',
+-    description: 'Lista de documentos em PDF, montada com base na declaração do ano anterior.',
++    description: 'Lista de documentos em PDF, a mesma da etapa Documentação de cada cliente.',
+     permission: 'mailing.send_checklist_pdf',
+     templateKey: 'checklist_pdf',
+     attachment: 'checklist_pdf',
++    note: 'O PDF traz os itens do checklist digital do cliente (sem os removidos e com os acrescentados pelo escritório) ou, se ainda não houver checklist, a lista montada com a declaração do ano anterior.',
+   },
+   {
+     key: 'planning',
+@@ -65,9 +66,9 @@ export const MAILING_TYPES: MailingType[] = [
+     label: 'Orçamento',
+     description: 'Proposta de honorários do exercício (orçamento já cadastrado).',
+     permission: 'mailing.send_budget',
+-    templateKey: 'budget',
++    templateKey: 'budget_digital',
+     attachment: null,
+-    note: 'Usa o orçamento mais recente do exercício. O link de aprovação online é gerado na etapa Orçamento de cada cliente.',
++    note: 'Usa o orçamento em rascunho ou enviado mais recente do exercício, com o template “Orçamento (digital)”: cada cliente recebe um novo link de aprovação (o anterior deixa de valer) e o orçamento passa a “Enviado”. Quem já aprovou o orçamento fica de fora.',
+   },
+   {
+     key: 'kit',
+@@ -85,7 +86,7 @@ export function getMailingType(key: string): MailingType | undefined {
+ 
+ /** Tipo de mala direta correspondente a um template (para links vindos de outras telas). */
+ export function mailingTypeForTemplate(templateKey: string): MailingType | undefined {
+-  if (templateKey === 'budget_digital') return getMailingType('budget');
++  if (templateKey === 'budget' || templateKey === 'budget_digital') return getMailingType('budget');
+   return MAILING_TYPES.find((t) => t.templateKey === templateKey && t.key !== 'kit');
+ }
+ 
+@@ -95,9 +96,17 @@ export const MAILING_SKIP_REASONS = {
+   no_declaration: 'Sem declaração no exercício',
+   not_transmitted: 'Declaração ainda não transmitida',
+   no_budget: 'Sem orçamento no exercício',
++  budget_approved: 'Orçamento já aprovado',
++  checklist_locked: 'Checklist bloqueado ou só para consulta',
+ } as const;
+ export type MailingSkipReason = keyof typeof MAILING_SKIP_REASONS;
+ 
++/**
++ * Máximo de clientes numa mala direta. Acima disso, o envio vai para os primeiros em ordem
++ * alfabética e a revisão avisa quantos ficaram de fora (refine os filtros para os demais).
++ */
++export const MAILING_MAX_RECIPIENTS = 5000;
++
+ // ---------------------------------------------------------------------------
+ // Relatórios individuais
+ // ---------------------------------------------------------------------------
+diff --git a/packages/shared/src/html.ts b/packages/shared/src/html.ts
+index 81482fc..9f7da64 100644
+--- a/packages/shared/src/html.ts
++++ b/packages/shared/src/html.ts
+@@ -23,10 +23,13 @@ const ALLOWED_ATTRS = new Set([
+ const URL_ATTRS = new Set(['href', 'src']);
+ const VOID_TAGS = new Set(['br', 'hr', 'img', 'col']);
+ 
++/** Caractere de uma referência numérica; código fora do Unicode vira U+FFFD (como no navegador), sem lançar erro. */
++const fromCode = (n: number) => (Number.isInteger(n) && n > 0 && n <= 0x10ffff && !(n >= 0xd800 && n <= 0xdfff) ? String.fromCodePoint(n) : '\ufffd');
++
+ const decodeEntities = (s: string) =>
+   s
+-    .replace(/&#x([0-9a-f]+);?/gi, (_, h: string) => String.fromCodePoint(parseInt(h, 16)))
+-    .replace(/&#(\d+);?/g, (_, d: string) => String.fromCodePoint(Number(d)))
++    .replace(/&#x([0-9a-f]+);?/gi, (_, h: string) => fromCode(parseInt(h, 16)))
++    .replace(/&#(\d+);?/g, (_, d: string) => fromCode(Number(d)))
+     .replace(/&colon;/gi, ':')
+     .replace(/&tab;/gi, '\t')
+     .replace(/&newline;/gi, '\n')
+@@ -108,3 +111,84 @@ export function sanitizeHtml(input: string): string {
+   // eslint-disable-next-line no-control-regex
+   return html.replace(/\u0000(\d+)\u0000/g, (_, i: string) => kept[Number(i)]);
+ }
++
++// ---------------------------------------------------------------------------
++// Escape e conversão para texto simples
++// ---------------------------------------------------------------------------
++
++const ESCAPES: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
++
++/** Escapa um valor para entrar no HTML (texto ou atributo entre aspas). */
++export const escapeHtml = (s: string): string => String(s ?? '').replace(/[&<>"']/g, (c) => ESCAPES[c]);
++
++/** Entidades nomeadas usuais em textos em português (as numéricas são decodificadas todas). */
++const NAMED_ENTITIES: Record<string, string> = {
++  amp: '&', AMP: '&', lt: '<', LT: '<', gt: '>', GT: '>', quot: '"', QUOT: '"', apos: "'", nbsp: '\u00a0', shy: '\u00ad',
++  colon: ':', tab: '\t', newline: '\n',
++  hellip: '…', ndash: '–', mdash: '—', lsquo: '‘', rsquo: '’', sbquo: '‚', ldquo: '“', rdquo: '”', bdquo: '„', laquo: '«', raquo: '»',
++  bull: '•', middot: '·', copy: '©', reg: '®', trade: '™', deg: '°', ordm: 'º', ordf: 'ª', sect: '§', para: '¶',
++  euro: '€', cent: '¢', pound: '£', yen: '¥', times: '×', divide: '÷', plusmn: '±', frac12: '½', frac14: '¼', frac34: '¾',
++  sup1: '¹', sup2: '²', sup3: '³', iexcl: '¡', iquest: '¿',
++  Aacute: 'Á', aacute: 'á', Agrave: 'À', agrave: 'à', Acirc: 'Â', acirc: 'â', Atilde: 'Ã', atilde: 'ã', Auml: 'Ä', auml: 'ä',
++  Eacute: 'É', eacute: 'é', Egrave: 'È', egrave: 'è', Ecirc: 'Ê', ecirc: 'ê', Euml: 'Ë', euml: 'ë',
++  Iacute: 'Í', iacute: 'í', Igrave: 'Ì', igrave: 'ì', Icirc: 'Î', icirc: 'î', Iuml: 'Ï', iuml: 'ï',
++  Oacute: 'Ó', oacute: 'ó', Ograve: 'Ò', ograve: 'ò', Ocirc: 'Ô', ocirc: 'ô', Otilde: 'Õ', otilde: 'õ', Ouml: 'Ö', ouml: 'ö',
++  Uacute: 'Ú', uacute: 'ú', Ugrave: 'Ù', ugrave: 'ù', Ucirc: 'Û', ucirc: 'û', Uuml: 'Ü', uuml: 'ü',
++  Ccedil: 'Ç', ccedil: 'ç', Ntilde: 'Ñ', ntilde: 'ñ',
++};
++
++/**
++ * Decodifica as entidades numa só passada, como o navegador: `&amp;lt;` vira `&lt;`, não `<`.
++ * Referências numéricas valem com ou sem ponto e vírgula; nomeadas desconhecidas ficam como estão.
++ */
++export function decodeHtmlEntities(s: string): string {
++  return String(s ?? '').replace(/&(?:#x([0-9a-f]+);?|#(\d+);?|([a-z][a-z0-9]*);)/gi, (full, hex?: string, dec?: string, name?: string) => {
++    if (hex) return fromCode(parseInt(hex, 16));
++    if (dec) return fromCode(Number(dec));
++    return (name && NAMED_ENTITIES[name]) ?? full;
++  });
++}
++
++export interface HtmlToTextOptions {
++  /** Links como "texto (endereço)", para texto corrido; por padrão, "texto: endereço". */
++  linksInParens?: boolean;
++  /** Linha em branco depois de cada parágrafo, título, item e bloco (texto de PDF); por padrão, uma quebra de linha. */
++  blankLines?: boolean;
++}
++
++const stripTags = (s: string) => s.replace(/<[^>]*>/g, '');
++
++/**
++ * HTML dos templates em texto simples: é o texto do WhatsApp, da prévia da mala direta e dos PDFs
++ * do financeiro. Quebra a linha em `<br>`, `<hr>` e no fim de parágrafos, `<div>`, títulos, itens
++ * de lista e linhas de tabela (com ou sem atributos); põe "• " antes de cada item; mostra o
++ * endereço dos links; e decodifica todas as entidades (`&#39;`, `&quot;`, `&nbsp;`...).
++ */
++export function htmlToText(html: string, opts: HtmlToTextOptions = {}): string {
++  const block = opts.blankLines ? '\n\n' : '\n';
++  const link = (href: string, inner: string) => {
++    const url = decodeHtmlEntities(href).trim();
++    const label = decodeHtmlEntities(stripTags(inner)).trim();
++    if (!url) return inner;
++    // sem texto ou com o próprio endereço como texto: o endereço aparece uma vez só
++    if (!label || label === url) return href;
++    return opts.linksInParens ? `${inner} (${href})` : `${inner}: ${href}`;
++  };
++  const text = String(html ?? '')
++    .replace(/\r\n?/g, '\n')
++    .replace(/<br\b[^>]*>/gi, '\n')
++    .replace(/<hr\b[^>]*>/gi, block)
++    .replace(/<\/(?:p|div|li|h[1-6]|tr|blockquote|pre)\s*>/gi, block)
++    .replace(/<\/t[dh]\s*>/gi, ' ')
++    .replace(/<li\b[^>]*>/gi, '• ')
++    .replace(
++      /<a\b[^>]*?\shref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))[^>]*>([\s\S]*?)<\/a\s*>/gi,
++      (_, dq: string | undefined, sq: string | undefined, bare: string | undefined, inner: string) => link(dq ?? sq ?? bare ?? '', inner),
++    );
++  return decodeHtmlEntities(stripTags(text))
++    .replace(/\u00a0/g, ' ')
++    .replace(/\u00ad/g, '')
++    .replace(/[ \t]+\n/g, '\n')
++    .replace(/\n{3,}/g, '\n\n')
++    .trim();
++}
+diff --git a/packages/shared/src/templates.ts b/packages/shared/src/templates.ts
+index b8ffaba..c82feb7 100644
+--- a/packages/shared/src/templates.ts
++++ b/packages/shared/src/templates.ts
+@@ -5,6 +5,8 @@
+  * `{{NOME}}`; cada template declara as que aceita, e `renderTemplate` só substitui
+  * as conhecidas (o restante fica visível para o usuário perceber o erro).
+  */
++import { escapeHtml } from './html';
++
+ export interface TemplateVariable {
+   name: string;
+   description: string;
+@@ -93,7 +95,7 @@ export const TEMPLATES: TemplateDef[] = [
+   {
+     key: 'budget',
+     name: 'Orçamento',
+-    description: 'Proposta de honorários enviada por e-mail.',
++    description: 'Proposta de honorários sem link de aprovação. Os envios do sistema (etapa Orçamento e mala direta) usam o “Orçamento (digital)”, com o link.',
+     variables: [CLIENTE, ESCRITORIO, CONTADOR, ANO, v('CATEGORIA', 'Categoria do serviço'), v('DESCRICAO', 'Descrição do orçamento'), v('VALOR', 'Valor total')],
+     defaultSubject: 'Proposta de serviço — {{CATEGORIA}} {{ANO_EXERCICIO}}',
+     defaultBody: wrap('<p>Segue nossa proposta para <strong>{{CATEGORIA}}</strong> ({{ANO_EXERCICIO}}):</p><p>{{DESCRICAO}}</p><p>Valor: <strong>{{VALOR}}</strong></p>'),
+@@ -157,9 +159,6 @@ export function getTemplateDef(key: string): TemplateDef | undefined {
+   return TEMPLATES.find((t) => t.key === key);
+ }
+ 
+-const escapeHtml = (s: string) =>
+-  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+-
+ /**
+  * Substitui `{{VAR}}` pelos valores informados. Valores são escapados para HTML,
+  * exceto os listados em `rawHtml` (ex.: PENDENCIAS, que já é uma lista montada pelo sistema).
+diff --git a/packages/shared/test/communication.test.ts b/packages/shared/test/communication.test.ts
+index d8ad060..4db32a5 100644
+--- a/packages/shared/test/communication.test.ts
++++ b/packages/shared/test/communication.test.ts
+@@ -1,12 +1,18 @@
+ import { describe, expect, it } from 'vitest';
+ import {
+   INDIVIDUAL_REPORTS,
++  MAILING_SKIP_REASONS,
+   MAILING_TYPES,
+   annualProgressiveTax,
+   compareTaxation,
++  decodeHtmlEntities,
++  escapeHtml,
+   fineMeshCheck,
++  getMailingType,
++  htmlToText,
+   isSafeUrl,
+   mailingTypeForTemplate,
++  renderTemplate,
+   sanitizeHtml,
+   type DeclarationItem,
+ } from '../src';
+@@ -41,6 +47,29 @@ describe('sanitizeHtml', () => {
+     expect(isSafeUrl('java\nscript:alert(1)')).toBe(false);
+     expect(isSafeUrl('mailto:a@b.com')).toBe(true);
+     expect(isSafeUrl('data:text/html;base64,xx', 'src')).toBe(false);
++    // referência numérica fora do Unicode não derruba a sanitização
++    expect(sanitizeHtml('<a href="&#x110000;x">y</a>')).toBe('<a href="&#x110000;x">y</a>');
++  });
++});
++
++describe('HTML para texto (CON-5)', () => {
++  it('um só conversor: decodifica todas as entidades e quebra a linha em br, p, div, títulos e itens com atributos', () => {
++    const html = renderTemplate('<div>Olá, {{CLIENTE}}!</div><div class="x">Prazo "final" &amp; multa&nbsp;&#8212; &eacute;poca</div><h2 style="color:red">Itens</h2><ul><li class="a">Um</li><li>Dois</li></ul><p>Fim<br class="q">linha</p>', {
++      CLIENTE: "Maria D'Ávila",
++    });
++    expect(html).toContain('D&#39;Ávila');
++    expect(htmlToText(html)).toBe(`Olá, Maria D'Ávila!\nPrazo "final" & multa — época\nItens\n• Um\n• Dois\nFim\nlinha`);
++  });
++
++  it('links com o endereço, texto de PDF com linha em branco entre parágrafos e escape uma vez só', () => {
++    const html = '<p>Acesse <a href="https://ex.com/a?b=1&amp;c=2" target="_blank">o portal</a>.</p><p><a href="https://ex.com">https://ex.com</a></p>';
++    expect(htmlToText(html)).toBe('Acesse o portal: https://ex.com/a?b=1&c=2.\nhttps://ex.com');
++    expect(htmlToText(html, { linksInParens: true, blankLines: true })).toBe('Acesse o portal (https://ex.com/a?b=1&c=2).\n\nhttps://ex.com');
++    // entidade escapada continua literal (uma decodificação só)
++    expect(decodeHtmlEntities('&amp;lt;b&amp;gt; &#39;x&#39; &quot;y&quot; &desconhecida;')).toBe(`&lt;b&gt; 'x' "y" &desconhecida;`);
++    expect(htmlToText('<p>a &lt;b&gt; c</p>')).toBe('a <b> c');
++    expect(escapeHtml(`<a href="x">D'Ávila & cia</a>`)).toBe('&lt;a href=&quot;x&quot;&gt;D&#39;Ávila &amp; cia&lt;/a&gt;');
++    expect(htmlToText(escapeHtml(`D'Ávila "&" <cia>`))).toBe(`D'Ávila "&" <cia>`);
+   });
+ });
+ 
+@@ -104,6 +133,14 @@ describe('catálogos', () => {
+     expect(MAILING_TYPES.every((t) => t.permission && t.templateKey)).toBe(true);
+     expect(INDIVIDUAL_REPORTS.every((r) => r.permission.startsWith('report.'))).toBe(true);
+     expect(mailingTypeForTemplate('budget_digital')?.key).toBe('budget');
++    expect(mailingTypeForTemplate('budget')?.key).toBe('budget');
+     expect(mailingTypeForTemplate('planning')?.key).toBe('planning');
+   });
++
++  it('a mala direta de orçamento usa a proposta com link e os novos motivos de ficar de fora (INT-2, INT-5)', () => {
++    expect(getMailingType('budget')?.templateKey).toBe('budget_digital');
++    expect(MAILING_SKIP_REASONS.budget_approved).toBe('Orçamento já aprovado');
++    expect(MAILING_SKIP_REASONS.checklist_locked).toBe('Checklist bloqueado ou só para consulta');
++    expect(getMailingType('checklist_digital')?.note).not.toMatch(/portal/);
++  });
+ });
+-- 
+2.43.0
+
