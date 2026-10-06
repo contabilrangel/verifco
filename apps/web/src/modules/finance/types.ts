@@ -40,6 +40,19 @@ export interface Installment {
   externalUrl: string | null;
 }
 
+/** Emissão da cobrança no Asaas/Omie (último job do faturamento). */
+export interface BillingSync {
+  status: 'none' | 'queued' | 'running' | 'done' | 'failed';
+  error: string | null;
+  attempts: number;
+  maxAttempts: number;
+  /** Próxima tentativa automática depois de uma falha. */
+  nextAttemptAt: string | null;
+  finishedAt: string | null;
+  /** A integração do provedor está ativa e configurada. */
+  integrationReady: boolean;
+}
+
 export interface Billing {
   id: string;
   totalCents: number;
@@ -49,6 +62,8 @@ export interface Billing {
   openCents: number;
   overdueCents: number;
   installments: Installment[];
+  /** Só nos faturamentos com cobrança integrada (null nos demais). */
+  externalSync?: BillingSync | null;
 }
 
 export type BudgetStatus = 'draft' | 'sent' | 'approved' | 'rejected' | 'canceled';
@@ -91,6 +106,8 @@ export interface BudgetList {
   declarationTotals: DeclarationTotalsForPricing | null;
   customer: { id: string; name: string; hasEmail: boolean; hasMobile: boolean };
   settings: { allowAuthorizationWithoutBudget: boolean };
+  /** Integrações de cobrança ativas e configuradas no escritório. */
+  integrations?: { asaas: boolean; omie: boolean };
 }
 
 export type Quote = BudgetAmountResult & { declarationTotals: DeclarationTotalsForPricing | null };
@@ -148,6 +165,8 @@ export interface BillingReport {
 export interface ImportBatch {
   id: string;
   createdAt: string;
+  /** "processing" enquanto a fila de tarefas importa as linhas. */
+  status: 'processing' | 'done' | 'failed';
   total: number;
   succeeded: number;
   failed: number;

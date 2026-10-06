@@ -2,7 +2,7 @@
 import { and, desc, eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { BUDGET_CATEGORIES, computeBudgetAmount, todayIso, type BudgetCategory } from '@verifco/shared';
+import { BUDGET_CATEGORIES, computeBudgetAmount, escapeHtml, todayIso, type BudgetCategory } from '@verifco/shared';
 import { budgets, declarations, installments, priceTables } from '../../db/schema';
 import { badRequest, conflict, forbidden, notFound } from '../../lib/errors';
 import { audit, can, centsSchema, dateStr, guard, optionalText, parse, requireUser, uuidParam, yearSchema } from '../../lib/http';
@@ -10,6 +10,8 @@ import { getCustomerForUser } from '../../services/customers';
 import { getOrCreateDeclaration } from '../../services/declarations';
 import { queueDelivery } from '../../services/delivery';
 import { getOfficeSettings } from '../../services/settings';
+import { billingProvidersReady } from '../integrations/jobs';
+import { withExternalSync } from './billing-routes';
 import { buildAuthorizationPdf, generateReceipt, receiptValues } from './pdfs';
 import {
   applyStatus,
@@ -23,6 +25,7 @@ import {
   pricingTotalsOf,
   refreshBillingTotal,
   rejectBudget,
+  releaseDeclarationStage,
   resolveBudgetValues,
   sendBudget,
   serializeBudget,
@@ -84,11 +87,13 @@ export async function budgetRoutes(app: FastifyInstance) {
     const decl = await db.query.declarations.findFirst({ where: and(eq(declarations.customerId, customer.id), eq(declarations.exerciseYear, year)) });
     const settings = await getOfficeSettings(db, user.officeId);
     return {
-      data: await serializeBudgets(ctx, rows),
+      data: await withExternalSync(ctx, user.officeId, await serializeBudgets(ctx, rows)),
       previous: await previousYearBudget(ctx, user.officeId, customer.id, year),
       declarationTotals: pricingTotalsOf(decl),
       customer: { id: customer.id, name: customer.name, hasEmail: Boolean(customer.email), hasMobile: Boolean(customer.mobile) },
       settings: { allowAuthorizationWithoutBudget: settings.allowAuthorizationWithoutBudget },
+      // integrações de cobrança prontas: a tela avisa ao aprovar com Asaas/Omie desligado
+      integrations: await billingProvidersReady(ctx, user.officeId),
     };
   });
 
@@ -184,6 +189,7 @@ export async function budgetRoutes(app: FastifyInstance) {
     const row = await getBudgetForUser(ctx, user, id);
     if (row.status === 'approved') throw conflict('Orçamento aprovado não pode ser excluído.');
     await db.delete(budgets).where(eq(budgets.id, row.id));
+    await releaseDeclarationStage(ctx, row);
     await audit(req, 'delete', 'budget', row.id, { customerId: row.customerId, year: row.exerciseYear });
     return { ok: true };
   });
@@ -348,5 +354,3 @@ export async function budgetRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 }
-
-const escapeHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');

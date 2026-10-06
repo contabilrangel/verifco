@@ -17,7 +17,7 @@ import { billings, budgets, customers, declarations, installments, paymentMethod
 import { randomToken, sha256 } from '../../lib/crypto';
 import { badRequest, conflict, notFound } from '../../lib/errors';
 import { getCustomerForUser } from '../../services/customers';
-import { advanceDeclaration, getOrCreateDeclaration } from '../../services/declarations';
+import { advanceDeclaration, getOrCreateDeclaration, setDeclarationSubstatus } from '../../services/declarations';
 import { queueDelivery } from '../../services/delivery';
 import { categoryLabel } from './text';
 
@@ -129,11 +129,21 @@ export async function serializeBudgets(ctx: AppContext, rows: BudgetRow[]) {
     ? await db.select().from(installments).where(inArray(installments.billingId, bills.map((b) => b.id))).orderBy(asc(installments.number))
     : [];
   const today = todayIso();
+  // índices montados uma vez: o relatório geral passa todos os orçamentos do ano
+  const methodById = new Map(methods.map((x) => [x.id, x]));
+  const tableById = new Map(tables.map((x) => [x.id, x]));
+  const billByBudget = new Map(bills.map((x) => [x.budgetId, x]));
+  const instsByBilling = new Map<string, InstallmentRow[]>();
+  for (const i of insts) {
+    const list = instsByBilling.get(i.billingId);
+    if (list) list.push(i);
+    else instsByBilling.set(i.billingId, [i]);
+  }
   return rows.map((b) => {
-    const m = methods.find((x) => x.id === b.paymentMethodId);
-    const t = tables.find((x) => x.id === b.priceTableId);
-    const bill = bills.find((x) => x.budgetId === b.id);
-    const list = bill ? insts.filter((i) => i.billingId === bill.id).map((i) => serializeInstallment(i, today)) : null;
+    const m = b.paymentMethodId ? methodById.get(b.paymentMethodId) : undefined;
+    const t = b.priceTableId ? tableById.get(b.priceTableId) : undefined;
+    const bill = billByBudget.get(b.id);
+    const list = bill ? (instsByBilling.get(bill.id) ?? []).map((i) => serializeInstallment(i, today)) : null;
     return {
       id: b.id,
       customerId: b.customerId,
@@ -261,6 +271,37 @@ async function declarationOf(ctx: AppContext, b: BudgetRow) {
   return d ?? getOrCreateDeclaration(ctx.db, b.officeId, b.customerId, b.exerciseYear);
 }
 
+/** Só os orçamentos da própria declaração (IRPF e retificação) movem a etapa dela no Kanban. */
+const IRPF_BUDGET_CATEGORIES = ['irpf', 'irpf_rectification'];
+const movesDeclaration = (b: BudgetRow) => IRPF_BUDGET_CATEGORIES.includes(b.category);
+
+/**
+ * Proposta IRPF enviada que foi recusada, cancelada, voltou a rascunho ou foi excluída (`b` é a
+ * linha anterior à mudança): a declaração que estava em "Orçamento enviado" volta para
+ * "Não iniciado" se não houver outro orçamento IRPF enviado ou aprovado no exercício.
+ */
+export async function releaseDeclarationStage(ctx: AppContext, b: BudgetRow) {
+  if (!movesDeclaration(b) || b.status !== 'sent') return;
+  const { db } = ctx;
+  const decl = await db.query.declarations.findFirst({ where: and(eq(declarations.customerId, b.customerId), eq(declarations.exerciseYear, b.exerciseYear)) });
+  if (decl?.substatus !== 'budget_sent') return;
+  const [other] = await db
+    .select({ id: budgets.id })
+    .from(budgets)
+    .where(
+      and(
+        eq(budgets.officeId, b.officeId),
+        eq(budgets.customerId, b.customerId),
+        eq(budgets.exerciseYear, b.exerciseYear),
+        ne(budgets.id, b.id),
+        inArray(budgets.category, IRPF_BUDGET_CATEGORIES),
+        inArray(budgets.status, ['sent', 'approved']),
+      ),
+    )
+    .limit(1);
+  if (!other) await setDeclarationSubstatus(db, decl.id, 'not_started');
+}
+
 // ---------------------------------------------------------------------------
 // Envio
 // ---------------------------------------------------------------------------
@@ -283,12 +324,15 @@ export async function issueApprovalLink(ctx: AppContext, budget: BudgetRow) {
     .set({ approvalTokenHash: sha256(token), sentAt: now, status: 'sent', rejectedAt: null, updatedAt: now })
     .where(eq(budgets.id, budget.id))
     .returning();
-  await advanceDeclaration(ctx.db, await declarationOf(ctx, row), 'budget_sent');
+  if (movesDeclaration(row)) await advanceDeclaration(ctx.db, await declarationOf(ctx, row), 'budget_sent');
   return { budget: row, token, link: approvalLink(ctx, token) };
 }
 
 const valueText = (b: BudgetRow) =>
   b.installments > 1 ? `${formatMoney(b.totalCents)} (${b.installments}x de ${formatMoney(Math.ceil(b.totalCents / b.installments))})` : formatMoney(b.totalCents);
+
+/** Valores do template `budget_digital` (proposta com o link de aprovação); também usados pela mala direta. */
+export const budgetDigitalValues = (b: BudgetRow, link: string) => ({ CATEGORIA: categoryLabel(b.category), DESCRICAO: b.description ?? '', VALOR: valueText(b), LINK: link });
 
 /** Envia a proposta por e-mail e/ou WhatsApp com o link de aprovação (template `budget_digital`). */
 export async function sendBudget(ctx: AppContext, budget: BudgetRow, channels: Channel[], userId: string | null) {
@@ -298,7 +342,7 @@ export async function sendBudget(ctx: AppContext, budget: BudgetRow, channels: C
   assertContacts(customer, channels);
   const issued = await issueApprovalLink(ctx, budget);
   const b = issued.budget;
-  const values = { CATEGORIA: categoryLabel(b.category), DESCRICAO: b.description ?? '', VALOR: valueText(b), LINK: issued.link };
+  const values = budgetDigitalValues(b, issued.link);
   const tokenKey = sha256(issued.token).slice(0, 16);
   for (const channel of channels) {
     await queueDelivery(ctx, {
@@ -357,7 +401,7 @@ export async function approveBudget(ctx: AppContext, budget: BudgetRow, approved
       // contrato com o módulo de integrações: ele emite a cobrança e grava externalId/externalUrl nas parcelas
       await ctx.jobs.enqueue('billing.sync_external', { billingId: result.billing.id }, { officeId: result.budget.officeId, idempotencyKey: result.billing.id });
     }
-    await advanceDeclaration(db, await declarationOf(ctx, result.budget), 'budget_approved');
+    if (movesDeclaration(result.budget)) await advanceDeclaration(db, await declarationOf(ctx, result.budget), 'budget_approved');
   }
   return result;
 }
@@ -368,6 +412,7 @@ export async function rejectBudget(ctx: AppContext, budget: BudgetRow) {
   if (budget.status === 'rejected') return budget;
   const now = new Date();
   const [row] = await ctx.db.update(budgets).set({ status: 'rejected', rejectedAt: now, updatedAt: now }).where(eq(budgets.id, budget.id)).returning();
+  await releaseDeclarationStage(ctx, budget);
   return row;
 }
 
@@ -385,6 +430,7 @@ export async function applyStatus(ctx: AppContext, budget: BudgetRow, status: st
     case 'canceled': {
       if (budget.status === 'approved') throw conflict('Orçamento aprovado não pode voltar de status.');
       const [row] = await ctx.db.update(budgets).set({ status, updatedAt: new Date() }).where(eq(budgets.id, budget.id)).returning();
+      await releaseDeclarationStage(ctx, budget);
       return row;
     }
     default:

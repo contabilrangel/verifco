@@ -55,7 +55,7 @@ const filenameOf = (res: Response, fallback: string) => {
 };
 
 /** Dispara o download como binário (o navegador não interpreta o conteúdo). */
-function saveBlob(data: ArrayBuffer, name: string) {
+function saveBlob(data: ArrayBuffer | Blob, name: string) {
   const url = URL.createObjectURL(new Blob([data], { type: 'application/octet-stream' }));
   const a = document.createElement('a');
   a.href = url;
@@ -117,10 +117,13 @@ export const api = {
     for (const f of Array.isArray(files) ? files : [files]) fd.append('file', f, f.name);
     return request<T>('POST', path, fd, opts);
   },
-  /** Baixa um arquivo autenticado e dispara o download no navegador. */
+  /**
+   * Baixa um arquivo autenticado e dispara o download no navegador. Usa `blob()` (que o navegador
+   * pode guardar em disco), não `arrayBuffer()`: um backup de alguns GB não cabe na memória da aba.
+   */
   download: async (path: string, fallbackName = 'arquivo', body?: unknown) => {
     const res = await request<Response>(body ? 'POST' : 'GET', path, body, { raw: true });
-    saveBlob(await res.arrayBuffer(), filenameOf(res, fallbackName));
+    saveBlob(await res.blob(), filenameOf(res, fallbackName));
   },
   /**
    * Abre um arquivo autenticado em nova aba. Só PDF e imagens abrem (com o tipo fixado no blob,

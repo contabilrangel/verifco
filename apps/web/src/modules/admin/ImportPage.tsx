@@ -33,10 +33,25 @@ interface Batch extends BatchSummary {
 const MAX_SIZE = 25 * 1024 * 1024;
 const statusTone = (s: string): Tone => (s === 'done' ? 'success' : s === 'partial' ? 'warning' : 'danger');
 
-/** Importação em lote por planilha (novos clientes, atualização, procurações, INSS e eCAC). */
+/** Importação em lote por planilha (novos clientes, atualização, procurações e eCAC). */
 export function ImportPage() {
   const { tipo = '' } = useParams();
   const { can } = useAuth();
+  // nota de versão para o endereço antigo (favoritos e o aviso no sino levam até aqui)
+  if (tipo === 'inss') {
+    return (
+      <>
+        <PageHeader title="Login INSS em lote" crumbs={[{ label: 'Início', to: '/' }, { label: 'Clientes', to: '/clientes' }, { label: 'Login INSS em lote' }]} />
+        <Card>
+          <EmptyState
+            icon={<Lock />}
+            title="Importação removida: o Verifco não guarda mais a senha do INSS"
+            description="O Verifco não consulta o INSS (extrato CNIS ou informe de rendimentos), por isso deixou de pedir a senha gov.br dos clientes para isso e apagou as senhas que estavam guardadas. O login e a senha do eCAC continuam em Login eCAC em lote."
+          />
+        </Card>
+      </>
+    );
+  }
   if (!isImportKind(tipo)) {
     return (
       <>

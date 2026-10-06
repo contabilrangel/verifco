@@ -1,5 +1,5 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { AI_LIMITS } from '../src/modules/advisory/ai-service';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { AI_LIMITS, financialAdvisorPrompt, systemPrompt } from '../src/modules/advisory/ai-service';
 import type { AiProvider } from '../src/integrations/providers';
 import { VALID_CPFS, createEmployee, createTestEnv, registerOffice, type TestEnv } from './helpers';
 import { R, seedDeclaration, seedDocument, upload } from './advisory-helpers';
@@ -26,6 +26,21 @@ async function officeWithCustomer(cpf = VALID_CPFS[0]) {
 }
 
 describe('assistentes de IA', () => {
+  it('a data de hoje enviada à IA é a de Brasília e acompanha o dia (CON-7)', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      // 22h de 06/10 em Brasília (01h de 07/10 em UTC)
+      vi.setSystemTime(new Date('2026-10-07T01:00:00Z'));
+      expect(systemPrompt('ir', '')).toContain('Hoje é 06/10/2026.');
+      // dois dias depois, com o mesmo processo no ar
+      vi.setSystemTime(new Date('2026-10-08T15:00:00Z'));
+      expect(systemPrompt('ir', '')).toContain('Hoje é 08/10/2026.');
+      expect(financialAdvisorPrompt()).toContain('Hoje é 08/10/2026.');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('conversa com contexto do cliente, anexos e documentos; reinicia e avalia', async () => {
     const o = await officeWithCustomer();
     await seedDeclaration(env, o.officeId, o.customerId, 2026, [

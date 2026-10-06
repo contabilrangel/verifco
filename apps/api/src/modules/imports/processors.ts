@@ -5,11 +5,10 @@
  * alteração são ignoradas e não entram no total do lote.
  */
 import { and, eq, isNull } from 'drizzle-orm';
-import { formatCpfCnpj, isValidCpf, isValidCpfCnpj, isValidEmail, type ImportKind, type ImportRowResult } from '@verifco/shared';
+import { formatCpfCnpj, isValidCpf, isValidCpfCnpj, isValidEmail, todayIso, parseBrDate, type ImportKind, type ImportRowResult } from '@verifco/shared';
 import type { AppContext, AuthUser } from '../../context';
 import { customerGroupMembers, customerGroups, customers, procurators, users } from '../../db/schema';
 import { customerScope } from '../../services/customers';
-import { parseDate } from '../../services/xlsx';
 import { COLUMNS, normalizeDoc, normalizePhone, pick, rowSignature, type SheetRow } from './sheet';
 
 export interface ProcessOutput {
@@ -69,12 +68,6 @@ async function runRows(rows: SheetRow[], runner: Runner, log: (err: unknown) => 
 }
 
 const fail = (errors: string[]): RowOutcome => ({ ok: false, message: errors.join(' ') });
-
-/** AAAA-MM-DD que existe no calendário (31/02 não passa). */
-const isRealDate = (iso: string) => {
-  const d = new Date(`${iso}T12:00:00Z`);
-  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === iso;
-};
 
 /** CPF do cliente na linha: obrigatório e válido (aceita CNPJ quando `allowCnpj`). */
 function readCustomerDoc(values: Record<string, string>, errors: string[], allowCnpj: boolean): string | null {
@@ -144,7 +137,7 @@ async function newCustomers(ctx: AppContext, user: AuthUser, rows: SheetRow[], l
       g.id,
     ]),
   );
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayIso();
 
   return runRows(
     rows,
@@ -167,8 +160,9 @@ async function newCustomers(ctx: AppContext, user: AuthUser, rows: SheetRow[], l
         const contacts = readContacts(values, errors);
 
         const birthRaw = pick(values, COLUMNS.birthDate);
-        const birthDate = birthRaw ? parseDate(birthRaw) : null;
-        if (birthRaw && (!birthDate || !isRealDate(birthDate) || birthDate < '1900-01-01' || birthDate > today)) {
+        // parseBrDate já recusa datas que não existem (31/02)
+        const birthDate = birthRaw ? parseBrDate(birthRaw) : null;
+        if (birthRaw && (!birthDate || birthDate < '1900-01-01' || birthDate > today)) {
           errors.push(`Data de nascimento ${birthRaw} inválida (use DD/MM/AAAA).`);
         }
 
@@ -279,33 +273,6 @@ async function procurations(ctx: AppContext, user: AuthUser, rows: SheetRow[], l
   );
 }
 
-// ---------------------------------------------------------------- senha gov.br do INSS
-async function inss(ctx: AppContext, user: AuthUser, rows: SheetRow[], log: (e: unknown) => void) {
-  const byDoc = await scopedCustomersByDoc(ctx, user);
-  return runRows(
-    rows,
-    {
-      key: docKey(true),
-      skip: (v) => !pick(v, COLUMNS.inssPassword),
-      run: async ({ values }) => {
-        const errors: string[] = [];
-        const doc = readCustomerDoc(values, errors, true);
-        const c = doc ? byDoc.get(doc) : undefined;
-        if (doc && !c) errors.push(`Cliente com CPF ${formatCpfCnpj(doc)} não encontrado.`);
-        const password = pick(values, COLUMNS.inssPassword);
-        if (password.length > 200) errors.push('Senha com mais de 200 caracteres.');
-        if (errors.length || !c) return fail(errors);
-        await ctx.db
-          .update(customers)
-          .set({ inssPasswordEnc: ctx.secrets.encrypt(password), updatedAt: new Date() })
-          .where(eq(customers.id, c.id));
-        return { ok: true, message: `Senha gov.br de ${c.name} salva.` };
-      },
-    },
-    log,
-  );
-}
-
 // ---------------------------------------------------------------- login eCAC
 async function ecac(ctx: AppContext, user: AuthUser, rows: SheetRow[], log: (e: unknown) => void) {
   const byDoc = await scopedCustomersByDoc(ctx, user);
@@ -339,6 +306,5 @@ export const PROCESSORS: Record<ImportKind, (ctx: AppContext, user: AuthUser, ro
   'novos-clientes': newCustomers,
   'atualizar-clientes': updateCustomers,
   procuracoes: procurations,
-  inss,
   ecac,
 };

@@ -1,3 +1,4 @@
+import { currentExerciseYear } from '@verifco/shared';
 import type { Db } from '../../db/client';
 import { paymentMethods, priceTables } from '../../db/schema';
 
@@ -13,7 +14,7 @@ export async function seedOfficeDefaults(db: Db, officeId: string) {
     name: 'Declaração simples',
     type: 'fixed',
     isDefault: true,
-    validFrom: `${new Date().getFullYear()}-01-01`,
+    validFrom: `${currentExerciseYear()}-01-01`,
     config: { amountCents: 30000 },
   });
 }

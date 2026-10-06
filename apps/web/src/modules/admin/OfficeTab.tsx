@@ -87,7 +87,7 @@ export function OfficeTab() {
     <div className="adm-split">
       <Card title="Informações do escritório">
         <div className="vf-grid" style={{ '--cols': 2 } as React.CSSProperties}>
-          <Input label="Nome do escritório" required value={form.name} onChange={set('name')} error={errors.name} style={{ gridColumn: '1 / -1' }} maxLength={200} />
+          <Input label="Nome do escritório" required value={form.name} onChange={set('name')} error={errors.name} span="full" maxLength={200} />
           <Input label="CPF ou CNPJ" value={form.cpfCnpj} onChange={set('cpfCnpj')} error={errors.cpfCnpj} inputMode="numeric" />
           <Input label="E-mail principal" type="email" value={form.email} onChange={set('email')} error={errors.email} help="Recebe avisos do eCAC quando a preferência estiver ligada." />
           <Input label="Telefone" value={form.phone} onChange={set('phone')} inputMode="tel" />

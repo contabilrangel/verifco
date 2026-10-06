@@ -1,17 +1,20 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { BookOpen, Download, ExternalLink, FileSpreadsheet, ListChecks, Trash2, Undo2 } from 'lucide-react';
+import { BookOpen, Download, ExternalLink, FileSpreadsheet, ListChecks, Search, Trash2, Undo2 } from 'lucide-react';
 import {
+  CARNE_LEAO_IMPORT_URL,
   CARNE_LEAO_MODELS_URL,
+  CARNE_LEAO_TABLES,
   CARNE_LEAO_TABLES_URL,
   CASHBOOK_GUIDE,
   CASHBOOK_MAX_ROWS,
   CASHBOOK_MODELS,
+  carneLeaoTables,
   cashbookModelCsv,
   type CashbookKind,
   type CashbookMonth,
 } from '@verifco/shared';
-import { Alert, Button, Card, ConfirmDialog, DropFile, EmptyState, IconButton, Loading, Modal, Select, Tabs, Tag, useToast } from '../../ds';
+import { Alert, Button, Card, ConfirmDialog, DropFile, EmptyState, IconButton, Input, Loading, Modal, Select, Tabs, Tag, useToast } from '../../ds';
 import { api } from '../../lib/api';
 import { useApi } from '../../lib/hooks';
 import { formatCpfCnpj, formatDate, formatDateTime, formatMoney } from '../../lib/format';
@@ -56,6 +59,58 @@ interface ImportResult {
 
 const MONTHS = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
 
+type CodeTable = keyof typeof CARNE_LEAO_TABLES;
+const CODE_TABLES = (Object.keys(CARNE_LEAO_TABLES) as CodeTable[]).map((value) => ({ value, label: CARNE_LEAO_TABLES[value].label }));
+const plain = (s: string) =>
+  s
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase();
+
+/** Tabelas de códigos do Carnê-Leão Web no ano-calendário, com busca por código ou descrição. */
+export function CarneLeaoCodeTables({ year }: { year: number }) {
+  const [table, setTable] = useState<CodeTable>('income');
+  const [search, setSearch] = useState('');
+  const codes = useMemo(() => carneLeaoTables(year)[table].codes, [year, table]);
+  const q = plain(search.trim());
+  const shown = q ? codes.filter((c) => plain(`${c.code} ${c.label}`).includes(q)) : codes;
+  return (
+    <div className="vf-stack" style={{ '--gap': '8px' } as React.CSSProperties}>
+      <div className="vf-inline">
+        <Select aria-label="Tabela" value={table} onChange={(e) => setTable(e.target.value as CodeTable)} options={CODE_TABLES} />
+        <div className="vf-grow">
+          <Input aria-label="Buscar código ou descrição" placeholder="Buscar código ou descrição" icon={<Search />} value={search} onChange={(e) => setSearch(e.target.value)} />
+        </div>
+      </div>
+      <div className="vf-table-wrap" style={{ maxHeight: 290, overflowY: 'auto' }}>
+        <table className="vf-table">
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Descrição</th>
+            </tr>
+          </thead>
+          <tbody>
+            {shown.map((c) => (
+              <tr key={c.code}>
+                <td className="vf-mono vf-text-sm-bold">{c.code}</td>
+                <td className="vf-text-sm">{c.label}</td>
+              </tr>
+            ))}
+            {!shown.length && (
+              <tr>
+                <td colSpan={2} className="vf-text-sm vf-muted">
+                  Nenhum código encontrado na tabela de {year}.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 export function CashbookTab() {
   const { customer } = useCustomer();
   const { year: exercise } = useYear();
@@ -63,7 +118,7 @@ export function CashbookTab() {
   const qc = useQueryClient();
   const thisYear = new Date().getFullYear();
   const [year, setYear] = useState(exercise - 1);
-  const [guide, setGuide] = useState<CashbookKind>('income');
+  const [guide, setGuide] = useState<CashbookKind | 'codes'>('income');
   const [uploading, setUploading] = useState(false);
   const [result, setResult] = useState<ImportResult | null>(null);
   const [month, setMonth] = useState<number | null>(null);
@@ -156,7 +211,7 @@ export function CashbookTab() {
                       size="sm"
                       icon={<Download />}
                       onClick={() => {
-                        const f = cashbookModelCsv(m.key)!;
+                        const f = cashbookModelCsv(m.key, year)!;
                         downloadText(f.filename, '﻿' + f.content);
                       }}
                     >
@@ -173,7 +228,7 @@ export function CashbookTab() {
               </a>{' '}
               ·{' '}
               <a href={CARNE_LEAO_TABLES_URL} target="_blank" rel="noopener noreferrer">
-                Tabelas de códigos de rendimentos, pagamentos e ocupações <ExternalLink size={12} />
+                Manual do Carnê-Leão (tabelas auxiliares) <ExternalLink size={12} />
               </a>
             </p>
           </div>
@@ -187,29 +242,37 @@ export function CashbookTab() {
               items={[
                 { value: 'income', label: 'Rendimentos' },
                 { value: 'payment', label: 'Pagamentos' },
+                { value: 'codes', label: 'Tabelas de códigos' },
               ]}
             />
-            <div className="vf-table-wrap" style={{ maxHeight: 330, overflowY: 'auto' }}>
-              <table className="vf-table">
-                <thead>
-                  <tr>
-                    <th>Campo</th>
-                    <th>Formato</th>
-                    <th>Obrigatório</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {CASHBOOK_GUIDE.filter((g) => g.kind === guide).map((g) => (
-                    <tr key={g.field}>
-                      <td className="vf-text-sm-bold">{g.field}</td>
-                      <td className="vf-text-sm">{g.format}</td>
-                      <td className="vf-text-xs vf-muted">{g.required}</td>
+            {guide === 'codes' ? (
+              <CarneLeaoCodeTables year={year} />
+            ) : (
+              <div className="vf-table-wrap" style={{ maxHeight: 330, overflowY: 'auto' }}>
+                <table className="vf-table">
+                  <thead>
+                    <tr>
+                      <th>Campo</th>
+                      <th>Formato</th>
+                      <th>Obrigatório</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <p className="vf-text-xs vf-muted">Os códigos são conferidos só pelo formato: escolha o código certo nas tabelas oficiais do Carnê-Leão Web.</p>
+                  </thead>
+                  <tbody>
+                    {CASHBOOK_GUIDE.filter((g) => g.kind === guide).map((g) => (
+                      <tr key={g.field}>
+                        <td className="vf-text-sm-bold">{g.field}</td>
+                        <td className="vf-text-sm">{g.format}</td>
+                        <td className="vf-text-xs vf-muted">{g.required}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <p className="vf-text-xs vf-muted">
+              Os códigos de rendimento, pagamento e ocupação são conferidos nas tabelas do Carnê-Leão de {year}. Contas P10 (dedutível) e P11 (não dedutível) fora do plano
+              de contas padrão também são aceitas: valem quando a conta existe no plano de contas do contribuinte no Carnê-Leão Web.
+            </p>
           </div>
         </Card>
       </div>
@@ -362,6 +425,31 @@ export function CashbookTab() {
             </table>
           </div>
         )}
+      </Card>
+
+      <Card title="5. Importar no Carnê-Leão Web">
+        <ol className="vf-adv-steps vf-text-sm">
+          <li>
+            Exporte o arquivo no passo 4 (todos os lançamentos, só um tipo ou só um mês). Acima de {CASHBOOK_MAX_ROWS.toLocaleString('pt-BR')} lançamentos, as partes vêm
+            num .zip.
+          </li>
+          <li>
+            No Carnê-Leão Web, abra <strong>Escrituração › Importar Escrituração</strong> e selecione o arquivo .csv.
+          </li>
+          <li>
+            Clique em <strong>Analisar Arquivo</strong>. As linhas com erro aparecem com o número da linha, o campo e o motivo: corrija aqui e exporte de novo (se importar
+            assim mesmo, essas linhas ficam de fora).
+          </li>
+          <li>
+            Os lançamentos importados se somam aos que já estão no Carnê-Leão: para não duplicar, exporte só o que ainda não foi importado. Uma importação errada pode ser
+            desfeita em <strong>Histórico da Escrituração</strong>.
+          </li>
+        </ol>
+        <p className="vf-text-xs vf-muted" style={{ marginTop: 12 }}>
+          <a href={CARNE_LEAO_IMPORT_URL} target="_blank" rel="noopener noreferrer">
+            Manual do Carnê-Leão: escrituração <ExternalLink size={12} />
+          </a>
+        </p>
       </Card>
 
       <Modal open={Boolean(month)} title={month ? `${MONTHS[month - 1]} de ${year}` : ''} width={980} onClose={() => setMonth(null)}>

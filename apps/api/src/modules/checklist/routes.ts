@@ -7,7 +7,7 @@ import { checklistItems, checklistSections, checklists, declarations, documents 
 import { badRequest, notFound } from '../../lib/errors';
 import { audit, emptyToNull, guard, parse, requirePermission, requireUser, uuidParam, yearSchema } from '../../lib/http';
 import { getCustomerForUser } from '../../services/customers';
-import { getOrCreateDeclaration } from '../../services/declarations';
+import { getOrCreateDeclaration, syncSubstatus } from '../../services/declarations';
 import { queueDelivery } from '../../services/delivery';
 import { buildChecklistPdf, pdfItems } from './pdf';
 import { checklistPublicRoutes } from './public';
@@ -15,13 +15,13 @@ import {
   attachFiles,
   buildZip,
   createChecklist,
+  issueChecklistAccess,
   loadBundle,
   lockOf,
   officeView,
   previousYearItems,
   refreshFinished,
   removeDocument,
-  rotateAccess,
 } from './service';
 import { sendStoredFile } from '../../services/uploads';
 import { readChecklistUploads } from './uploads';
@@ -114,9 +114,11 @@ export async function checklistRoutes(app: FastifyInstance) {
   app.delete('/checklists/:checklistId', { preHandler: guard('checklist_digital.create') }, async (req) => {
     const user = requireUser(req);
     const { checklistId } = parse(checklistParam, req.params);
-    const { checklist, customer } = await loadForUser(user, checklistId);
+    const { checklist, declaration, customer } = await loadForUser(user, checklistId);
     // os arquivos já enviados continuam nos documentos do cliente
     await db.delete(checklists).where(eq(checklists.id, checklist.id));
+    // seções com documentos pendentes saem junto: "Documentos faltantes" fica só com as pendências
+    await syncSubstatus(db, declaration.id);
     await audit(req, 'delete', 'checklist', checklist.id, { customerId: customer.id });
     return { ok: true };
   });
@@ -203,8 +205,8 @@ export async function checklistRoutes(app: FastifyInstance) {
     const { checklistId, docId } = parse(docParam, req.params);
     await loadForUser(user, checklistId);
     const doc = await docOf(checklistId, docId);
-    const { row, data } = await ctx.files.get(user.officeId, doc.fileId);
-    return sendStoredFile(reply, row, data, (req.query as Record<string, string>).inline === '1');
+    const { row, stream } = await ctx.files.open(user.officeId, doc.fileId);
+    return sendStoredFile(reply, row, stream, (req.query as Record<string, string>).inline === '1');
   });
 
   app.delete('/checklists/:checklistId/files/:docId', { preHandler: guard('checklist_digital.upload') }, async (req) => {
@@ -232,7 +234,7 @@ export async function checklistRoutes(app: FastifyInstance) {
   app.post('/checklists/:checklistId/sections/:section/reopen', { preHandler: guard('checklist_digital.edit') }, async (req) => {
     const user = requireUser(req);
     const { checklistId, section } = parse(checklistParam.extend({ section: sectionEnum }), req.params);
-    await loadForUser(user, checklistId);
+    const { declaration } = await loadForUser(user, checklistId);
     const updated = await db
       .update(checklistSections)
       .set({ status: 'open', finishedAt: null })
@@ -240,6 +242,8 @@ export async function checklistRoutes(app: FastifyInstance) {
       .returning();
     if (!updated.length) throw notFound('Seção');
     await refreshFinished(db, checklistId);
+    // seção que estava com documentos pendentes deixa de contar para "Documentos faltantes"
+    await syncSubstatus(db, declaration.id);
     await audit(req, 'reopen_section', 'checklist', checklistId, { section });
     return fullView(checklistId);
   });
@@ -268,8 +272,8 @@ export async function checklistRoutes(app: FastifyInstance) {
     const unique = [...new Set(channels)];
     if (unique.includes('email') && !customer.email) throw badRequest('O cliente não tem e-mail cadastrado.');
     if (unique.includes('whatsapp') && !customer.mobile) throw badRequest('O cliente não tem celular cadastrado.');
-    const { token, code, expiresAt } = await rotateAccess(db, checklistId);
-    const link = `${ctx.config.WEB_URL.replace(/\/$/, '')}/checklist/${token}`;
+    // o mesmo caminho da mala direta "Checklist digital"
+    const { token, code, expiresAt, link } = await issueChecklistAccess(ctx, { officeId: user.officeId, customer, year: declaration.exerciseYear, markSent: unique.length > 0 });
     for (const channel of unique) {
       await queueDelivery(ctx, {
         officeId: user.officeId,
@@ -283,7 +287,6 @@ export async function checklistRoutes(app: FastifyInstance) {
         userId: user.userId,
       });
     }
-    if (unique.length) await db.update(checklists).set({ sentAt: new Date() }).where(eq(checklists.id, checklistId));
     await audit(req, unique.length ? 'send_access' : 'regenerate_access', 'checklist', checklistId, { channels: unique });
     return { link, code, channels: unique, expiresAt };
   });

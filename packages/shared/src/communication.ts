@@ -1,6 +1,8 @@
 /**
  * Catálogos da comunicação (mala direta) e dos relatórios individuais da declaração.
  */
+import { todayIso } from './dates';
+import { formatDate } from './validators';
 
 export type MailingTypeKey = 'checklist_digital' | 'checklist_pdf' | 'planning' | 'marketing' | 'monthly' | 'budget' | 'kit';
 
@@ -26,15 +28,16 @@ export const MAILING_TYPES: MailingType[] = [
     permission: 'mailing.send_checklist_digital',
     templateKey: 'checklist_digital',
     attachment: null,
-    note: 'O link e o código individuais do checklist são gerados na etapa Documentação de cada cliente. Pela mala direta, o e-mail leva o endereço do portal do cliente.',
+    note: 'Cada cliente recebe o link e o código do próprio checklist do exercício, gerados no envio e válidos por 30 dias (o acesso enviado antes deixa de valer). Para quem ainda não tem, o checklist é criado com os dados da declaração do ano anterior. Clientes com o checklist bloqueado ou só para consulta ficam de fora.',
   },
   {
     key: 'checklist_pdf',
     label: 'Checklist em PDF',
-    description: 'Lista de documentos em PDF, montada com base na declaração do ano anterior.',
+    description: 'Lista de documentos em PDF, a mesma da etapa Documentação de cada cliente.',
     permission: 'mailing.send_checklist_pdf',
     templateKey: 'checklist_pdf',
     attachment: 'checklist_pdf',
+    note: 'O PDF traz os itens do checklist digital do cliente (sem os removidos e com os acrescentados pelo escritório) ou, se ainda não houver checklist, a lista montada com a declaração do ano anterior.',
   },
   {
     key: 'planning',
@@ -65,9 +68,9 @@ export const MAILING_TYPES: MailingType[] = [
     label: 'Orçamento',
     description: 'Proposta de honorários do exercício (orçamento já cadastrado).',
     permission: 'mailing.send_budget',
-    templateKey: 'budget',
+    templateKey: 'budget_digital',
     attachment: null,
-    note: 'Usa o orçamento mais recente do exercício. O link de aprovação online é gerado na etapa Orçamento de cada cliente.',
+    note: 'Usa o orçamento em rascunho ou enviado mais recente do exercício, com o template “Orçamento (digital)”: cada cliente recebe um novo link de aprovação (o anterior deixa de valer) e o orçamento passa a “Enviado”. Quem já aprovou o orçamento fica de fora.',
   },
   {
     key: 'kit',
@@ -85,7 +88,7 @@ export function getMailingType(key: string): MailingType | undefined {
 
 /** Tipo de mala direta correspondente a um template (para links vindos de outras telas). */
 export function mailingTypeForTemplate(templateKey: string): MailingType | undefined {
-  if (templateKey === 'budget_digital') return getMailingType('budget');
+  if (templateKey === 'budget' || templateKey === 'budget_digital') return getMailingType('budget');
   return MAILING_TYPES.find((t) => t.templateKey === templateKey && t.key !== 'kit');
 }
 
@@ -95,8 +98,16 @@ export const MAILING_SKIP_REASONS = {
   no_declaration: 'Sem declaração no exercício',
   not_transmitted: 'Declaração ainda não transmitida',
   no_budget: 'Sem orçamento no exercício',
+  budget_approved: 'Orçamento já aprovado',
+  checklist_locked: 'Checklist bloqueado ou só para consulta',
 } as const;
 export type MailingSkipReason = keyof typeof MAILING_SKIP_REASONS;
+
+/**
+ * Máximo de clientes numa mala direta. Acima disso, o envio vai para os primeiros em ordem
+ * alfabética e a revisão avisa quantos ficaram de fora (refine os filtros para os demais).
+ */
+export const MAILING_MAX_RECIPIENTS = 5000;
 
 // ---------------------------------------------------------------------------
 // Relatórios individuais
@@ -142,7 +153,7 @@ export function sampleTemplateValues(year: number): Record<string, string | numb
     VALOR: 'R$ 450,00',
     VALOR_EXTENSO: 'quatrocentos e cinquenta reais',
     VENCIMENTO: `30/05/${year}`,
-    DATA: new Date().toLocaleDateString('pt-BR'),
+    DATA: formatDate(todayIso()),
     CATEGORIA: 'Declaração IRPF',
     DESCRICAO: 'Elaboração e transmissão da declaração de ajuste anual.',
     PENDENCIAS: '<ul><li>Informe de rendimentos do banco (até 15/04)</li><li>Recibos de despesas médicas</li></ul>',

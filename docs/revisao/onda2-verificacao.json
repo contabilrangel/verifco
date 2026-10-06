@@ -1,0 +1,854 @@
+[
+  {
+    "key": "lote-A",
+    "verify": {
+      "ok": true,
+      "problems": [],
+      "checks": "06/10/2026. Lote reconstruído isoladamente sobre b20175e, HEAD 4bbb684188bf2ef3a32d353391bda03c6e1c7438. Instalação com lockfile congelado, typecheck, suítes completas API/shared/web, CSS, build web e db:check passaram; worktree limpa. api: 27 arquivos, 249 testes; shared: 13 arquivos, 123 testes; web: 10 arquivos, 44 testes. Revisão estática dos caminhos alterados e cruzamento com os achados; testes automatizados e seus cenários, sem validação visual em navegador real ou certificação externa. Resultado: Fila com lease, heartbeat, token de posse, recuperação de abandono e desligamento com prazo; concorrência, prioridades e limite por escritório; pais/filhos duráveis na elaboração; novas tentativas e recuperação da cobrança integrada; estado e reemissão na tela; reenvio em massa de mensagens com falha. Testes relevantes: jobs, billing-sync, elaboration, comunicação e BillingPanel: recuperação/lease, posse, filhos, prioridade, limite por escritório, falhas transitórias/permanentes e reemissão.",
+      "findings": [
+        {
+          "id": "DAD-1",
+          "title": "Jobs ficam presos em 'running' para sempre após queda/reinício do processo e bloqueiam backup, Radar e sincronizações",
+          "outcome": "Lease/heartbeat, posse por token e shutdown com prazo; deduplicação considera abandono e envios interrompidos podem ser recuperados.",
+          "evidence": "jobs, billing-sync, elaboration, comunicação e BillingPanel: recuperação/lease, posse, filhos, prioridade, limite por escritório, falhas transitórias/permanentes e reemissão."
+        },
+        {
+          "id": "DAD-2",
+          "title": "Worker único e serial para todos os escritórios: um job longo de um escritório atrasa por horas os e-mails e WhatsApp de todos",
+          "outcome": "Concorrência limitada por escritório, prioridade e tarefas divididas por cliente; eCAC usa filhos duráveis na integração final.",
+          "evidence": "jobs, billing-sync, elaboration, comunicação e BillingPanel: recuperação/lease, posse, filhos, prioridade, limite por escritório, falhas transitórias/permanentes e reemissão."
+        },
+        {
+          "id": "DAD-4",
+          "title": "Cobrança integrada (Asaas/Omie) nunca é emitida depois de falha transitória: backoff de ~30 s e a chave de idempotência impede tentar de novo",
+          "outcome": "Reemissão com billing.edit, reabertura e backoff longo; configuração da integração reenfileira parcelas pendentes e a tela mostra falhas.",
+          "evidence": "jobs, billing-sync, elaboration, comunicação e BillingPanel: recuperação/lease, posse, filhos, prioridade, limite por escritório, falhas transitórias/permanentes e reemissão."
+        },
+        {
+          "id": "INT-9",
+          "title": "Falha ao emitir cobrança no Asaas/Omie fica invisível e não há como reemitir",
+          "outcome": "Estado/erro da cobrança visíveis e botão de reemissão; falha final notifica escritório.",
+          "evidence": "jobs, billing-sync, elaboration, comunicação e BillingPanel: recuperação/lease, posse, filhos, prioridade, limite por escritório, falhas transitórias/permanentes e reemissão."
+        }
+      ],
+      "commands": [
+        {
+          "check": "install",
+          "code": 0,
+          "batch": "A",
+          "time": "2026-10-06T10:10:14.0979499-03:00"
+        },
+        {
+          "check": "typecheck",
+          "code": 0,
+          "batch": "A",
+          "time": "2026-10-06T10:10:36.6492167-03:00"
+        },
+        {
+          "check": "api",
+          "code": 0,
+          "batch": "A",
+          "time": "2026-10-06T10:13:49.8547839-03:00"
+        },
+        {
+          "check": "shared",
+          "code": 0,
+          "batch": "A",
+          "time": "2026-10-06T10:14:01.7315107-03:00"
+        },
+        {
+          "check": "web",
+          "code": 0,
+          "batch": "A",
+          "time": "2026-10-06T10:14:22.3677413-03:00"
+        },
+        {
+          "check": "css",
+          "code": 0,
+          "batch": "A",
+          "time": "2026-10-06T10:14:29.2629927-03:00"
+        },
+        {
+          "check": "build",
+          "code": 0,
+          "batch": "A",
+          "time": "2026-10-06T10:15:09.6232480-03:00"
+        },
+        {
+          "check": "db",
+          "code": 0,
+          "batch": "A",
+          "time": "2026-10-06T10:15:20.1918006-03:00"
+        }
+      ]
+    },
+    "repair": {
+      "ok": true,
+      "checks": "No merge, restabelecida a política de prioridade/tentativas ao inserir jobs em lote e eliminada busca quadrática no estado da cobrança. Visualização do robô trata lease expirado sem tentativas como falha, liberando novo pedido. Incluído e validado na integração final."
+    }
+  },
+  {
+    "key": "lote-B",
+    "verify": {
+      "ok": true,
+      "problems": [
+        {
+          "id": "DAD-10",
+          "blocking": false,
+          "problem": "Divergência da recomendação: uploads continuam em Buffer, com limite de 25 MiB por arquivo e 100 MiB acumulados por requisição; o armazenamento temporário em disco de todo multipart não foi implantado. Os leitores de PDF/planilha/IA ainda recebem Buffer. A assinatura é conferida antes de acumular o arquivo completo, e partes descartadas são consumidas. Os downloads e backups passaram a stream. Não se afirma memória constante no upload nem entre requisições concorrentes."
+        }
+      ],
+      "checks": "06/10/2026. Lote reconstruído isoladamente sobre b20175e, HEAD 6775b06f4f918c01420152c3b1a84b38b6288ef9. Instalação com lockfile congelado, typecheck, suítes completas API/shared/web, CSS, build web e db:check passaram; worktree limpa. api: 27 arquivos, 249 testes; shared: 13 arquivos, 123 testes; web: 8 arquivos, 40 testes. Revisão estática dos caminhos alterados e cruzamento com os achados; testes automatizados e seus cenários, sem validação visual em navegador real ou certificação externa. Resultado: Backup ZIP64 com tabelas paginadas e arquivos lidos um por vez, armazenamento e downloads em stream, tamanho bigint e limpeza se o registro falhar. ZIPs de documentos/pré-preenchidas e pacote de elaboração usam streaming. Uploads recusam assinatura incompatível no início e limitam o volume acumulado. Testes relevantes: storage, uploads, advisory-finance, documents, prefilled e API web: streams, interrupção e limpeza, ZIP64, arquivo ausente, conteúdo e limite de upload.",
+      "findings": [
+        {
+          "id": "DAD-3",
+          "title": "Backup monta o escritório inteiro em memória (todas as tabelas + todos os arquivos) e quebra acima de 2 GB",
+          "outcome": "Backup ZIP64 em stream, tabelas paginadas e tamanho bigint; no máximo um backup por processo.",
+          "evidence": "storage, uploads, advisory-finance, documents, prefilled e API web: streams, interrupção e limpeza, ZIP64, arquivo ausente, conteúdo e limite de upload."
+        },
+        {
+          "id": "DAD-10",
+          "title": "ZIPs e uploads montados inteiros em memória, sem limite de tamanho em várias rotas",
+          "outcome": "ZIPs em stream com teto de 1 GiB para downloads combinados. Upload limitado e assinatura antecipada; Buffer permanece (divergência documentada).",
+          "evidence": "storage, uploads, advisory-finance, documents, prefilled e API web: streams, interrupção e limpeza, ZIP64, arquivo ausente, conteúdo e limite de upload."
+        }
+      ],
+      "commands": [
+        {
+          "check": "install",
+          "code": 0,
+          "batch": "B",
+          "time": "2026-10-06T09:56:26.4288237-03:00"
+        },
+        {
+          "check": "typecheck",
+          "code": 0,
+          "batch": "B",
+          "time": "2026-10-06T09:56:49.8989592-03:00"
+        },
+        {
+          "check": "api",
+          "code": 0,
+          "batch": "B",
+          "time": "2026-10-06T09:59:43.2742188-03:00"
+        },
+        {
+          "check": "shared",
+          "code": 0,
+          "batch": "B",
+          "time": "2026-10-06T09:59:51.4754570-03:00"
+        },
+        {
+          "check": "web",
+          "code": 0,
+          "batch": "B",
+          "time": "2026-10-06T10:00:05.2672808-03:00"
+        },
+        {
+          "check": "css",
+          "code": 0,
+          "batch": "B",
+          "time": "2026-10-06T10:00:10.7298266-03:00"
+        },
+        {
+          "check": "build",
+          "code": 0,
+          "batch": "B",
+          "time": "2026-10-06T10:00:36.5901528-03:00"
+        },
+        {
+          "check": "db",
+          "code": 0,
+          "batch": "B",
+          "time": "2026-10-06T10:00:41.5774458-03:00"
+        }
+      ]
+    }
+  },
+  {
+    "key": "lote-C",
+    "verify": {
+      "ok": true,
+      "problems": [
+        {
+          "id": "COB-3",
+          "blocking": false,
+          "problem": "Parser .DEC/XML não implementado: formato não público e ausência de arquivo real validável. .REC é armazenado e marca transmissão pelo tipo/nome, sem extrair número ou conteúdo."
+        }
+      ],
+      "checks": "06/10/2026. Lote reconstruído isoladamente sobre b20175e, HEAD 37651e162396b14bd6e5906d09b3fc45ede79d8d. Instalação com lockfile congelado, typecheck, suítes completas API/shared/web, CSS, build web e db:check passaram; worktree limpa. api: 25 arquivos, 244 testes; shared: 13 arquivos, 123 testes; web: 9 arquivos, 41 testes. Revisão estática dos caminhos alterados e cruzamento com os achados; testes automatizados e seus cenários, sem validação visual em navegador real ou certificação externa. Resultado: Permissão de finalização também no bulk, estado eCAC/subestado coerentes, atualização do saldo de caixa, consideração conjunta de checklist e pendências, envio automático do PDF DARF, .REC marca transmissão sem interpretar o arquivo, orçamento fora de IRPF não muda a etapa, DARF e livro caixa gravados em transação e operações por lote. Testes relevantes: customers, ecac, tax-values, reports, darfs-backlogs, checklist, elaboration e advisory-finance: permissões, estados, saldo, recibo, atomicidade e regressões entre módulos.",
+      "findings": [
+        {
+          "id": "INT-1",
+          "title": "Ação em massa 'Alterar status da declaração' finaliza declarações sem a permissão declaration.finish e sem sincronizar a situação eCAC",
+          "outcome": "Bulk e edição individual compartilham permissão de finalização e sincronização eCAC; interface oculta opção sem permissão.",
+          "evidence": "customers, ecac, tax-values, reports, darfs-backlogs, checklist, elaboration e advisory-finance: permissões, estados, saldo, recibo, atomicidade e regressões entre módulos."
+        },
+        {
+          "id": "INT-6",
+          "title": "Registros eCAC da declaração (extensão, sincronizador, manual) gravam ecacStatus e número do recibo sem mover a etapa/subestado",
+          "outcome": "Registros eCAC e resumo usam o serviço comum de sincronização de estado da declaração.",
+          "evidence": "customers, ecac, tax-values, reports, darfs-backlogs, checklist, elaboration e advisory-finance: permissões, estados, saldo, recibo, atomicidade e regressões entre módulos."
+        },
+        {
+          "id": "COB-5",
+          "title": "Registro do eCAC (status, malha, recibo) não atualiza a etapa do Kanban",
+          "outcome": "Recibo/transmissão e situação eCAC movem etapa/subestado pelo serviço comum.",
+          "evidence": "customers, ecac, tax-values, reports, darfs-backlogs, checklist, elaboration e advisory-finance: permissões, estados, saldo, recibo, atomicidade e regressões entre módulos."
+        },
+        {
+          "id": "INT-7",
+          "title": "'Documentos faltantes' do checklist não cria pendência e é desfeito pela regra das pendências",
+          "outcome": "Subestado considera backlog aberto e seções pendentes do checklist; conclusão/reabertura recalculam a situação.",
+          "evidence": "customers, ecac, tax-values, reports, darfs-backlogs, checklist, elaboration e advisory-finance: permissões, estados, saldo, recibo, atomicidade e regressões entre módulos."
+        },
+        {
+          "id": "INT-11",
+          "title": "Validar a elaboração e salvar 'Outros gastos' não recalculam cashBalanceCents: alerta de saldo de caixa negativo errado no dashboard",
+          "outcome": "Validação da elaboração e outros gastos recalculam e persistem cashBalanceCents.",
+          "evidence": "customers, ecac, tax-values, reports, darfs-backlogs, checklist, elaboration e advisory-finance: permissões, estados, saldo, recibo, atomicidade e regressões entre módulos."
+        },
+        {
+          "id": "INT-13",
+          "title": "Orçamento de qualquer categoria (holding, consultoria, Carnê-Leão) move a declaração IRPF para 'Negociação'; recusa ou cancelamento não volta",
+          "outcome": "Só orçamento IRPF/retificação move a declaração; recusa/cancelamento/exclusão reconciliam negociação.",
+          "evidence": "customers, ecac, tax-values, reports, darfs-backlogs, checklist, elaboration e advisory-finance: permissões, estados, saldo, recibo, atomicidade e regressões entre módulos."
+        },
+        {
+          "id": "DAD-8",
+          "title": "Validação da elaboração sem transação nem trava: validações simultâneas duplicam linhas da DIRPF e inflam os totais",
+          "outcome": "Validação da elaboração sob transação/trava da declaração, relendo linhas/documentos antes de aplicar.",
+          "evidence": "customers, ecac, tax-values, reports, darfs-backlogs, checklist, elaboration e advisory-finance: permissões, estados, saldo, recibo, atomicidade e regressões entre módulos."
+        },
+        {
+          "id": "DAD-16",
+          "title": "Escritas dependentes sem transação: regerar DARF e importar livro caixa podem deixar dados parciais",
+          "outcome": "DARF troca quotas sob transação/trava e só remove blobs após commit; importação de livro caixa transacional.",
+          "evidence": "customers, ecac, tax-values, reports, darfs-backlogs, checklist, elaboration e advisory-finance: permissões, estados, saldo, recibo, atomicidade e regressões entre módulos."
+        },
+        {
+          "id": "COB-3",
+          "title": "Declaração do programa IRPF (.DEC/.REC/XML) não é lida: linhas da DIRPF só entram digitadas",
+          "outcome": "Parte viável: .REC marca transmissão; parser .DEC/XML excluído e textos corrigidos.",
+          "evidence": "customers, ecac, tax-values, reports, darfs-backlogs, checklist, elaboration e advisory-finance: permissões, estados, saldo, recibo, atomicidade e regressões entre módulos."
+        },
+        {
+          "id": "COB-6",
+          "title": "Três preferências do escritório são salvas mas não têm efeito",
+          "outcome": "Mudanças relevantes eCAC geram avisos e e-mail opcional; preferências não implementáveis ocultas.",
+          "evidence": "customers, ecac, tax-values, reports, darfs-backlogs, checklist, elaboration e advisory-finance: permissões, estados, saldo, recibo, atomicidade e regressões entre módulos."
+        },
+        {
+          "id": "INT-16",
+          "title": "Preferências gravadas que nenhum módulo usa: notifyMainEmailOnEcacChanges, simplifiedQueryWithoutProcurator, autoGenerateCnd",
+          "outcome": "Aviso ao e-mail principal tem efeito; toggles sem implementação de CND/consulta sem procurador ocultos e limites explicados.",
+          "evidence": "customers, ecac, tax-values, reports, darfs-backlogs, checklist, elaboration e advisory-finance: permissões, estados, saldo, recibo, atomicidade e regressões entre módulos."
+        },
+        {
+          "id": "DAD-5",
+          "title": "Mala direta executada de forma síncrona com N+1 (~10 consultas por envio): 81 s numa única requisição para 5.000 clientes",
+          "outcome": "Mala direta/importação na fila com inserções e carregamentos em lote; bulk de status transacional, sem consulta individual por cliente.",
+          "evidence": "customers, ecac, tax-values, reports, darfs-backlogs, checklist, elaboration e advisory-finance: permissões, estados, saldo, recibo, atomicidade e regressões entre módulos."
+        }
+      ],
+      "commands": [
+        {
+          "check": "install",
+          "code": 0,
+          "batch": "C",
+          "time": "2026-10-06T10:15:59.0000695-03:00"
+        },
+        {
+          "check": "typecheck",
+          "code": 0,
+          "batch": "C",
+          "time": "2026-10-06T10:16:34.8876692-03:00"
+        },
+        {
+          "check": "api",
+          "code": 0,
+          "batch": "C",
+          "time": "2026-10-06T10:20:23.4302085-03:00"
+        },
+        {
+          "check": "shared",
+          "code": 0,
+          "batch": "C",
+          "time": "2026-10-06T10:20:37.2879683-03:00"
+        },
+        {
+          "check": "web",
+          "code": 0,
+          "batch": "C",
+          "time": "2026-10-06T10:20:59.2408425-03:00"
+        },
+        {
+          "check": "css",
+          "code": 0,
+          "batch": "C",
+          "time": "2026-10-06T10:21:10.0897175-03:00"
+        },
+        {
+          "check": "build",
+          "code": 0,
+          "batch": "C",
+          "time": "2026-10-06T10:21:54.3912242-03:00"
+        },
+        {
+          "check": "db",
+          "code": 0,
+          "batch": "C",
+          "time": "2026-10-06T10:22:03.5353932-03:00"
+        }
+      ]
+    },
+    "repair": {
+      "ok": true,
+      "checks": "Criação em massa passou a conferir o limite total antes de gravar, sob transação e trava por escritório/exercício. Declarações já existentes podem ser atualizadas no limite. Incluído e validado na integração final."
+    }
+  },
+  {
+    "key": "lote-D",
+    "verify": {
+      "ok": true,
+      "problems": [],
+      "checks": "06/10/2026. Lote reconstruído isoladamente sobre b20175e, HEAD 15901127888e83d24d29749ae24846e8218f1b80. Instalação com lockfile congelado, typecheck, suítes completas API/shared/web, CSS, build web e db:check passaram; worktree limpa. api: 25 arquivos, 239 testes; shared: 13 arquivos, 126 testes; web: 10 arquivos, 41 testes. Revisão estática dos caminhos alterados e cruzamento com os achados; testes automatizados e seus cenários, sem validação visual em navegador real ou certificação externa. Resultado: Mala direta e importação de orçamentos preparadas na fila, com acompanhamento e limite de seleção explícito. Links válidos de checklist e aprovação, propostas já aprovadas excluídas, fluxo de orçamento digital reaproveitado, PDF do checklist único e conversão HTML/texto centralizada. Testes relevantes: communication, finance, checklist, MailingPage, DeliveriesPage, BudgetImportPage e shared communication: links, texto com entidades, PDFs, truncamento e execução em segundo plano.",
+      "findings": [
+        {
+          "id": "INT-2",
+          "title": "Mala direta 'Checklist digital' envia um link e um código que não funcionam",
+          "outcome": "Mala direta emite acesso pelo mesmo serviço de checklist; prévia não gira token e bloqueados são excluídos.",
+          "evidence": "communication, finance, checklist, MailingPage, DeliveriesPage, BudgetImportPage e shared communication: links, texto com entidades, PDFs, truncamento e execução em segundo plano."
+        },
+        {
+          "id": "INT-5",
+          "title": "Mala direta 'Orçamento' manda proposta sem link de aprovação, não marca como enviada e pode mandar rascunhos ou orçamentos já aprovados",
+          "outcome": "Mala direta usa orçamento digital com link e atualiza envio/etapa; aprovados são excluídos.",
+          "evidence": "communication, finance, checklist, MailingPage, DeliveriesPage, BudgetImportPage e shared communication: links, texto com entidades, PDFs, truncamento e execução em segundo plano."
+        },
+        {
+          "id": "INT-8",
+          "title": "Duas implementações do checklist em PDF: a da mala direta ignora o checklist digital do cliente",
+          "outcome": "Mala direta usa o gerador de PDF do checklist preparado; gerador duplicado removido.",
+          "evidence": "communication, finance, checklist, MailingPage, DeliveriesPage, BudgetImportPage e shared communication: links, texto com entidades, PDFs, truncamento e execução em segundo plano."
+        },
+        {
+          "id": "CON-4",
+          "title": "Dois geradores de 'Checklist de documentos IRPF' em PDF: a mala direta ignora o checklist preparado pelo escritório",
+          "outcome": "Gerador de checklist PDF único e reaproveitamento dos itens do ano anterior.",
+          "evidence": "communication, finance, checklist, MailingPage, DeliveriesPage, BudgetImportPage e shared communication: links, texto com entidades, PDFs, truncamento e execução em segundo plano."
+        },
+        {
+          "id": "CON-5",
+          "title": "htmlToText em três versões; a que de fato envia o WhatsApp não decodifica &#39;/&quot; nem trata <div>",
+          "outcome": "htmlToText compartilhado, com entidades, blocos e links, usado na prévia e no envio.",
+          "evidence": "communication, finance, checklist, MailingPage, DeliveriesPage, BudgetImportPage e shared communication: links, texto com entidades, PDFs, truncamento e execução em segundo plano."
+        },
+        {
+          "id": "DAD-5",
+          "title": "Mala direta executada de forma síncrona com N+1 (~10 consultas por envio): 81 s numa única requisição para 5.000 clientes",
+          "outcome": "Mala direta/importação na fila com inserções e carregamentos em lote; bulk de status transacional, sem consulta individual por cliente.",
+          "evidence": "communication, finance, checklist, MailingPage, DeliveriesPage, BudgetImportPage e shared communication: links, texto com entidades, PDFs, truncamento e execução em segundo plano."
+        }
+      ],
+      "commands": [
+        {
+          "check": "install",
+          "code": 0,
+          "batch": "D",
+          "time": "2026-10-06T10:22:47.4706236-03:00"
+        },
+        {
+          "check": "typecheck",
+          "code": 0,
+          "batch": "D",
+          "time": "2026-10-06T10:23:22.3650984-03:00"
+        },
+        {
+          "check": "api",
+          "code": 0,
+          "batch": "D",
+          "time": "2026-10-06T10:26:14.5663662-03:00"
+        },
+        {
+          "check": "shared",
+          "code": 0,
+          "batch": "D",
+          "time": "2026-10-06T10:26:22.0167581-03:00"
+        },
+        {
+          "check": "web",
+          "code": 0,
+          "batch": "D",
+          "time": "2026-10-06T10:26:38.5150731-03:00"
+        },
+        {
+          "check": "css",
+          "code": 0,
+          "batch": "D",
+          "time": "2026-10-06T10:26:43.4620056-03:00"
+        },
+        {
+          "check": "build",
+          "code": 0,
+          "batch": "D",
+          "time": "2026-10-06T10:27:08.9581581-03:00"
+        },
+        {
+          "check": "db",
+          "code": 0,
+          "batch": "D",
+          "time": "2026-10-06T10:27:13.4365026-03:00"
+        }
+      ]
+    },
+    "repair": {
+      "ok": true,
+      "checks": "Conteúdo protegido do envio preserva as variáveis dos modelos Meta. Fixture de 300 orçamentos ganhou contrato com limite 500, pois o trial agora limita a 30; as mesmas verificações de 300 gravações e duplicatas foram mantidas. Incluído e validado na integração final."
+    }
+  },
+  {
+    "key": "lote-E",
+    "verify": {
+      "ok": true,
+      "problems": [
+        {
+          "id": "COB-1/COB-2",
+          "blocking": false,
+          "problem": "Leitura das páginas eCAC pela extensão excluída por decisão: não há HTML real. SERPRO não fornece situação/malha/lote da declaração nem CND de pessoa física. Telas indicam lançamento manual e os limites da extensão."
+        },
+        {
+          "id": "COB-4",
+          "blocking": false,
+          "problem": "Exportação .DBK não implementada por formato não público. O pacote exportado identifica que não é uma cópia .DBK restaurável no programa IRPF."
+        },
+        {
+          "id": "COB-1-credenciais",
+          "blocking": false,
+          "problem": "Credenciais eCAC do cliente continuam guardadas sem uso, conforme decisão de produto explicitamente preservada na retomada. Senhas INSS são removidas pela migração 0005."
+        }
+      ],
+      "checks": "06/10/2026. Lote reconstruído isoladamente sobre b20175e, HEAD 01f0531dce84b4995a5fdfe529cc8b0c6bc127bf. Instalação com lockfile congelado, typecheck, suítes completas API/shared/web, CSS, build web e db:check passaram; worktree limpa. api: 27 arquivos, 255 testes; shared: 14 arquivos, 128 testes; web: 11 arquivos, 45 testes. Revisão estática dos caminhos alterados e cruzamento com os achados; testes automatizados e seus cenários, sem validação visual em navegador real ou certificação externa. Resultado: Consultas SERPRO de procuração, caixa postal, situação fiscal e pagamento de DARF; agendamento diário; cliente por tarefa; autenticação do procurador atualiza indicador. Webhooks Meta e Evolution recebem texto/mídia, vinculam cliente e deduplicam por ID externo; modelos aprovados da Meta configuráveis para envios fora da janela. INSS removido das telas, imports, permissões e segredos antigos apagados pela migração. Testes relevantes: ecac-robot, whatsapp-webhook, imports, migrations, integrações, Shell e EcacTab: respostas simuladas dos provedores, autenticação/assinatura, mídia, deduplicação, cron diário e senha antiga.",
+      "findings": [
+        {
+          "id": "COB-1",
+          "title": "Robô eCAC não coleta declarações processadas, extratos, DARF, CND, status simplificado nem lotes de restituição",
+          "outcome": "SERPRO coleta serviços disponíveis e roda diariamente; captura das páginas, CND PF e credenciais sem uso permanecem nas decisões documentadas.",
+          "evidence": "ecac-robot, whatsapp-webhook, imports, migrations, integrações, Shell e EcacTab: respostas simuladas dos provedores, autenticação/assinatura, mídia, deduplicação, cron diário e senha antiga."
+        },
+        {
+          "id": "COB-2",
+          "title": "Busca automática das pré-preenchidas pelo robô não existe",
+          "outcome": "Textos explicam baixar pré-preenchida para a pasta do sincronizador ou enviar manualmente; captura automática excluída por falta de HTML real.",
+          "evidence": "ecac-robot, whatsapp-webhook, imports, migrations, integrações, Shell e EcacTab: respostas simuladas dos provedores, autenticação/assinatura, mídia, deduplicação, cron diário e senha antiga."
+        },
+        {
+          "id": "COB-4",
+          "title": "Exportação DBK para o programa IRPF ausente na Elaboração",
+          "outcome": "Pacote identifica que não é .DBK; exportação restaurável excluída por formato não público.",
+          "evidence": "ecac-robot, whatsapp-webhook, imports, migrations, integrações, Shell e EcacTab: respostas simuladas dos provedores, autenticação/assinatura, mídia, deduplicação, cron diário e senha antiga."
+        },
+        {
+          "id": "COB-6",
+          "title": "Três preferências do escritório são salvas mas não têm efeito",
+          "outcome": "Mudanças relevantes eCAC geram avisos e e-mail opcional; preferências não implementáveis ocultas.",
+          "evidence": "ecac-robot, whatsapp-webhook, imports, migrations, integrações, Shell e EcacTab: respostas simuladas dos provedores, autenticação/assinatura, mídia, deduplicação, cron diário e senha antiga."
+        },
+        {
+          "id": "INT-16",
+          "title": "Preferências gravadas que nenhum módulo usa: notifyMainEmailOnEcacChanges, simplifiedQueryWithoutProcurator, autoGenerateCnd",
+          "outcome": "Aviso ao e-mail principal tem efeito; toggles sem implementação de CND/consulta sem procurador ocultos e limites explicados.",
+          "evidence": "ecac-robot, whatsapp-webhook, imports, migrations, integrações, Shell e EcacTab: respostas simuladas dos provedores, autenticação/assinatura, mídia, deduplicação, cron diário e senha antiga."
+        },
+        {
+          "id": "COB-7",
+          "title": "'Login INSS em lote' coleta senha gov.br do cliente, mas não existe funcionalidade INSS",
+          "outcome": "Senha INSS deixa de ser recebida/exposta; migração apaga dados antigos e retira permissão. eCAC preservado.",
+          "evidence": "ecac-robot, whatsapp-webhook, imports, migrations, integrações, Shell e EcacTab: respostas simuladas dos provedores, autenticação/assinatura, mídia, deduplicação, cron diário e senha antiga."
+        },
+        {
+          "id": "COB-8",
+          "title": "WhatsApp só envia: respostas não chegam à aba Mensagens e o modo Meta não envia modelos aprovados",
+          "outcome": "WhatsApp recebe mensagens/mídia com autenticação, escopo e deduplicação; Meta envia modelos aprovados configurados fora das 24 horas.",
+          "evidence": "ecac-robot, whatsapp-webhook, imports, migrations, integrações, Shell e EcacTab: respostas simuladas dos provedores, autenticação/assinatura, mídia, deduplicação, cron diário e senha antiga."
+        },
+        {
+          "id": "INT-15",
+          "title": "Indicador 'Login dos procuradores' do dashboard lê procurators.loginStatus, que nenhum módulo grava",
+          "outcome": "Autenticação SERPRO atualiza loginStatus/lastValidatedAt do procurador do certificado.",
+          "evidence": "ecac-robot, whatsapp-webhook, imports, migrations, integrações, Shell e EcacTab: respostas simuladas dos provedores, autenticação/assinatura, mídia, deduplicação, cron diário e senha antiga."
+        },
+        {
+          "id": "DAD-2",
+          "title": "Worker único e serial para todos os escritórios: um job longo de um escritório atrasa por horas os e-mails e WhatsApp de todos",
+          "outcome": "Concorrência limitada por escritório, prioridade e tarefas divididas por cliente; eCAC usa filhos duráveis na integração final.",
+          "evidence": "ecac-robot, whatsapp-webhook, imports, migrations, integrações, Shell e EcacTab: respostas simuladas dos provedores, autenticação/assinatura, mídia, deduplicação, cron diário e senha antiga."
+        }
+      ],
+      "commands": [
+        {
+          "check": "install",
+          "code": 0,
+          "batch": "E",
+          "time": "2026-10-06T10:01:03.5008724-03:00"
+        },
+        {
+          "check": "typecheck",
+          "code": 0,
+          "batch": "E",
+          "time": "2026-10-06T10:01:26.8893246-03:00"
+        },
+        {
+          "check": "api",
+          "code": 0,
+          "batch": "E",
+          "time": "2026-10-06T10:03:59.3274210-03:00"
+        },
+        {
+          "check": "shared",
+          "code": 0,
+          "batch": "E",
+          "time": "2026-10-06T10:04:08.0542466-03:00"
+        },
+        {
+          "check": "web",
+          "code": 0,
+          "batch": "E",
+          "time": "2026-10-06T10:04:28.4073582-03:00"
+        },
+        {
+          "check": "css",
+          "code": 0,
+          "batch": "E",
+          "time": "2026-10-06T10:04:33.7649236-03:00"
+        },
+        {
+          "check": "build",
+          "code": 0,
+          "batch": "E",
+          "time": "2026-10-06T10:05:02.1587551-03:00"
+        },
+        {
+          "check": "db",
+          "code": 0,
+          "batch": "E",
+          "time": "2026-10-06T10:05:07.8481106-03:00"
+        }
+      ]
+    },
+    "repair": {
+      "ok": true,
+      "checks": "Fan-out refeito sobre pais/filhos da fila A, conclusão pelos estados duráveis dos filhos e notificação atômica única, incluindo abandono no limite de tentativas. Aritmética de dias usa a biblioteca comum; textos residuais do robô/downloads deixaram de prometer captura automática. Incluído e validado na integração final."
+    }
+  },
+  {
+    "key": "lote-F1",
+    "verify": {
+      "ok": true,
+      "problems": [],
+      "checks": "06/10/2026. Lote reconstruído isoladamente sobre b20175e, HEAD c0226d8a15b31fe5b1e4ddcb56a4877d70a71349. Instalação com lockfile congelado, typecheck, suítes completas API/shared/web, CSS, build web e db:check passaram; worktree limpa. api: 25 arquivos, 246 testes; shared: 14 arquivos, 130 testes; web: 11 arquivos, 47 testes. Revisão estática dos caminhos alterados e cruzamento com os achados; testes automatizados e seus cenários, sem validação visual em navegador real ou certificação externa. Resultado: Datas correntes e apresentação no fuso de Brasília, auditoria das ações apontadas, utilitários e agrupamentos em Map, menu derivado das permissões das abas, acesso à etapa DARF e permissões de pré-declaração coerentes. Limites e vigência dos contratos aplicados, com consultas e revogação de acesso/segredos preservadas. Testes relevantes: admin, customers, imports, dates, nav, DarfStep e onda2-integration: fim de dia em Brasília, limite/vigência, permissões e auditoria.",
+      "findings": [
+        {
+          "id": "CON-7",
+          "title": "Três funções de 'hoje em Brasília' e mais de dez usos de data em UTC: relatórios e telas discordam entre 21h e 24h",
+          "outcome": "Formatação de data/hora no fuso de Brasília e tratamento separado de data sem horário.",
+          "evidence": "admin, customers, imports, dates, nav, DarfStep e onda2-integration: fim de dia em Brasília, limite/vigência, permissões e auditoria."
+        },
+        {
+          "id": "DAD-13",
+          "title": "'Hoje' calculado em UTC em vários pontos: das 21h às 24h (Brasília) vencimentos de hoje aparecem como vencidos",
+          "outcome": "todayIso/brazilToday e apresentação em Brasília; teste de horário noturno e regra que recusa padrões UTC indevidos.",
+          "evidence": "admin, customers, imports, dates, nav, DarfStep e onda2-integration: fim de dia em Brasília, limite/vigência, permissões e auditoria."
+        },
+        {
+          "id": "CON-11",
+          "title": "Ações relevantes sem audit, contrariando a convenção (irmãs da mesma entidade auditam)",
+          "outcome": "Auditoria acrescentada à exportação de clientes e às ações relevantes apontadas de cadastro/documentos/linhas.",
+          "evidence": "admin, customers, imports, dates, nav, DarfStep e onda2-integration: fim de dia em Brasília, limite/vigência, permissões e auditoria."
+        },
+        {
+          "id": "DAD-9",
+          "title": "Excluir cliente (soft delete) prende a vaga do Copiloto para sempre e não invalida o link público de aprovação de orçamento",
+          "outcome": "Soft delete individual/bulk revoga links e desativa inscrição no Copiloto; links de cliente excluído são recusados.",
+          "evidence": "admin, customers, imports, dates, nav, DarfStep e onda2-integration: fim de dia em Brasília, limite/vigência, permissões e auditoria."
+        },
+        {
+          "id": "DAD-12",
+          "title": "Relatório de faturamento e modelo de importação com laços O(n²) que travam o event loop",
+          "outcome": "Serialização de orçamentos e modelo de importação agrupam relações em Map; estado da cobrança também usa Map após integração.",
+          "evidence": "admin, customers, imports, dates, nav, DarfStep e onda2-integration: fim de dia em Brasília, limite/vigência, permissões e auditoria."
+        },
+        {
+          "id": "INT-17",
+          "title": "Menu e permissões desalinhados: Elaboração sem elaboration.process, Administração sem ecac.robot/ecac.sync, chaves do catálogo sem uso, etapa DARF depende de declaration.view",
+          "outcome": "Menu inclui elaboration.process e união das abas administrativas; etapa DARF carrega declaração e exibe erro de carregamento.",
+          "evidence": "admin, customers, imports, dates, nav, DarfStep e onda2-integration: fim de dia em Brasília, limite/vigência, permissões e auditoria."
+        },
+        {
+          "id": "COB-13",
+          "title": "Permissões 'Criação' e 'Edição da pré-declaração' não controlam nada",
+          "outcome": "Permissões de criação/edição da pré-declaração passam a controlar os caminhos correspondentes da elaboração.",
+          "evidence": "admin, customers, imports, dates, nav, DarfStep e onda2-integration: fim de dia em Brasília, limite/vigência, permissões e auditoria."
+        },
+        {
+          "id": "COB-12",
+          "title": "Limites e validade do plano/contrato não são aplicados",
+          "outcome": "Limite e vigência do contrato aplicados; limite bulk/concorrente e exceções de revogação corrigidos na integração.",
+          "evidence": "admin, customers, imports, dates, nav, DarfStep e onda2-integration: fim de dia em Brasília, limite/vigência, permissões e auditoria."
+        }
+      ],
+      "commands": [
+        {
+          "check": "install",
+          "code": 0,
+          "batch": "F1",
+          "time": "2026-10-06T10:27:41.6973290-03:00"
+        },
+        {
+          "check": "typecheck",
+          "code": 0,
+          "batch": "F1",
+          "time": "2026-10-06T10:28:08.4523458-03:00"
+        },
+        {
+          "check": "api",
+          "code": 0,
+          "batch": "F1",
+          "time": "2026-10-06T10:31:02.2246322-03:00"
+        },
+        {
+          "check": "shared",
+          "code": 0,
+          "batch": "F1",
+          "time": "2026-10-06T10:31:12.3017490-03:00"
+        },
+        {
+          "check": "web",
+          "code": 0,
+          "batch": "F1",
+          "time": "2026-10-06T10:31:35.7249454-03:00"
+        },
+        {
+          "check": "css",
+          "code": 0,
+          "batch": "F1",
+          "time": "2026-10-06T10:31:40.6471057-03:00"
+        },
+        {
+          "check": "build",
+          "code": 0,
+          "batch": "F1",
+          "time": "2026-10-06T10:32:06.5273895-03:00"
+        },
+        {
+          "check": "db",
+          "code": 0,
+          "batch": "F1",
+          "time": "2026-10-06T10:32:11.3214925-03:00"
+        }
+      ]
+    },
+    "repair": {
+      "ok": true,
+      "checks": "Plano vencido permite apenas apagar credenciais ou desativar colaborador sem mudar nome, e-mail e função. O hook roda depois de ler o corpo. Teste cobre tentativas de cadastrar senha, editar, remover segredo, desativar e reativar. Incluído e validado na integração final."
+    }
+  },
+  {
+    "key": "lote-F2",
+    "verify": {
+      "ok": true,
+      "problems": [],
+      "checks": "06/10/2026. Lote reconstruído isoladamente sobre b20175e, HEAD 5fbda389208c0cd10965ea496eb05d4b77a396d0. Instalação com lockfile congelado, typecheck, suítes completas API/shared/web, CSS, build web e db:check passaram; worktree limpa. api: 25 arquivos, 242 testes; shared: 13 arquivos, 125 testes; web: 10 arquivos, 44 testes. Revisão estática dos caminhos alterados e cruzamento com os achados; testes automatizados e seus cenários, sem validação visual em navegador real ou certificação externa. Resultado: Central de elaboração pagina e filtra no banco usando contadores persistidos, com preenchimento inicial em lotes e atualização nos caminhos de documento. Índices das consultas frequentes. Tabelas Carnê-Leão conferidas na Receita e filtradas por ano. Windows-1252 verdadeiro, datas de importação normalizadas, resultado rural da Holding unificado e opção de investimento rural concluída. Resíduos CSS corrigidos. Testes relevantes: elaboration, migrations, imports, advisory-finance, shared advisory, CashbookTab, DeclarationStep e styles: contadores, índices, códigos inexistentes/validade, CSV e investimento rural.",
+      "findings": [
+        {
+          "id": "DAD-6",
+          "title": "Central de elaboração carrega todos os documentos (com o JSON 'extracted') de toda a carteira a cada página e pagina em memória",
+          "outcome": "Contadores gravados na declaração, filtro/página SQL e preenchimento inicial em lotes; listagens seguintes não leem extracted.",
+          "evidence": "elaboration, migrations, imports, advisory-finance, shared advisory, CashbookTab, DeclarationStep e styles: contadores, índices, códigos inexistentes/validade, CSV e investimento rural."
+        },
+        {
+          "id": "DAD-7",
+          "title": "Faltam índices em filtros frequentes e em buscas de token de rotas públicas (Seq Scan sobre todos os escritórios)",
+          "outcome": "Índices das relações e tokens frequentes; CPF normalizado e comparação direta em findSpouse.",
+          "evidence": "elaboration, migrations, imports, advisory-finance, shared advisory, CashbookTab, DeclarationStep e styles: contadores, índices, códigos inexistentes/validade, CSV e investimento rural."
+        },
+        {
+          "id": "COB-9",
+          "title": "Livro Caixa sem as tabelas de códigos e com validação só de formato",
+          "outcome": "Códigos oficiais conferidos, validação e tabelas com busca/ano; guia de importação na tela. Fontes em carne-leao-fontes.md.",
+          "evidence": "elaboration, migrations, imports, advisory-finance, shared advisory, CashbookTab, DeclarationStep e styles: contadores, índices, códigos inexistentes/validade, CSV e investimento rural."
+        },
+        {
+          "id": "OBS-1",
+          "title": "OBS-1",
+          "outcome": "Leitores CSV unificados, Windows-1252 correto e validação de datas por parseBrDate, sem duplicação em imports/eCAC.",
+          "evidence": "elaboration, migrations, imports, advisory-finance, shared advisory, CashbookTab, DeclarationStep e styles: contadores, índices, códigos inexistentes/validade, CSV e investimento rural."
+        },
+        {
+          "id": "OBS-2",
+          "title": "OBS-2",
+          "outcome": "ARQUITETURA documenta sheetMoneyToCents/SheetRow.numbers como origem dos valores numéricos de planilha.",
+          "evidence": "elaboration, migrations, imports, advisory-finance, shared advisory, CashbookTab, DeclarationStep e styles: contadores, índices, códigos inexistentes/validade, CSV e investimento rural."
+        },
+        {
+          "id": "OBS-3",
+          "title": "OBS-3",
+          "outcome": "Holding usa o resultado rural compartilhado, incluindo parcela isenta.",
+          "evidence": "elaboration, migrations, imports, advisory-finance, shared advisory, CashbookTab, DeclarationStep e styles: contadores, índices, códigos inexistentes/validade, CSV e investimento rural."
+        },
+        {
+          "id": "OBS-4",
+          "title": "OBS-4",
+          "outcome": "Despesa rural tem checkbox de investimento; marca é removida ao trocar o tipo de linha.",
+          "evidence": "elaboration, migrations, imports, advisory-finance, shared advisory, CashbookTab, DeclarationStep e styles: contadores, índices, códigos inexistentes/validade, CSV e investimento rural."
+        },
+        {
+          "id": "observacoes-telas",
+          "title": "observacoes-telas",
+          "outcome": "Grid sem herança da proporção, spans em classe, seletor direto de ícone DropFile e comentário CI corrigido.",
+          "evidence": "elaboration, migrations, imports, advisory-finance, shared advisory, CashbookTab, DeclarationStep e styles: contadores, índices, códigos inexistentes/validade, CSV e investimento rural."
+        }
+      ],
+      "commands": [
+        {
+          "check": "install",
+          "code": 0,
+          "batch": "F2",
+          "time": "2026-10-06T10:05:31.3199771-03:00"
+        },
+        {
+          "check": "typecheck",
+          "code": 0,
+          "batch": "F2",
+          "time": "2026-10-06T10:05:54.4262794-03:00"
+        },
+        {
+          "check": "api",
+          "code": 0,
+          "batch": "F2",
+          "time": "2026-10-06T10:08:42.7848944-03:00"
+        },
+        {
+          "check": "shared",
+          "code": 0,
+          "batch": "F2",
+          "time": "2026-10-06T10:08:49.7860720-03:00"
+        },
+        {
+          "check": "web",
+          "code": 0,
+          "batch": "F2",
+          "time": "2026-10-06T10:09:05.5136501-03:00"
+        },
+        {
+          "check": "css",
+          "code": 0,
+          "batch": "F2",
+          "time": "2026-10-06T10:09:12.7493304-03:00"
+        },
+        {
+          "check": "build",
+          "code": 0,
+          "batch": "F2",
+          "time": "2026-10-06T10:09:44.7034202-03:00"
+        },
+        {
+          "check": "db",
+          "code": 0,
+          "batch": "F2",
+          "time": "2026-10-06T10:09:50.5490409-03:00"
+        }
+      ]
+    },
+    "repair": {
+      "ok": true,
+      "checks": "Fontes oficiais obtidas e comparadas; link quebrado do manual substituído. Código de imposto pago só até 2025, conforme CSV histórico e manual de 2026; ocupações 229/230/231/232 respeitam a transição oficial. Incluído e validado na integração final."
+    }
+  },
+  {
+    "key": "integracao",
+    "verify": {
+      "ok": true,
+      "problems": [],
+      "checks": "Integração no branch llypedev/fervent-franklin-qcc0y1, a partir de 95a7066. Migração estrutural 0004_onda2 e migração de dados 0005_remove_senha_inss geradas com Drizzle, sem editar snapshots/journal manualmente. db:check sem mudanças pendentes. Todas as suítes de pnpm test executadas por pacote, sequencialmente e com dois workers no Vitest para limitar memória: API 32 arquivos/337 testes, shared 15/140, web 21/68, sync 5 testes (550 testes no total). CSS 9 testes, typecheck e build web verdes. Typecheck final e ecac-robot repetidos após unificar addDays. Migrações testadas com PGlite, incluindo dados antigos, reaplicação e preservação da senha eCAC. Testes extras de interação entre lotes: quota bulk/concurrente, prioridade do envio, contrato vencido e pai/filho eCAC interrompido. Não foram usadas credenciais ou serviços reais de SERPRO, Meta, Evolution, SMTP, Asaas ou Omie. Não houve deploy nem migração em banco de produção. Ambiente: Windows, Node 24.20, pnpm 10.28.0. O build conserva o aviso de bundle grande; não impede a compilação.",
+      "commands": [
+        {
+          "time": "2026-10-06T10:11:17.8025604-03:00",
+          "code": 0,
+          "check": "install",
+          "batch": "integrated"
+        },
+        {
+          "time": "2026-10-06T10:11:23.8162395-03:00",
+          "code": 0,
+          "check": "db",
+          "batch": "integrated"
+        },
+        {
+          "time": "2026-10-06T10:11:49.7143251-03:00",
+          "code": 0,
+          "check": "typecheck",
+          "batch": "integrated"
+        },
+        {
+          "time": "2026-10-06T10:11:57.7275438-03:00",
+          "code": 0,
+          "check": "css",
+          "batch": "integrated"
+        },
+        {
+          "time": "2026-10-06T10:24:56.6393798-03:00",
+          "batch": "integrated",
+          "code": 0,
+          "check": "build-final"
+        },
+        {
+          "check": "api-final",
+          "batch": "integrated",
+          "code": 0,
+          "time": "2026-10-06T10:23:08.3040013-03:00"
+        },
+        {
+          "time": "2026-10-06T10:21:43.8345078-03:00",
+          "check": "shared-final",
+          "code": 0,
+          "batch": "integrated"
+        },
+        {
+          "time": "2026-10-06T10:24:25.0025329-03:00",
+          "batch": "integrated",
+          "code": 0,
+          "check": "web-final"
+        },
+        {
+          "time": "2026-10-06T10:19:11.5798826-03:00",
+          "code": 0,
+          "check": "sync",
+          "batch": "integrated"
+        }
+      ],
+      "initialFailures": [
+        {
+          "time": "2026-10-06T10:17:29.0914151-03:00",
+          "code": 1,
+          "check": "api",
+          "batch": "integrated"
+        },
+        {
+          "time": "2026-10-06T10:17:44.6226977-03:00",
+          "code": 1,
+          "check": "shared",
+          "batch": "integrated"
+        }
+      ],
+      "repairs": [
+        "No merge, restabelecida a política de prioridade/tentativas ao inserir jobs em lote e eliminada busca quadrática no estado da cobrança. Visualização do robô trata lease expirado sem tentativas como falha, liberando novo pedido.",
+        "Criação em massa passou a conferir o limite total antes de gravar, sob transação e trava por escritório/exercício. Declarações já existentes podem ser atualizadas no limite.",
+        "Conteúdo protegido do envio preserva as variáveis dos modelos Meta. Fixture de 300 orçamentos ganhou contrato com limite 500, pois o trial agora limita a 30; as mesmas verificações de 300 gravações e duplicatas foram mantidas.",
+        "Fan-out refeito sobre pais/filhos da fila A, conclusão pelos estados duráveis dos filhos e notificação atômica única, incluindo abandono no limite de tentativas. Aritmética de dias usa a biblioteca comum; textos residuais do robô/downloads deixaram de prometer captura automática.",
+        "Plano vencido permite apenas apagar credenciais ou desativar colaborador sem mudar nome, e-mail e função. O hook roda depois de ler o corpo. Teste cobre tentativas de cadastrar senha, editar, remover segredo, desativar e reativar.",
+        "Fontes oficiais obtidas e comparadas; link quebrado do manual substituído. Código de imposto pago só até 2025, conforme CSV histórico e manual de 2026; ocupações 229/230/231/232 respeitam a transição oficial."
+      ]
+    }
+  }
+]

@@ -9,6 +9,7 @@ import {
   ITEM_KINDS,
   formatCpfCnpj,
   getIndividualReport,
+  todayIso,
   type DeclarationSubstatus,
   type IndividualReportKey,
 } from '@verifco/shared';
@@ -17,7 +18,7 @@ import { backlogs, customers, declarations } from '../../db/schema';
 import { badRequest, forbidden } from '../../lib/errors';
 import { audit, can, centsSchema, guard, parse, requireUser, uuidParam, yearSchema } from '../../lib/http';
 import { customerScope, getCustomerForUser } from '../../services/customers';
-import { getOrCreateDeclaration } from '../../services/declarations';
+import { getOrCreateDeclaration, refreshDeclaration } from '../../services/declarations';
 import { queueDelivery } from '../../services/delivery';
 import { PdfBuilder, loadBranding } from '../../services/pdf';
 import { buildWorkbook } from '../../services/xlsx';
@@ -28,7 +29,8 @@ import { buildKitPdf, slug } from './kit';
 
 const INDIVIDUAL_PERMS = INDIVIDUAL_REPORTS.map((r) => r.permission);
 const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-const today = () => new Date().toISOString().slice(0, 10);
+/** Hoje em Brasília: o mesmo dia do dashboard e da aba de pendências (backlogs.ts). */
+const today = () => todayIso();
 const bool = z.preprocess((v) => (v === 'true' || v === '1' || v === true ? true : v === 'false' || v === '0' || v === false ? false : undefined), z.boolean().optional());
 
 const generateSchema = z.object({
@@ -143,9 +145,11 @@ export async function reportRoutes(app: FastifyInstance) {
     const body = parse(otherExpensesSchema, req.body);
     const { declaration } = await getDeclarationForUser(ctx, user, id);
     const clean = Object.fromEntries(Object.entries(body).filter(([, v]) => v !== null && v !== undefined && v > 0)) as typeof declaration.otherExpenses;
-    const [row] = await db.update(declarations).set({ otherExpenses: clean, updatedAt: new Date() }).where(eq(declarations.id, declaration.id)).returning();
+    await db.update(declarations).set({ otherExpenses: clean, updatedAt: new Date() }).where(eq(declarations.id, declaration.id));
+    // os outros gastos entram na análise de caixa: o saldo gravado (alerta do dashboard) acompanha
+    const row = await refreshDeclaration(ctx, declaration.id);
     await audit(req, 'update_other_expenses', 'declaration', declaration.id, clean);
-    return { otherExpenses: row.otherExpenses };
+    return { otherExpenses: row.otherExpenses, cashBalanceCents: row.cashBalanceCents };
   });
 
   app.post('/declarations/:id/reports/generate', { preHandler: guard(...INDIVIDUAL_PERMS) }, async (req, reply) => {
@@ -311,7 +315,7 @@ export async function reportRoutes(app: FastifyInstance) {
             email: r.email,
             year: r.year,
             description: r.b.description,
-            created: r.b.createdAt.toISOString().slice(0, 10),
+            created: todayIso(r.b.createdAt),
             due: r.b.dueDate,
             late: days(r.b.dueDate) || '',
           })),

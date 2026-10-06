@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CARNE_LEAO_TABLES,
   CASHBOOK_MAX_ROWS,
+  CASHBOOK_MODELS,
+  carneLeaoCodeProblem,
+  carneLeaoTables,
   carneLeaoFiles,
   carneLeaoLine,
   cashbookByMonth,
@@ -73,6 +77,59 @@ describe('livro caixa — conversão', () => {
     const model = parseCashbookRow('income', row(INCOME_HEADERS, ['99/99/9999', 'R01.003.001']), 2025);
     expect(model.ok).toBe(false);
     if (!model.ok) expect(model.errors[0]).toMatch(/Linha do modelo/);
+  });
+
+  it('confere os códigos nas tabelas do Carnê-Leão do ano-calendário (COB-9)', () => {
+    const errorsOf = (r: ReturnType<typeof parseCashbookRow>) => (r.ok ? [] : r.errors);
+    const income = (code: string, occupation = '', year = 2025) =>
+      parseCashbookRow('income', row(INCOME_HEADERS, [`10/03/${year}`, code, occupation, '100,00', '', 'Serviço', 'PF', '52998224725', '11144477735']), year);
+    expect(errorsOf(income('R01.001.001', '225'))).toEqual([]);
+    expect(errorsOf(income('R01.009.001'))).toEqual(['Código R01.009.001 não existe na tabela do Carnê-Leão 2025.']);
+    expect(errorsOf(income('R01.001.001', '999'))).toEqual(['Código de ocupação 999 não existe na tabela do Carnê-Leão 2025.']);
+    // ocupação desdobrada em 2024 (IN RFB 2.177/2024): 229 até 2023; 230, 231 e 232 depois
+    expect(errorsOf(income('R01.001.001', '229', 2023))).toEqual([]);
+    expect(errorsOf(income('R01.001.001', '229', 2024))[0]).toMatch(/^Código de ocupação 229 não existe na tabela do Carnê-Leão 2024\. Desde 2024, use 230/);
+    expect(errorsOf(income('R01.001.001', '231', 2024))).toEqual([]);
+    expect(errorsOf(income('R01.001.001', '231', 2023))).toEqual(['Código de ocupação 231 não existe na tabela do Carnê-Leão 2023.']);
+    expect(errorsOf(income('R01.001.001', '010'))).toEqual([]);
+    // serviços notariais e de registro: ocupação 117
+    expect(errorsOf(income('R01.001.002', '117'))).toEqual([]);
+    expect(errorsOf(income('R01.001.002', '225'))[0]).toMatch(/código de ocupação é 117/);
+
+    const payment = (code: string, year = 2025, history = 'Despesa') => parseCashbookRow('payment', row(PAYMENT_HEADERS, [`20/02/${year}`, code, '50,00', history]), year);
+    expect(errorsOf(payment('P10.01.00014'))).toEqual([]);
+    // contas de um plano de contas próprio do contribuinte valem (P10/P11 + código da conta)
+    expect(errorsOf(payment('P10.03.00001'))).toEqual([]);
+    expect(errorsOf(payment('P11.02.00007'))).toEqual([]);
+    expect(errorsOf(payment('P20.01.00009'))).toEqual(['Código P20.01.00009 não existe na tabela do Carnê-Leão 2025.']);
+    expect(errorsOf(payment('P30.01.00001'))).toEqual(['Código P30.01.00001 não existe na tabela do Carnê-Leão 2025.']);
+    // imposto pago: até 2025; a partir de 2026 entra sozinho no Carnê-Leão Web
+    expect(errorsOf(payment('P20.01.00004', 2025))).toEqual([]);
+    expect(errorsOf(payment('P20.01.00004', 2026))[0]).toMatch(/^Código P20\.01\.00004 não existe na tabela do Carnê-Leão 2026\. A partir de 2026, o imposto pago entra sozinho/);
+    // histórico até 255 caracteres (formato do arquivo de escrituração)
+    expect(errorsOf(payment('P10.01.00014', 2025, 'x'.repeat(255)))).toEqual([]);
+    expect(errorsOf(payment('P10.01.00014', 2025, 'x'.repeat(256)))).toEqual(['Histórico com mais de 255 caracteres (limite do Carnê-Leão Web).']);
+  });
+
+  it('tabelas de códigos por ano-calendário e modelos coerentes com elas', () => {
+    const codes = (t: { codes: { code: string }[] }) => t.codes.map((x) => x.code);
+    expect(codes(CARNE_LEAO_TABLES.income)).toEqual(['R01.001.001', 'R01.001.002', 'R01.002.001', 'R01.003.001', 'R01.004.001']);
+    expect(CARNE_LEAO_TABLES.chart.codes).toHaveLength(32);
+    expect(CARNE_LEAO_TABLES.chart.codes[0]).toEqual({ code: 'P10.01.00001', label: 'Água do escritório/consultório' });
+    expect(CARNE_LEAO_TABLES.occupation.codes).toHaveLength(135);
+    const t2023 = carneLeaoTables(2023);
+    const t2026 = carneLeaoTables(2026);
+    expect(codes(t2023.occupation)).toContain('229');
+    expect(codes(t2023.occupation)).not.toContain('230');
+    expect(codes(t2026.occupation)).toEqual(expect.arrayContaining(['230', '231', '232']));
+    expect(codes(t2026.occupation)).not.toContain('229');
+    expect(codes(carneLeaoTables(2025).generalPayment)).toContain('P20.01.00004');
+    expect(codes(t2026.generalPayment)).toEqual(['P20.01.00001', 'P20.01.00002', 'P20.01.00003']);
+    // os códigos dos modelos para baixar estão nas tabelas; em 2026 o modelo sai sem o imposto pago
+    for (const m of CASHBOOK_MODELS) for (const r of m.rows) expect(carneLeaoCodeProblem(m.kind, r[1], 2025), `${m.key} ${r[1]}`).toBeNull();
+    expect(cashbookModelCsv('pagamentos-gerais')!.content).toContain('P20.01.00004');
+    expect(cashbookModelCsv('pagamentos-gerais', 2026)!.content).not.toContain('P20.01.00004');
+    expect(cashbookModelCsv('pagamentos-gerais', 2026)!.content).toContain('P20.01.00001');
   });
 
   it('pagamentos com competência', () => {

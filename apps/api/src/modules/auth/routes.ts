@@ -2,7 +2,7 @@ import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import bcrypt from 'bcryptjs';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { ADMIN_ROLE_NAME, ALL_PERMISSIONS, DEFAULT_OPERATOR_PERMISSIONS, isValidCpfCnpj, onlyDigits } from '@verifco/shared';
+import { ADMIN_ROLE_NAME, ALL_PERMISSIONS, DEFAULT_OPERATOR_PERMISSIONS, addDaysIso, isValidCpfCnpj, onlyDigits, todayIso } from '@verifco/shared';
 import { contracts, offices, passwordResets, roles, userFavorites, users } from '../../db/schema';
 import { randomToken, sha256 } from '../../lib/crypto';
 import { badRequest, conflict, unauthorized } from '../../lib/errors';
@@ -13,6 +13,10 @@ import { LOCKOUT_NOTICE_JOB, PASSWORD_RESET_JOB } from './jobs';
 import { seedOfficeDefaults } from './seed-office';
 
 const password = z.string().min(8, 'A senha precisa ter ao menos 8 caracteres').max(200);
+
+/** Contrato de avaliação criado no cadastro do escritório. */
+const TRIAL_DAYS = 30;
+const TRIAL_DECLARATION_LIMIT = 30;
 
 export async function serializeMe(app: FastifyInstance, userId: string) {
   const { db } = app.ctx;
@@ -73,15 +77,16 @@ export async function authRoutes(app: FastifyInstance) {
           isOwner: true,
         })
         .returning();
-      const year = new Date().getFullYear();
+      // avaliação de 30 dias contados no dia de Brasília (services/plan.ts aplica o limite e a validade)
+      const today = todayIso();
       await tx.insert(contracts).values({
         officeId: office.id,
         name: 'Avaliação gratuita',
         plan: 'trial',
-        declarationLimit: 30,
-        year,
-        startsAt: new Date().toISOString().slice(0, 10),
-        expiresAt: new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10),
+        declarationLimit: TRIAL_DECLARATION_LIMIT,
+        year: Number(today.slice(0, 4)),
+        startsAt: today,
+        expiresAt: addDaysIso(today, TRIAL_DAYS),
       });
       return { office, user };
     });

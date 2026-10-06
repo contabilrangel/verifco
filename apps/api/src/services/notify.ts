@@ -1,4 +1,4 @@
-import type { Db } from '../db/client';
+import type { DbOrTx } from '../db/client';
 import { notifications } from '../db/schema';
 
 /**
@@ -7,7 +7,7 @@ import { notifications } from '../db/schema';
  * Informe `customerId` sempre que a notificação falar de um cliente.
  */
 export async function notify(
-  db: Db,
+  db: DbOrTx,
   input: { officeId: string; userId?: string | null; customerId?: string | null; title: string; body?: string; link?: string },
 ) {
   await db.insert(notifications).values({

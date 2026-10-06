@@ -9,7 +9,6 @@ import {
   formatCpfCnpj,
   formatDate,
   formatMoney,
-  type DeclarationItem,
   type DeclarationSubstatus,
 } from '@verifco/shared';
 import type { AppContext } from '../../context';
@@ -258,12 +257,4 @@ export async function buildKitPdf(ctx: AppContext, declaration: DeclarationRow, 
   if (!hasItems) pdf.paragraph('Esta declaração ainda não tem linhas cadastradas; o kit mostra apenas os totais gravados.', { muted: true, size: 9 });
   renderPdf(pdf, brand, sections);
   return { buffer: await finishPdf(pdf), filename: kitFilename(customer, year) };
-}
-
-/** Itens da declaração do ano anterior, usados no checklist de documentos. */
-export async function previousYearItems(ctx: AppContext, customerId: string, year: number): Promise<DeclarationItem[]> {
-  const prev = await ctx.db.query.declarations.findFirst({
-    where: (d, { and, eq }) => and(eq(d.customerId, customerId), eq(d.exerciseYear, year - 1)),
-  });
-  return prev ? loadItems(ctx, prev.id) : [];
 }

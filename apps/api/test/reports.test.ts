@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import ExcelJS from 'exceljs';
 import { backlogs, declarationItems, declarations } from '../src/db/schema';
 import { VALID_CPFS, createEmployee, createTestEnv, registerOffice, type Api, type TestEnv } from './helpers';
@@ -112,6 +112,24 @@ describe('relatórios individuais', () => {
     expect((await b.api.get(`/api/reports/declaration?customerId=${cid}&year=2026`)).status).toBe(404);
   });
 
+  it('salvar outros gastos atualiza o saldo de caixa gravado (alerta do dashboard)', async () => {
+    const { api, officeId } = await registerOffice(env);
+    const cid = await newCustomer(api, 4, 'Olga Prado');
+    const d = await declaration(officeId, cid, 2026, {}, yearItems(0));
+    const stored = async () => (await env.ctx.db.query.declarations.findFirst({ where: (t, { eq }) => eq(t.id, d.id) }))!.cashBalanceCents;
+    expect(await stored()).toBeNull();
+
+    const one = await api.put(`/api/declarations/${d.id}/other-expenses`, { creditCardCents: 100_000 });
+    expect(one.status).toBe(200);
+    expect(one.body.cashBalanceCents).not.toBeNull();
+    expect(await stored()).toBe(one.body.cashBalanceCents);
+    // mais outros gastos (aplicações) baixam o saldo na mesma medida
+    const two = await api.put(`/api/declarations/${d.id}/other-expenses`, { creditCardCents: 300_000 });
+    expect(two.body.cashBalanceCents).toBe(one.body.cashBalanceCents - 200_000);
+    expect(await stored()).toBe(two.body.cashBalanceCents);
+    expect((await api.get(`/api/declarations/${d.id}/cash-analysis`)).body.balanceCents).toBe(two.body.cashBalanceCents);
+  });
+
   it('inclui o cônjuge quando ele também é cliente', async () => {
     const { api, officeId } = await registerOffice(env);
     const holder = await newCustomer(api, 2, 'Otávio Prado');
@@ -141,6 +159,32 @@ describe('relatórios individuais', () => {
     ]);
     const pdf = await api.post(`/api/declarations/${d.id}/reports/generate`, { reports: ['cash_analysis', 'fine_mesh'], includeSpouse: true });
     expect(pdf.status).toBe(200);
+  });
+
+  it('acha o cônjuge pelo CPF gravado só com dígitos, sem regexp_replace por linha (DAD-7)', async () => {
+    const { api, officeId } = await registerOffice(env);
+    const holder = await newCustomer(api, 6, 'Rui Moura');
+    const spouse = await newCustomer(api, 7, 'Sara Moura');
+    // dependente lançado na ficha com o CPF formatado: a API grava só os dígitos
+    const d = (await api.put(`/api/customers/${holder}/declarations/2026`, {})).body;
+    const masked = VALID_CPFS[7].replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4');
+    const dep = await api.post(`/api/declarations/${d.id}/items`, { kind: 'dependent', ownerName: 'Sara Moura', ownerCpf: masked, extra: { relationship: 'spouse' } });
+    expect(dep.status).toBe(201);
+    expect(dep.body.item.ownerCpf).toBe(VALID_CPFS[7]);
+    const sd = await declaration(officeId, spouse, 2026, {}, yearItems(2));
+
+    const client = (env.ctx.db as unknown as { $client: { query: (...args: unknown[]) => unknown } }).$client;
+    const spy = vi.spyOn(client, 'query');
+    let sqls: string[] = [];
+    try {
+      // a partir da declaração da cônjuge, a busca é pelas linhas de dependente das outras declarações do exercício
+      expect((await api.get(`/api/declarations/${sd.id}/reports`)).body.spouse).toMatchObject({ available: true, name: 'Rui Moura' });
+      sqls = spy.mock.calls.map((c) => String(c[0]));
+    } finally {
+      spy.mockRestore();
+    }
+    expect(sqls.some((s) => s.includes('"declaration_items"') && s.includes('"owner_cpf" = '))).toBe(true);
+    expect(sqls.filter((s) => /regexp_replace/i.test(s))).toEqual([]);
   });
 
   it('envia os relatórios por e-mail com anexo, sem duplicar', async () => {
@@ -230,6 +274,32 @@ describe('relatórios gerais', () => {
     expect((await readXlsx(x.raw.rawPayload)).worksheets[0].rowCount).toBe(3);
     const emp = await createEmployee(env, api, ['report.results']);
     expect((await emp.api.get('/api/reports/backlogs')).status).toBe(403);
+  });
+
+  it('documentos faltantes: a pendência que vence hoje não aparece vencida às 22h de Brasília (CON-7)', async () => {
+    // só o relógio (Date) é falso: 22h de 06/10/2026 em Brasília, 01h de 07/10 em UTC
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2026-10-07T01:00:00Z'));
+      const { api, officeId } = await registerOffice(env);
+      const c = await newCustomer(api, 6, 'Gil Noturno');
+      const d = await declaration(officeId, c, 2026, { stage: 'filling', substatus: 'missing_documents' });
+      await env.ctx.db.insert(backlogs).values([
+        { officeId, customerId: c, declarationId: d.id, description: 'Vence hoje', dueDate: '2026-10-06' },
+        { officeId, customerId: c, declarationId: d.id, description: 'Venceu ontem', dueDate: '2026-10-05' },
+      ]);
+      const all = await api.get('/api/reports/backlogs?year=2026');
+      expect(all.body.totals).toMatchObject({ items: 2, overdue: 1 });
+      const late = Object.fromEntries(all.body.groups[0].items.map((i: any) => [i.description, i.overdueDays]));
+      expect(late).toEqual({ 'Venceu ontem': 1, 'Vence hoje': 0 });
+      const overdue = await api.get('/api/reports/backlogs?overdueOnly=true');
+      expect(overdue.body.groups[0].items.map((i: any) => i.description)).toEqual(['Venceu ontem']);
+      // a aba de pendências da declaração (brazilToday) concorda com o relatório
+      const tab = await api.get(`/api/declarations/${d.id}/backlogs`);
+      expect(tab.body.filter((b: any) => b.overdue).map((b: any) => b.description)).toEqual(['Venceu ontem']);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('restituição: só futuras e ordenação por data ou nome', async () => {

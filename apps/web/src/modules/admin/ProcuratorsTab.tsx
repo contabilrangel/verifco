@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router';
 import { CloudUpload, FileKey, FileSpreadsheet, Globe, KeyRound, Laptop, Pencil, Plus, Trash2 } from 'lucide-react';
-import { formatCpfCnpj, isValidCpfCnpj } from '@verifco/shared';
+import { addDaysIso, formatCpfCnpj, isValidCpfCnpj, todayIso } from '@verifco/shared';
 import { Alert, Button, Card, ConfirmDialog, DropFile, EmptyState, Input, Loading, MenuItem, Modal, Select, Tag, useToast, type Tone } from '../../ds';
 import { api } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
@@ -9,8 +9,9 @@ import { useAction, useApi } from '../../lib/hooks';
 import { formatDate } from '../../lib/format';
 import { AUTH_TYPES, RowMenu, SearchBox, matches, plural, type ProcuratorRow } from './shared';
 
-const today = () => new Date().toISOString().slice(0, 10);
-const in30 = () => new Date(Date.now() + 30 * 86400_000).toISOString().slice(0, 10);
+// hoje no horário de Brasília, como no servidor
+const today = () => todayIso();
+const in30 = () => addDaysIso(todayIso(), 30);
 
 /** Situação do certificado para a coluna da tabela. */
 function certificateInfo(p: ProcuratorRow): { tone: Tone; label: string } | null {

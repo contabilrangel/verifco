@@ -15,6 +15,7 @@
 .vf-fin-link { background: none; border: 0; padding: 0; color: var(--color-interactive); font: var(--text-sm-bold); cursor: pointer; text-align: left; }
 .vf-fin-link:hover:not(:disabled) { text-decoration: underline; }
 .vf-fin-link:disabled { color: var(--color-text-medium); cursor: default; }
+.vf-fin-sync { display: flex; flex-direction: column; align-items: flex-start; gap: var(--size-spacing-02); }
 .vf-fin-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: var(--size-spacing-03) var(--size-spacing-04); margin: 0; }
 .vf-fin-facts dt { font: var(--text-xs-bold); letter-spacing: 0.02em; text-transform: uppercase; color: var(--color-text-low); }
 .vf-fin-facts dd { margin: 2px 0 0; font: var(--text-sm-regular); font-variant-numeric: tabular-nums; }

@@ -23,10 +23,13 @@ const ALLOWED_ATTRS = new Set([
 const URL_ATTRS = new Set(['href', 'src']);
 const VOID_TAGS = new Set(['br', 'hr', 'img', 'col']);
 
+/** Caractere de uma referência numérica; código fora do Unicode vira U+FFFD (como no navegador), sem lançar erro. */
+const fromCode = (n: number) => (Number.isInteger(n) && n > 0 && n <= 0x10ffff && !(n >= 0xd800 && n <= 0xdfff) ? String.fromCodePoint(n) : '\ufffd');
+
 const decodeEntities = (s: string) =>
   s
-    .replace(/&#x([0-9a-f]+);?/gi, (_, h: string) => String.fromCodePoint(parseInt(h, 16)))
-    .replace(/&#(\d+);?/g, (_, d: string) => String.fromCodePoint(Number(d)))
+    .replace(/&#x([0-9a-f]+);?/gi, (_, h: string) => fromCode(parseInt(h, 16)))
+    .replace(/&#(\d+);?/g, (_, d: string) => fromCode(Number(d)))
     .replace(/&colon;/gi, ':')
     .replace(/&tab;/gi, '\t')
     .replace(/&newline;/gi, '\n')
@@ -107,4 +110,85 @@ export function sanitizeHtml(input: string): string {
   html = html.replace(/</g, '&lt;').replace(/>/g, '&gt;');
   // eslint-disable-next-line no-control-regex
   return html.replace(/\u0000(\d+)\u0000/g, (_, i: string) => kept[Number(i)]);
+}
+
+// ---------------------------------------------------------------------------
+// Escape e conversão para texto simples
+// ---------------------------------------------------------------------------
+
+const ESCAPES: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+
+/** Escapa um valor para entrar no HTML (texto ou atributo entre aspas). */
+export const escapeHtml = (s: string): string => String(s ?? '').replace(/[&<>"']/g, (c) => ESCAPES[c]);
+
+/** Entidades nomeadas usuais em textos em português (as numéricas são decodificadas todas). */
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: '&', AMP: '&', lt: '<', LT: '<', gt: '>', GT: '>', quot: '"', QUOT: '"', apos: "'", nbsp: '\u00a0', shy: '\u00ad',
+  colon: ':', tab: '\t', newline: '\n',
+  hellip: '…', ndash: '–', mdash: '—', lsquo: '‘', rsquo: '’', sbquo: '‚', ldquo: '“', rdquo: '”', bdquo: '„', laquo: '«', raquo: '»',
+  bull: '•', middot: '·', copy: '©', reg: '®', trade: '™', deg: '°', ordm: 'º', ordf: 'ª', sect: '§', para: '¶',
+  euro: '€', cent: '¢', pound: '£', yen: '¥', times: '×', divide: '÷', plusmn: '±', frac12: '½', frac14: '¼', frac34: '¾',
+  sup1: '¹', sup2: '²', sup3: '³', iexcl: '¡', iquest: '¿',
+  Aacute: 'Á', aacute: 'á', Agrave: 'À', agrave: 'à', Acirc: 'Â', acirc: 'â', Atilde: 'Ã', atilde: 'ã', Auml: 'Ä', auml: 'ä',
+  Eacute: 'É', eacute: 'é', Egrave: 'È', egrave: 'è', Ecirc: 'Ê', ecirc: 'ê', Euml: 'Ë', euml: 'ë',
+  Iacute: 'Í', iacute: 'í', Igrave: 'Ì', igrave: 'ì', Icirc: 'Î', icirc: 'î', Iuml: 'Ï', iuml: 'ï',
+  Oacute: 'Ó', oacute: 'ó', Ograve: 'Ò', ograve: 'ò', Ocirc: 'Ô', ocirc: 'ô', Otilde: 'Õ', otilde: 'õ', Ouml: 'Ö', ouml: 'ö',
+  Uacute: 'Ú', uacute: 'ú', Ugrave: 'Ù', ugrave: 'ù', Ucirc: 'Û', ucirc: 'û', Uuml: 'Ü', uuml: 'ü',
+  Ccedil: 'Ç', ccedil: 'ç', Ntilde: 'Ñ', ntilde: 'ñ',
+};
+
+/**
+ * Decodifica as entidades numa só passada, como o navegador: `&amp;lt;` vira `&lt;`, não `<`.
+ * Referências numéricas valem com ou sem ponto e vírgula; nomeadas desconhecidas ficam como estão.
+ */
+export function decodeHtmlEntities(s: string): string {
+  return String(s ?? '').replace(/&(?:#x([0-9a-f]+);?|#(\d+);?|([a-z][a-z0-9]*);)/gi, (full, hex?: string, dec?: string, name?: string) => {
+    if (hex) return fromCode(parseInt(hex, 16));
+    if (dec) return fromCode(Number(dec));
+    return (name && NAMED_ENTITIES[name]) ?? full;
+  });
+}
+
+export interface HtmlToTextOptions {
+  /** Links como "texto (endereço)", para texto corrido; por padrão, "texto: endereço". */
+  linksInParens?: boolean;
+  /** Linha em branco depois de cada parágrafo, título, item e bloco (texto de PDF); por padrão, uma quebra de linha. */
+  blankLines?: boolean;
+}
+
+const stripTags = (s: string) => s.replace(/<[^>]*>/g, '');
+
+/**
+ * HTML dos templates em texto simples: é o texto do WhatsApp, da prévia da mala direta e dos PDFs
+ * do financeiro. Quebra a linha em `<br>`, `<hr>` e no fim de parágrafos, `<div>`, títulos, itens
+ * de lista e linhas de tabela (com ou sem atributos); põe "• " antes de cada item; mostra o
+ * endereço dos links; e decodifica todas as entidades (`&#39;`, `&quot;`, `&nbsp;`...).
+ */
+export function htmlToText(html: string, opts: HtmlToTextOptions = {}): string {
+  const block = opts.blankLines ? '\n\n' : '\n';
+  const link = (href: string, inner: string) => {
+    const url = decodeHtmlEntities(href).trim();
+    const label = decodeHtmlEntities(stripTags(inner)).trim();
+    if (!url) return inner;
+    // sem texto ou com o próprio endereço como texto: o endereço aparece uma vez só
+    if (!label || label === url) return href;
+    return opts.linksInParens ? `${inner} (${href})` : `${inner}: ${href}`;
+  };
+  const text = String(html ?? '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/<br\b[^>]*>/gi, '\n')
+    .replace(/<hr\b[^>]*>/gi, block)
+    .replace(/<\/(?:p|div|li|h[1-6]|tr|blockquote|pre)\s*>/gi, block)
+    .replace(/<\/t[dh]\s*>/gi, ' ')
+    .replace(/<li\b[^>]*>/gi, '• ')
+    .replace(
+      /<a\b[^>]*?\shref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))[^>]*>([\s\S]*?)<\/a\s*>/gi,
+      (_, dq: string | undefined, sq: string | undefined, bare: string | undefined, inner: string) => link(dq ?? sq ?? bare ?? '', inner),
+    );
+  return decodeHtmlEntities(stripTags(text))
+    .replace(/\u00a0/g, ' ')
+    .replace(/\u00ad/g, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }

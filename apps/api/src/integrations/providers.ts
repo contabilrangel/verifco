@@ -24,6 +24,11 @@ export interface OutgoingWhatsApp {
   to: string;
   text: string;
   document?: { filename: string; content: Buffer; contentType?: string };
+  /** Cliente do envio: na Cloud API da Meta, decide a janela de 24 h pela última mensagem dele. */
+  customerId?: string | null;
+  /** Tipo de envio (template do Verifco) e as variáveis usadas, para montar o modelo aprovado. */
+  templateKey?: string | null;
+  values?: Record<string, string | number | null | undefined>;
 }
 
 export interface WhatsAppSender {

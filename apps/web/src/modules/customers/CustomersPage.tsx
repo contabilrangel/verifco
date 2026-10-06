@@ -91,6 +91,12 @@ const EMPTY: Filters = {
 
 const toggle = (list: string[], v: string) => (list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
 
+/** Status da declaração para a ação em massa: "Finalizado" só para quem pode finalizar. */
+const substatusOptions = (canFinish: boolean) =>
+  Object.entries(DECLARATION_SUBSTATUS)
+    .filter(([v]) => canFinish || v !== 'finished')
+    .map(([v, label]) => ({ value: v, label }));
+
 export function CustomersPage() {
   const { can } = useAuth();
   const { year } = useYear();
@@ -519,6 +525,7 @@ function BulkDialogs({
   onClose: () => void;
   onRun: (action: string, value?: unknown) => void;
 }) {
+  const { can } = useAuth();
   const [value, setValue] = useState('');
   const [groups, setGroups] = useState<string[]>([]);
   const [groupMode, setGroupMode] = useState<'groups_add' | 'groups_remove' | 'groups_set'>('groups_add');
@@ -575,7 +582,7 @@ function BulkDialogs({
         <Select label="Situação" placeholder="Selecione" value={value} onChange={(e) => setValue(e.target.value)} options={[{ value: 'active', label: 'Ativo' }, { value: 'inactive', label: 'Inativo' }]} />
       )}
       {kind === 'substatus' && (
-        <Select label="Novo status" placeholder="Selecione" value={value} onChange={(e) => setValue(e.target.value)} options={Object.entries(DECLARATION_SUBSTATUS).map(([v, label]) => ({ value: v, label }))} />
+        <Select label="Novo status" placeholder="Selecione" value={value} onChange={(e) => setValue(e.target.value)} options={substatusOptions(can('declaration.finish'))} />
       )}
       {kind === 'responsible' && (
         <Select label="Responsável" placeholder="Sem responsável" value={value} onChange={(e) => setValue(e.target.value)} options={(employees.data ?? []).map((u) => ({ value: u.id, label: u.name }))} />

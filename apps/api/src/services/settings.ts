@@ -1,5 +1,5 @@
 import { eq } from 'drizzle-orm';
-import type { Db } from '../db/client';
+import type { DbOrTx } from '../db/client';
 import { offices, type OfficeSettings } from '../db/schema';
 
 /** Preferências do escritório com os valores padrão aplicados. */
@@ -23,7 +23,7 @@ export const DEFAULT_SETTINGS: Required<OfficeSettings> = {
   whatsappServiceNumber: '',
 };
 
-export async function getOfficeSettings(db: Db, officeId: string): Promise<Required<OfficeSettings>> {
+export async function getOfficeSettings(db: DbOrTx, officeId: string): Promise<Required<OfficeSettings>> {
   const office = await db.query.offices.findFirst({ where: eq(offices.id, officeId) });
   return { ...DEFAULT_SETTINGS, ...(office?.settings ?? {}) } as Required<OfficeSettings>;
 }

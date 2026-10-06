@@ -1,7 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { eq, sql } from 'drizzle-orm';
-import { budgets, darfs, declarationItems, declarations, deliveries } from '../src/db/schema';
+import { and, eq, sql } from 'drizzle-orm';
+import { budgets, checklists, customers, darfs, declarationItems, declarations, deliveries, jobs, messages } from '../src/db/schema';
 import { VALID_CPFS, createEmployee, createTestEnv, registerOffice, type Api, type TestEnv } from './helpers';
+import { pdfContent } from './pdf-text';
+import { customerLogin } from './portal-helpers';
 
 let env: TestEnv;
 beforeAll(async () => {
@@ -112,15 +114,19 @@ describe('mala direta', () => {
 
     const requestId = uuid();
     const sent = await api.post('/api/mailing/send', { ...body, requestId });
-    expect(sent.status).toBe(200);
-    expect(sent.body.queued).toBe(1);
+    // o envio vira um pedido na fila: a resposta traz a revisão e o andamento
+    expect(sent.status).toBe(202);
+    expect(sent.body).toMatchObject({ status: 'queued', repeated: false, customers: 1, deliveries: { email: 1, whatsapp: 0, total: 1 } });
     expect(sent.body.skipped[0].count).toBe(2);
     const again = await api.post('/api/mailing/send', { ...body, requestId });
-    expect(again.body.queued).toBe(0);
-    expect(again.body.alreadyQueued).toBe(1);
+    expect(again.body).toMatchObject({ repeated: true, jobId: sent.body.jobId });
+    await env.ctx.jobs.drain();
+    const status = await api.get(`/api/mailing/requests/${requestId}`);
+    expect(status.body).toMatchObject({ status: 'done', progress: 100, result: { queued: 1, alreadyQueued: 0, failed: [] } });
+    await api.post('/api/mailing/send', { ...body, requestId });
+    await env.ctx.jobs.drain();
     const rows = await env.ctx.db.select().from(deliveries).where(eq(deliveries.officeId, officeId));
     expect(rows).toHaveLength(1);
-    await env.ctx.jobs.drain();
     expect(env.providers.sentEmails.filter((e) => e.officeId === officeId)).toHaveLength(1);
 
     // ambos os canais: e-mail para quem tem, WhatsApp para quem tem celular
@@ -177,8 +183,9 @@ describe('mala direta', () => {
 
     const requestId = uuid();
     const sent = await api.post('/api/mailing/send', { ...body, requestId });
-    expect(sent.body.queued).toBe(1);
+    expect(sent.body.deliveries.total).toBe(1);
     await env.ctx.jobs.drain();
+    expect((await api.get(`/api/mailing/requests/${requestId}`)).body).toMatchObject({ status: 'done', result: { queued: 1 }, attachments: { total: 1, done: 1, failed: 0 } });
     await api.post('/api/mailing/send', { ...body, requestId });
     await env.ctx.jobs.drain();
     const emails = env.providers.sentEmails.filter((e) => e.officeId === officeId);
@@ -198,7 +205,7 @@ describe('mala direta', () => {
     expect(prev.body.sample.subject).toContain('Declaração IRPF');
 
     const sent = await api.post('/api/mailing/send', { type: 'checklist_pdf', channel: 'email', year: 2026, customerIds: [a], requestId: uuid() });
-    expect(sent.body.queued).toBe(1);
+    expect(sent.body.deliveries.total).toBe(1);
     await env.ctx.jobs.drain();
     const email = env.providers.sentEmails.find((e) => e.officeId === officeId)!;
     expect(email.attachments?.[0].filename).toMatch(/^checklist-irpf-2026-helena-orc\.pdf$/);
@@ -258,6 +265,7 @@ describe('e-mails enviados', () => {
     const b = await registerOffice(env);
     const c = await customer(a.api, 6);
     await a.api.post('/api/mailing/send', { type: 'marketing', channel: 'email', year: 2026, customerIds: [c], requestId: uuid() });
+    await env.ctx.jobs.drain();
     const id = (await a.api.get('/api/deliveries')).body.data[0].id;
     expect((await b.api.get(`/api/deliveries/${id}`)).status).toBe(404);
     expect((await b.api.get('/api/deliveries')).body.total).toBe(0);
@@ -267,5 +275,238 @@ describe('e-mails enviados', () => {
     const viewer = await createEmployee(env, a.api, ['mailing.list']);
     expect((await viewer.api.get('/api/deliveries')).status).toBe(200);
     expect((await viewer.api.post(`/api/deliveries/${id}/resend`)).status).toBe(403);
+  });
+});
+
+describe('mala direta: checklist digital (INT-2)', () => {
+  it('gera link e código que funcionam, libera o checklist e guarda o histórico mascarado; a prévia não gera acesso', async () => {
+    const { api, officeId } = await registerOffice(env);
+    const rita = await customer(api, 0, { name: 'Rita Checklist', mobile: '31977770000' });
+    const locked = await customer(api, 1, { name: 'Sergio Bloqueado' });
+    await env.ctx.db.insert(declarations).values({ officeId, customerId: locked, exerciseYear: 2026, checklistLocked: true });
+    const body = { type: 'checklist_digital', channel: 'both', year: 2026, customerIds: [rita, locked] };
+
+    const preview = await api.post('/api/mailing/preview', body);
+    expect(preview.body.sample.customerName).toBe('Rita Checklist');
+    expect(preview.body.sample.html).toContain('<strong>(gerado no envio)</strong>');
+    expect(preview.body.sample.text).toContain('(gerado no envio)');
+    expect(preview.body.skipped).toEqual([expect.objectContaining({ reason: 'checklist_locked', count: 1, names: ['Sergio Bloqueado'] })]);
+    // a prévia não cria checklist nem gera link
+    expect(await env.ctx.db.select().from(checklists).where(eq(checklists.officeId, officeId))).toHaveLength(0);
+
+    const requestId = uuid();
+    expect((await api.post('/api/mailing/send', { ...body, requestId })).status).toBe(202);
+    await env.ctx.jobs.drain();
+    const mail = env.providers.sentEmails.find((m) => m.officeId === officeId)!;
+    const [, link, token] = /href="([^"]*\/checklist\/([\w-]+))"/.exec(mail.html)!;
+    const code = /<strong>(\d{6})<\/strong>/.exec(mail.html)![1];
+    expect(link).not.toContain('/portal');
+    const wa = env.providers.sentWhatsApp.find((w) => w.officeId === officeId)!;
+    expect(wa.text).toContain(link);
+    expect(wa.text).toContain(code);
+
+    // o link e o código abrem o checklist do exercício, criado no envio
+    const login = await customerLogin(env, token, VALID_CPFS[0], code);
+    expect(login.status).toBe(200);
+    const view = await login.api!.get(`/api/portal/checklists/${login.body.checklistId}`);
+    expect(view.status).toBe(200);
+    expect(view.body).toMatchObject({ exerciseYear: 2026, readOnly: false });
+    const office = await api.get(`/api/customers/${rita}/checklist?year=2026`);
+    expect(office.body.checklist.sentAt).not.toBeNull();
+    expect(office.body.checklist.accessExpiresAt).not.toBeNull();
+
+    // histórico (envios e mensagens) com link e código mascarados
+    const stored = await env.ctx.db.select().from(deliveries).where(eq(deliveries.officeId, officeId));
+    expect(stored).toHaveLength(2);
+    for (const d of stored) {
+      expect(d.body).not.toContain(token);
+      expect(d.body).not.toContain(code);
+      expect(d.body).toContain('••••••');
+    }
+    const chat = await env.ctx.db.select().from(messages).where(eq(messages.officeId, officeId));
+    expect(chat).toHaveLength(1);
+    expect(chat[0].body).not.toContain(code);
+    // o conteúdo real, cifrado no job de envio, é apagado depois da entrega
+    const sendJobs = await env.ctx.db.select().from(jobs).where(and(eq(jobs.officeId, officeId), eq(jobs.type, 'delivery.send')));
+    expect(sendJobs).toHaveLength(2);
+    expect(sendJobs.every((j) => j.status === 'done' && !('sealed' in j.payload))).toBe(true);
+
+    // repetir o pedido não gera outro acesso: o enviado continua valendo
+    await api.post('/api/mailing/send', { ...body, requestId });
+    await env.ctx.jobs.drain();
+    expect(await env.ctx.db.select().from(deliveries).where(eq(deliveries.officeId, officeId))).toHaveLength(2);
+    expect((await customerLogin(env, token, VALID_CPFS[0], code)).status).toBe(200);
+    // quem estava bloqueado não ganhou checklist
+    expect(await env.ctx.db.select().from(checklists).where(eq(checklists.officeId, officeId))).toHaveLength(1);
+  });
+});
+
+describe('mala direta: orçamento (INT-5)', () => {
+  it('envia pelo fluxo do financeiro (link de aprovação, "Enviado", etapa) e pula quem já aprovou', async () => {
+    const { api, officeId } = await registerOffice(env);
+    const paula = await customer(api, 2, { name: 'Paula Rascunho' });
+    const quintino = await customer(api, 3, { name: 'Quintino Aprovado' });
+    const renato = await customer(api, 4, { name: 'Renato Recusado' });
+    const boleto = (await api.get('/api/finance/payment-methods')).body.find((m: any) => m.type === 'boleto');
+    const draft = await api.post('/api/finance/budgets', { customerId: paula, exerciseYear: 2026, category: 'irpf', amountCents: 60_000, paymentMethodId: boleto.id, installments: 3, description: 'Declaração completa' });
+    expect(draft.status).toBe(201);
+    const approved = await api.post('/api/finance/budgets', { customerId: quintino, exerciseYear: 2026, category: 'irpf', amountCents: 50_000, status: 'approved' });
+    expect(approved.body.status).toBe('approved');
+    await env.ctx.db.insert(budgets).values({ officeId, customerId: renato, exerciseYear: 2026, amountCents: 40_000, totalCents: 40_000, status: 'rejected' });
+    const body = { type: 'budget', channel: 'email', year: 2026, customerIds: [paula, quintino, renato] };
+
+    const preview = await api.post('/api/mailing/preview', body);
+    expect(preview.body.type.templateKey).toBe('budget_digital');
+    expect(preview.body.skipped).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ reason: 'budget_approved', count: 1, names: ['Quintino Aprovado'] }),
+        expect.objectContaining({ reason: 'no_budget', count: 1, names: ['Renato Recusado'] }),
+      ]),
+    );
+    expect(preview.body.sample.html).toMatch(/600,00 \(3x de R\$\s200,00\)/);
+    expect(preview.body.sample.html).toContain('href="(gerado no envio)"');
+    // a prévia não gera link nem muda o orçamento
+    expect(await env.ctx.db.query.budgets.findFirst({ where: eq(budgets.id, draft.body.id) })).toMatchObject({ status: 'draft', approvalTokenHash: null, sentAt: null });
+
+    const sent = await api.post('/api/mailing/send', { ...body, requestId: uuid() });
+    expect(sent.body.customers).toBe(1);
+    await env.ctx.jobs.drain();
+    const row = await env.ctx.db.query.budgets.findFirst({ where: eq(budgets.id, draft.body.id) });
+    expect(row?.status).toBe('sent');
+    expect(row?.sentAt).not.toBeNull();
+    const mails = env.providers.sentEmails.filter((m) => m.officeId === officeId);
+    expect(mails).toHaveLength(1);
+    expect(mails[0].subject).toContain('Declaração IRPF');
+    expect(mails[0].html).toMatch(/600,00 \(3x de R\$\s200,00\)/);
+    const token = /\/orcamento\/([\w-]+)"/.exec(mails[0].html)![1];
+    const pub = await env.app.inject({ method: 'GET', url: `/api/public/budgets/${token}` });
+    expect(pub.statusCode).toBe(200);
+    expect(pub.json().budget).toMatchObject({ status: 'sent', totalCents: 60_000, installments: 3 });
+    const decl = await env.ctx.db.query.declarations.findFirst({ where: and(eq(declarations.customerId, paula), eq(declarations.exerciseYear, 2026)) });
+    expect(decl?.substatus).toBe('budget_sent');
+    expect((await env.ctx.db.query.budgets.findFirst({ where: eq(budgets.id, approved.body.id) }))?.status).toBe('approved');
+  });
+});
+
+describe('checklist em PDF na mala direta (INT-8, CON-4)', () => {
+  it('é o mesmo PDF da etapa Documentação: sem os itens removidos e com os acrescentados pelo escritório', async () => {
+    const { api, officeId } = await registerOffice(env);
+    const lia = await customer(api, 7, { name: 'Lia Documentos' });
+    await transmittedDeclaration(officeId, lia, 2025);
+    const created = await api.post(`/api/customers/${lia}/checklist`, { year: 2026 });
+    expect(created.status).toBe(201);
+    const alfa = created.body.sections.flatMap((s: any) => s.items).find((i: any) => i.title.includes('Empresa Alfa'));
+    expect((await api.put(`/api/checklists/${created.body.id}/items/${alfa.id}`, { status: 'removed' })).status).toBe(200);
+    expect((await api.post(`/api/checklists/${created.body.id}/items`, { section: 'income', title: 'Recibo do aluguel de junho' })).status).toBe(201);
+
+    await api.post('/api/mailing/send', { type: 'checklist_pdf', channel: 'email', year: 2026, customerIds: [lia], requestId: uuid() });
+    await env.ctx.jobs.drain();
+    const attachment = env.providers.sentEmails.find((m) => m.officeId === officeId)!.attachments![0];
+    expect(attachment.filename).toBe('checklist-irpf-2026-lia-documentos.pdf');
+    const mailed = pdfContent(attachment.content);
+    expect(mailed.join('\n')).not.toContain('Empresa Alfa');
+    expect(mailed).toContain('Recibo do aluguel de junho');
+    expect(mailed).toContain('Bem: Apartamento');
+
+    const step = await api.get(`/api/customers/${lia}/checklist-pdf?year=2026`);
+    expect(mailed).toEqual(pdfContent(step.raw.rawPayload));
+    const sample = await api.get(`/api/mailing/attachment-preview?type=checklist_pdf&customerId=${lia}&year=2026`);
+    expect(pdfContent(sample.raw.rawPayload)).toEqual(mailed);
+  });
+});
+
+describe('texto do WhatsApp (CON-5)', () => {
+  it('decodifica apóstrofo, aspas e &amp; e quebra a linha em <div>, igual na prévia e no envio', async () => {
+    const { api, officeId } = await registerOffice(env);
+    const maria = await customer(api, 5, { name: "Maria D'Ávila", mobile: '31966660000' });
+    await api.put('/api/email-templates/monthly', {
+      subject: 'Novidades',
+      body: '<div>Olá, {{CLIENTE}}!</div><div class="aviso">Lembretes do "mês" &amp; prazos</div><ul><li class="item">Informe de rendimentos</li></ul>',
+    });
+    const body = { type: 'monthly', channel: 'whatsapp', year: 2026, customerIds: [maria] };
+    const expected = `Olá, Maria D'Ávila!\nLembretes do "mês" & prazos\n• Informe de rendimentos`;
+    const preview = await api.post('/api/mailing/preview', body);
+    expect(preview.body.sample.text).toBe(expected);
+
+    await api.post('/api/mailing/send', { ...body, requestId: uuid() });
+    await env.ctx.jobs.drain();
+    expect(env.providers.sentWhatsApp.find((w) => w.officeId === officeId)?.text).toBe(expected);
+    const [stored] = await env.ctx.db.select().from(deliveries).where(eq(deliveries.officeId, officeId));
+    expect(stored.body).toBe(expected);
+    const [chat] = await env.ctx.db.select().from(messages).where(eq(messages.officeId, officeId));
+    expect(chat.body).toBe(expected);
+
+    // o envio avulso, de um cliente só, passa pelo mesmo conversor
+    expect((await api.post(`/api/customers/${maria}/checklist-pdf/send`, { year: 2026, channel: 'whatsapp' })).status).toBe(200);
+    await env.ctx.jobs.drain();
+    const single = env.providers.sentWhatsApp.filter((w) => w.officeId === officeId).at(-1)!;
+    expect(single.text).toContain("Olá, Maria D'Ávila!");
+    expect(single.text).not.toMatch(/&#39;|&quot;|&amp;/);
+  });
+});
+
+describe('mala direta em lote (DAD-5)', () => {
+  it('a requisição só registra o pedido; o job grava envios, mensagens e jobs em lote e não duplica ao repetir', async () => {
+    const { api, officeId, userId } = await registerOffice(env);
+    await env.ctx.jobs.drain();
+    const many = Array.from({ length: 450 }, (_, i) => ({
+      officeId,
+      name: `Lote ${String(i).padStart(3, '0')}`,
+      cpfCnpj: `9${String(i).padStart(10, '0')}`,
+      email: `lote${i}@ex.com`,
+      mobile: '31955550000',
+      responsibleUserId: userId,
+    }));
+    await env.ctx.db.insert(customers).values(many);
+    const body = { type: 'monthly', channel: 'both', year: 2026 };
+    const requestId = uuid();
+    const sent = await api.post('/api/mailing/send', { ...body, requestId });
+    expect(sent.status).toBe(202);
+    expect(sent.body).toMatchObject({ status: 'queued', customers: 450, deliveries: { email: 450, whatsapp: 450, total: 900 }, truncated: false });
+    // a requisição não grava envios: só o pedido
+    const countOf = async () => (await env.ctx.db.select({ id: deliveries.id }).from(deliveries).where(eq(deliveries.officeId, officeId))).length;
+    expect(await countOf()).toBe(0);
+    expect((await api.post('/api/mailing/send', { ...body, requestId })).body).toMatchObject({ repeated: true, jobId: sent.body.jobId });
+
+    // roda só o job do pedido: os envios ficam na fila do job de envio
+    expect(await env.ctx.jobs.runNext()).toBe(true);
+    const status = (await api.get(`/api/mailing/requests/${requestId}`)).body;
+    expect(status).toMatchObject({ status: 'done', progress: 100, result: { queued: 900, alreadyQueued: 0, failed: [] } });
+    expect(await countOf()).toBe(900);
+    expect(await env.ctx.db.select({ id: messages.id }).from(messages).where(eq(messages.officeId, officeId))).toHaveLength(450);
+    const queued = await env.ctx.db.select({ id: jobs.id }).from(jobs).where(and(eq(jobs.officeId, officeId), eq(jobs.type, 'delivery.send'), eq(jobs.status, 'queued')));
+    expect(queued).toHaveLength(900);
+    const [one] = await env.ctx.db.select().from(deliveries).where(and(eq(deliveries.officeId, officeId), eq(deliveries.channel, 'email'))).limit(1);
+    expect(one.body).toContain('Ana Dona');
+
+    // os envios na fila não interessam ao resto do teste
+    await env.ctx.db.update(jobs).set({ status: 'done' }).where(and(eq(jobs.officeId, officeId), eq(jobs.type, 'delivery.send')));
+
+    // pedido que falhou volta para a fila quando é repetido e não duplica o que já foi gravado
+    await env.ctx.db.update(jobs).set({ status: 'failed', error: 'conexão perdida' }).where(eq(jobs.id, sent.body.jobId));
+    expect((await api.get(`/api/mailing/requests/${requestId}`)).body).toMatchObject({ status: 'failed', error: expect.stringMatching(/Tente de novo/) });
+    const retry = await api.post('/api/mailing/send', { ...body, requestId });
+    expect(retry.body).toMatchObject({ repeated: true, status: 'queued', jobId: sent.body.jobId });
+    expect(await env.ctx.jobs.runNext()).toBe(true);
+    expect((await api.get(`/api/mailing/requests/${requestId}`)).body).toMatchObject({ status: 'done', result: { queued: 0, alreadyQueued: 900 } });
+    expect(await countOf()).toBe(900);
+    expect(await env.ctx.db.select({ id: jobs.id }).from(jobs).where(and(eq(jobs.officeId, officeId), eq(jobs.type, 'mailing.plan')))).toHaveLength(1);
+  });
+
+  it('avisa quando a seleção passa do limite de destinatários em vez de cortar em silêncio', async () => {
+    const { api, officeId } = await registerOffice(env);
+    const rows = Array.from({ length: 5001 }, (_, i) => ({ officeId, name: `Cliente ${String(i).padStart(4, '0')}`, cpfCnpj: `8${String(i).padStart(10, '0')}`, email: `c${i}@lote.com` }));
+    for (let i = 0; i < rows.length; i += 1000) await env.ctx.db.insert(customers).values(rows.slice(i, i + 1000));
+    const body = { type: 'marketing', channel: 'email', year: 2026 };
+    const preview = await api.post('/api/mailing/preview', body);
+    expect(preview.body).toMatchObject({ truncated: true, matched: 5001, limit: 5000, total: 5000 });
+    const sent = await api.post('/api/mailing/send', { ...body, requestId: uuid() });
+    expect(sent.status).toBe(202);
+    expect(sent.body).toMatchObject({ truncated: true, matched: 5001, customers: 5000 });
+    // o aviso já está no pedido; o envio em si não precisa rodar aqui
+    await env.ctx.db.delete(jobs).where(eq(jobs.id, sent.body.jobId));
+    // dentro do limite, sem aviso
+    const few = await api.post('/api/mailing/preview', { ...body, filters: { email: 'without' } });
+    expect(few.body).toMatchObject({ truncated: false, total: 0 });
   });
 });

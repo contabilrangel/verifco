@@ -11,7 +11,7 @@ import { useCustomer } from '../customers/customerContext';
 import { BillingPanel } from './BillingPanel';
 import { BudgetFormModal } from './BudgetForm';
 import type { Budget, BudgetList } from './types';
-import { BudgetStatusTag, PAYMENT_STATUS, budgetTypeLabel, formatNumber, paymentStatusTone } from './ui';
+import { BudgetStatusTag, PAYMENT_STATUS, budgetTypeLabel, formatNumber, inactiveIntegration, paymentStatusTone } from './ui';
 
 type Action = { kind: 'approve' | 'reject' | 'delete' | 'send' | 'link'; budget: Budget } | null;
 
@@ -61,6 +61,8 @@ export function BudgetStep() {
   const contact = { email: q.data.customer.hasEmail, mobile: q.data.customer.hasMobile };
   const activeBudget = list.some((b) => ['draft', 'sent', 'approved'].includes(b.status));
   const canAuthorize = activeBudget || settings.allowAuthorizationWithoutBudget;
+  // aprovar com Asaas/Omie desligado: aprova e fatura, mas a cobrança só sai quando a integração for ativada
+  const approvalWithoutIntegration = action?.kind === 'approve' ? inactiveIntegration(action.budget.paymentMethodType, q.data.integrations) : null;
 
   return (
     <div className="vf-stack" style={{ '--gap': '16px' } as React.CSSProperties}>
@@ -145,6 +147,7 @@ export function BudgetStep() {
         hasEmail={contact.email}
         hasMobile={contact.mobile}
         previous={previous}
+        integrations={q.data.integrations}
         onClose={() => setForm(null)}
         onSaved={(r) => {
           setForm(null);
@@ -156,9 +159,19 @@ export function BudgetStep() {
         open={action?.kind === 'approve'}
         title="Aprovar orçamento"
         message={
-          action?.kind === 'approve'
-            ? `O faturamento de ${formatMoney(action.budget.totalCents)} será criado em ${action.budget.installments} parcela(s) mensal(is), com a 1ª vencendo em ${formatDate(action.budget.billingStartDate ?? todayIso())}.`
-            : ''
+          action?.kind === 'approve' ? (
+            <div className="vf-stack">
+              <span>{`O faturamento de ${formatMoney(action.budget.totalCents)} será criado em ${action.budget.installments} parcela(s) mensal(is), com a 1ª vencendo em ${formatDate(action.budget.billingStartDate ?? todayIso())}.`}</span>
+              {approvalWithoutIntegration && (
+                <Alert tone="warning">
+                  A integração {approvalWithoutIntegration} não está ativa: o orçamento será aprovado, mas a cobrança só será emitida no {approvalWithoutIntegration} quando a integração for
+                  ativada em Administração › Integrações.
+                </Alert>
+              )}
+            </div>
+          ) : (
+            ''
+          )
         }
         confirmLabel="Aprovar e faturar"
         loading={approve.isPending}

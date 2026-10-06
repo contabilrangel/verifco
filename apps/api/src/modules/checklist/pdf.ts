@@ -1,7 +1,7 @@
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { CHECKLIST_FILLABLE_SECTIONS, CHECKLIST_SECTIONS, buildChecklistDrafts, formatCpfCnpj, type ChecklistSection } from '@verifco/shared';
 import type { AppContext } from '../../context';
-import { checklistItems, checklists } from '../../db/schema';
+import { checklistItems, checklists, declarations } from '../../db/schema';
 import { PdfBuilder, loadBranding } from '../../services/pdf';
 import { previousYearItems, type CustomerRow, type DeclarationRow } from './service';
 
@@ -69,4 +69,10 @@ export async function buildChecklistPdf(ctx: AppContext, customer: CustomerRow, 
   }
   doc.y = startY + 3 * 22 + 8;
   return pdf.finish();
+}
+
+/** Checklist em PDF do exercício do cliente: o mesmo da etapa Documentação, usado também pela mala direta. */
+export async function customerChecklistPdf(ctx: AppContext, customer: CustomerRow, exerciseYear: number): Promise<Buffer> {
+  const declaration = await ctx.db.query.declarations.findFirst({ where: and(eq(declarations.customerId, customer.id), eq(declarations.exerciseYear, exerciseYear)) });
+  return buildChecklistPdf(ctx, customer, exerciseYear, await pdfItems(ctx, customer, declaration ?? null, exerciseYear));
 }

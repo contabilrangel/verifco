@@ -29,7 +29,7 @@ import {
   type IntegrationField,
   type IntegrationStatus,
 } from '@verifco/shared';
-import { Alert, Button, Card, Checkbox, ConfirmDialog, IconButton, Input, Loading, Select, Switch, Tag, cx, useToast, type Tone } from '../../ds';
+import { Alert, Button, Card, Checkbox, ConfirmDialog, IconButton, Input, Loading, Select, Switch, Tag, Textarea, cx, useToast, type Tone } from '../../ds';
 import { api } from '../../lib/api';
 import { fieldErrors, useAction, useApi } from '../../lib/hooks';
 import { formatDateTime } from '../../lib/format';
@@ -279,9 +279,16 @@ function IntegrationCard({ def, view }: { def: IntegrationDef; view: Integration
                         </IconButton>
                       </div>
                       <span className="vf-field__help">
-                        Cadastre esta URL no webhook de cobranças do {def.label}. Ela é exclusiva do seu escritório; trate-a como uma senha.
+                        {def.webhookHelp ?? `Cadastre esta URL no webhook do ${def.label}.`} Ela é exclusiva do seu escritório; trate-a como uma senha.
                       </span>
                     </>
+                  ) : view.saved ? (
+                    // integração salva antes de receber webhooks: gera a URL sob demanda
+                    <div>
+                      <Button kind="secondary" size="sm" icon={<RefreshCw />} loading={rotate.isPending} onClick={() => rotate.mutate(undefined)}>
+                        Gerar URL do webhook
+                      </Button>
+                    </div>
                   ) : (
                     <span className="vf-field__help">Salve a configuração para gerar a URL exclusiva do escritório.</span>
                   )}
@@ -397,16 +404,31 @@ function FieldInput({
   certificates?: Certificate[];
   onChange: (v: string | number | boolean) => void;
 }) {
-  const style = f.wide || f.type === 'boolean' ? { gridColumn: '1 / -1' } : undefined;
+  const span = f.wide ? ('full' as const) : undefined;
   if (f.type === 'boolean') {
     return (
-      <div style={style}>
+      <div className="vf-span-full">
         <Checkbox label={f.label} checked={Boolean(value)} onChange={(e) => onChange(e.target.checked)} />
       </div>
     );
   }
   if (f.type === 'select') {
-    return <Select label={f.label} required={f.required} help={f.help} error={error} options={f.options ?? []} value={String(value ?? '')} onChange={(e) => onChange(e.target.value)} style={style} />;
+    return <Select label={f.label} required={f.required} help={f.help} error={error} options={f.options ?? []} value={String(value ?? '')} onChange={(e) => onChange(e.target.value)} span={span} />;
+  }
+  if (f.type === 'textarea') {
+    return (
+      <Textarea
+        label={f.label}
+        required={f.required}
+        placeholder={f.placeholder}
+        help={f.help}
+        error={error}
+        rows={4}
+        value={String(value ?? '')}
+        onChange={(e) => onChange(e.target.value)}
+        span="full"
+      />
+    );
   }
   if (f.type === 'procurator') {
     const usable = (certificates ?? []).filter((c) => c.hasCertificate);
@@ -431,7 +453,7 @@ function FieldInput({
             f.help
           )
         }
-        style={style}
+        span={span}
       />
     );
   }
@@ -448,7 +470,7 @@ function FieldInput({
         help={configured ? `Configurado${secret?.last4 ? `, termina em ${secret.last4}` : ''}. Deixe em branco para manter.` : f.help}
         value={String(value ?? '')}
         onChange={(e) => onChange(e.target.value)}
-        style={style}
+        span={span}
       />
     );
   }
@@ -462,7 +484,7 @@ function FieldInput({
       error={error}
       value={value === undefined || value === null ? '' : String(value)}
       onChange={(e) => onChange(f.type === 'number' && e.target.value !== '' ? Number(e.target.value) : e.target.value)}
-      style={style}
+      span={span}
     />
   );
 }

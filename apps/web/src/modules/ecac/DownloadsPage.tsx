@@ -49,7 +49,7 @@ export function DownloadsPage() {
         <Card title={<span className="vf-inline"><FolderSync size={20} /> Sincronizador Verifco</span>}>
           <div className="vf-stack">
             <span className="vf-muted">
-              Roda no computador onde o programa IRPF é usado. Envia ao Verifco os arquivos das declarações (.DEC, .REC, .DBK) e das pré-preenchidas, vinculando cada um ao cliente pelo CPF do nome do arquivo.
+              Roda no computador onde o programa IRPF é usado. Envia ao Verifco os arquivos das declarações (.DEC, .REC, .DBK) e das pré-preenchidas, que ficam guardados nos documentos do cliente identificado pelo CPF do nome do arquivo. O conteúdo desses arquivos não é lido; o recibo (.REC) marca a declaração como transmitida.
             </span>
             <Tabs<Os>
               value={os}
@@ -99,7 +99,7 @@ export function DownloadsPage() {
         <Card title={<span className="vf-inline"><Puzzle size={20} /> Extensão Verifco</span>}>
           <div className="vf-stack">
             <span className="vf-muted">
-              Abre os serviços do eCAC a partir da aba “Ações eCAC” do cliente e, quando habilitado, envia ao Verifco os dados das páginas do eCAC que você visitar.
+              Abre os serviços do eCAC a partir da aba “Ações eCAC” do cliente. A leitura automática das páginas ainda não está disponível; os dados que o SERPRO não fornece devem ser lançados na aba eCAC do cliente.
             </span>
             <Tabs<Browser>
               value={browser}

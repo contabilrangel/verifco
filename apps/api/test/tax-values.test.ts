@@ -7,6 +7,9 @@
 import ExcelJS from 'exceljs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PAYMENT_HEADERS, compareTaxation, type DeclarationItem } from '@verifco/shared';
+import { normalizeDate } from '../src/modules/ecac/util';
+import { readImportFile } from '../src/modules/imports/sheet';
+import { decodeCsvText, readSheet } from '../src/services/xlsx';
 import { VALID_CPFS, createTestEnv, registerOffice, type Api, type TestEnv } from './helpers';
 import { FAKE_PDF, upload } from './upload-helpers';
 
@@ -132,9 +135,12 @@ describe('orçamentos em lote por CSV do Excel', () => {
     ].join('\r\n');
     const res = await upload(env, token, '/api/finance/budget-import', [{ name: 'orcamentos.csv', content: Buffer.from(csv, 'latin1'), type: 'text/csv' }], { year: '2026' });
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ total: 3, succeeded: 1, failed: 2 });
-    expect(res.body.results[1].message).toBe('Início da cobrança "31/02/2026" inválido: use uma data que exista, no formato DD/MM/AAAA.');
-    expect(res.body.results[2].message).toMatch(/Valor "1,500" inválido/);
+    // a importação roda no job; o resultado fica no lote
+    await env.ctx.jobs.drain();
+    const batch = (await api.get(`/api/finance/budget-import/batches/${res.body.id}`)).body;
+    expect(batch).toMatchObject({ total: 3, succeeded: 1, failed: 2 });
+    expect(batch.results[1].message).toBe('Início da cobrança "31/02/2026" inválido: use uma data que exista, no formato DD/MM/AAAA.');
+    expect(batch.results[2].message).toMatch(/Valor "1,500" inválido/);
     const list = (await api.get(`/api/finance/customers/${maria.body.id}/budgets?year=2026`)).body.data;
     expect(list).toHaveLength(1);
     expect(list[0]).toMatchObject({ amountCents: 150_000, description: 'Declaração completa', internalNote: 'Cliente antigo', billingStartDate: '2026-11-10', category: 'irpf' });
@@ -165,7 +171,9 @@ describe('importações por .xlsx com células numéricas', () => {
     const xlsx = Buffer.from(await wb.xlsx.writeBuffer());
     const res = await upload(env, token, '/api/finance/budget-import', [{ name: 'orcamentos.xlsx', content: xlsx }], { year: '2026' });
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ total: 5, succeeded: 5, failed: 0 });
+    // a importação roda no job; o resultado fica no lote
+    await env.ctx.jobs.drain();
+    expect((await api.get(`/api/finance/budget-import/batches/${res.body.id}`)).body).toMatchObject({ total: 5, succeeded: 5, failed: 0 });
     const amounts: number[] = [];
     for (const id of ids) {
       const list = (await api.get(`/api/finance/customers/${id}/budgets?year=2026`)).body.data;
@@ -195,5 +203,47 @@ describe('importações por .xlsx com células numéricas', () => {
     const entries = (await api.get(`/api/customers/${c.body.id}/cashbook?year=2025`)).body.entries;
     expect(entries.map((e: any) => e.valueCents)).toEqual([10_490, 50_013]);
     expect(entries[1].extra).toMatchObject({ fineCents: 13 });
+  });
+});
+
+describe('leitores únicos de CSV e de data (OBS-1)', () => {
+  // "Aluguel – sala “2” € 10 ação" em Windows-1252: 0x96 (–), 0x93/0x94 (“ ”) e 0x80 (€) são caracteres, não controles
+  const latin1 = (s: string) => Buffer.from(s, 'latin1');
+  const cp1252 = Buffer.concat([latin1('Aluguel '), Buffer.from([0x96]), latin1(' sala '), Buffer.from([0x93]), latin1('2'), Buffer.from([0x94]), latin1(' '), Buffer.from([0x80]), latin1(' 10 ação')]);
+  const text = 'Aluguel – sala “2” € 10 ação';
+
+  it('decodeCsvText decodifica os bytes 0x80–0x9F do Windows-1252 e mantém UTF-8 e BOM', () => {
+    expect(decodeCsvText(cp1252)).toBe(text);
+    expect(decodeCsvText(Buffer.from(`﻿${text}`, 'utf8'))).toBe(text);
+    // bytes sem caractere no Windows-1252 ficam como estão (norma WHATWG)
+    expect(decodeCsvText(Buffer.from([0x41, 0x81, 0x8d, 0x8f, 0x90, 0x9d]))).toBe('A\u0081\u008d\u008f\u0090\u009d');
+  });
+
+  it('importações e livro caixa leem o CSV pelo mesmo decodificador', async () => {
+    const csv = Buffer.concat([latin1('Nome;CPF\r\n'), cp1252, latin1(`;${VALID_CPFS[0]}\r\n`)]);
+    const imported = await readImportFile(csv, 'clientes.csv');
+    expect(imported).toEqual(await readSheet(csv, 'clientes.csv'));
+    expect(imported[0].values.nome).toBe(text);
+
+    const { api, token } = await registerOffice(env);
+    const c = await api.post('/api/customers', { name: 'Rita Caixa', cpfCnpj: VALID_CPFS[7] });
+    const payments = Buffer.concat([latin1(`${PAYMENT_HEADERS.join(';')}\r\n20/01/2025;P10.01.00002;1500,00;`), cp1252, latin1('\r\n')]);
+    const res = await upload(env, token, `/api/customers/${c.body.id}/cashbook/import?year=2025`, [{ name: 'pagamentos.csv', content: payments, type: 'text/csv' }]);
+    expect(res.body).toMatchObject({ total: 1, succeeded: 1 });
+    const [entry] = (await api.get(`/api/customers/${c.body.id}/cashbook?year=2025`)).body.entries;
+    expect(entry.description).toBe(text);
+  });
+
+  it('normalizeDate (dados do eCAC) usa o parser único e recusa datas que não existem', () => {
+    expect(normalizeDate('31/01/2026')).toBe('2026-01-31');
+    expect(normalizeDate('2026-01-31')).toBe('2026-01-31');
+    expect(normalizeDate('2026-01-31T10:20:00Z')).toBe('2026-01-31');
+    expect(normalizeDate('20260131')).toBe('2026-01-31');
+    expect(normalizeDate(20260131)).toBe('2026-01-31');
+    expect(normalizeDate('31/02/2026')).toBeNull();
+    expect(normalizeDate('20260231')).toBeNull();
+    expect(normalizeDate('2026-02-30')).toBeNull();
+    expect(normalizeDate('amanhã')).toBeNull();
+    expect(normalizeDate(null)).toBeNull();
   });
 });

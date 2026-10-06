@@ -302,6 +302,33 @@ describe('checklist do cliente', () => {
     expect(reopened.body.finishedAt).toBeNull();
   });
 
+  it('seção com documentos pendentes mantém "Documentos faltantes" até ser concluída', async () => {
+    const o = await withChecklist(VALID_CPFS[5]);
+    await setSubstatus(env, o.officeId, o.customerId, YEAR, 'elaboration');
+    const id = o.checklist.id;
+    const { token, code } = await issueAccess(o.api, id);
+    const cust = (await customerLogin(env, token, VALID_CPFS[5], code)).api!;
+    const declaration = async () => (await o.api.get(`/api/customers/${o.customerId}/declarations/${YEAR}`)).body;
+    const finish = (section: string, status: string) => cust.post(`/api/portal/checklists/${id}/sections/${section}/finish`, { status });
+
+    expect((await finish('identification', 'pending_documents')).status).toBe(200);
+    expect((await declaration()).substatus).toBe('missing_documents');
+    // baixar outra pendência não tira de "Documentos faltantes": a seção do checklist continua pendente
+    const backlog = await o.api.post(`/api/declarations/${(await declaration()).id}/backlogs`, { description: 'Recibo do aluguel' });
+    expect((await o.api.put(`/api/backlogs/${backlog.body.id}`, { resolved: true })).status).toBe(200);
+    expect((await declaration()).substatus).toBe('missing_documents');
+    // o cliente retoma e conclui a seção: volta para "Em elaboração"
+    expect((await cust.post(`/api/portal/checklists/${id}/sections/identification/reopen`)).status).toBe(200);
+    expect((await finish('identification', 'no_documents')).status).toBe(200);
+    expect((await declaration()).substatus).toBe('elaboration');
+
+    // seção pendente reaberta pelo escritório também deixa de contar
+    expect((await finish('family', 'pending_documents')).status).toBe(200);
+    expect((await declaration()).substatus).toBe('missing_documents');
+    expect((await o.api.post(`/api/checklists/${id}/sections/family/reopen`)).status).toBe(200);
+    expect((await declaration()).substatus).toBe('elaboration');
+  });
+
   it('respeita o modo consulta, o bloqueio por status e o bloqueio manual', async () => {
     const o = await withChecklist(VALID_CPFS[5]);
     const id = o.checklist.id;

@@ -294,7 +294,7 @@ function FichasCard({ declaration, canEdit, ensure, onChanged }: { declaration: 
   );
 }
 
-type FormValues = Record<string, string | number>;
+type FormValues = Record<string, string | number | boolean>;
 
 const readPath = (item: ItemRow | null, name: string): unknown => {
   if (!item) return undefined;
@@ -319,11 +319,13 @@ function ItemModal({
 }) {
   const fields = ficha.fields(year);
   const [kind, setKind] = useState<ItemKind>(item?.kind ?? ficha.kinds[0]);
+  /** Campos do tipo de linha escolhido (ex.: "investimento" só na despesa rural). */
+  const applies = (f: FieldDef) => !f.kinds || f.kinds.includes(kind);
   const [values, setValues] = useState<FormValues>(() =>
     Object.fromEntries(
       fields.map((f) => {
         const v = readPath(item, f.name);
-        return [f.name, f.kind === 'money' ? (typeof v === 'number' ? v : 0) : typeof v === 'string' ? v : ''];
+        return [f.name, f.kind === 'checkbox' ? v === true : f.kind === 'money' ? (typeof v === 'number' ? v : 0) : typeof v === 'string' ? v : ''];
       }),
     ),
   );
@@ -333,7 +335,9 @@ function ItemModal({
       const payload: Record<string, unknown> = { kind, extra: { ...((item?.extra as Record<string, unknown>) ?? {}) } };
       for (const f of fields) {
         const v = values[f.name];
-        const value = f.kind === 'money' ? Number(v) || 0 : typeof v === 'string' && v.trim() ? v.trim() : null;
+        // campo de outro tipo de linha não é gravado (e a marca sai se o tipo mudou)
+        const value = !applies(f) ? null : f.kind === 'checkbox' ? (v === true ? true : null) : f.kind === 'money' ? Number(v) || 0 : typeof v === 'string' && v.trim() ? v.trim() : null;
+        if (!applies(f) && !f.name.startsWith('extra.')) continue;
         if (f.name.startsWith('extra.')) {
           const key = f.name.slice(6);
           if (value === null) delete (payload.extra as Record<string, unknown>)[key];
@@ -347,28 +351,35 @@ function ItemModal({
     { success: item ? 'Lançamento atualizado.' : 'Lançamento incluído.', onSuccess: (r) => onSaved(r.declaration) },
   );
   const errors = fieldErrors(save.error);
-  const missing = fields.some((f) => f.required && (f.kind === 'money' ? false : !String(values[f.name] ?? '').trim()));
-  const set = (name: string, v: string | number) => setValues((s) => ({ ...s, [name]: v }));
+  const missing = fields.some((f) => applies(f) && f.required && (f.kind === 'money' ? false : !String(values[f.name] ?? '').trim()));
+  const set = (name: string, v: string | number | boolean) => setValues((s) => ({ ...s, [name]: v }));
 
   const render = (f: FieldDef) => {
     const common = { label: f.label, required: f.required, help: f.help, error: errors[f.name] };
-    const style = f.wide ? ({ gridColumn: '1 / -1' } as CSSProperties) : undefined;
+    const span = f.wide ? ('full' as const) : undefined;
     const value = values[f.name];
     switch (f.kind) {
+      case 'checkbox':
+        return (
+          <div key={f.name} className="vf-field vf-span-full">
+            <Checkbox label={f.label} checked={value === true} onChange={(e) => set(f.name, e.target.checked)} />
+            {f.help && <span className="vf-field__help">{f.help}</span>}
+          </div>
+        );
       case 'money':
-        return <MoneyInput key={f.name} {...common} style={style} value={Number(value) || 0} onChange={(c) => set(f.name, c)} />;
+        return <MoneyInput key={f.name} {...common} span={span} value={Number(value) || 0} onChange={(c) => set(f.name, c)} />;
       case 'select':
-        return <Select key={f.name} {...common} style={style} placeholder="Selecione" value={String(value)} onChange={(e) => set(f.name, e.target.value)} options={f.options ?? []} />;
+        return <Select key={f.name} {...common} span={span} placeholder="Selecione" value={String(value)} onChange={(e) => set(f.name, e.target.value)} options={f.options ?? []} />;
       case 'textarea':
-        return <Textarea key={f.name} {...common} style={style} rows={3} value={String(value)} onChange={(e) => set(f.name, e.target.value)} />;
+        return <Textarea key={f.name} {...common} span={span} rows={3} value={String(value)} onChange={(e) => set(f.name, e.target.value)} />;
       case 'date':
-        return <Input key={f.name} {...common} style={style} type="date" value={String(value)} onChange={(e) => set(f.name, e.target.value)} />;
+        return <Input key={f.name} {...common} span={span} type="date" value={String(value)} onChange={(e) => set(f.name, e.target.value)} />;
       default:
         return (
           <Input
             key={f.name}
             {...common}
-            style={style}
+            span={span}
             inputMode={f.kind === 'cpf' || f.kind === 'doc' ? 'numeric' : undefined}
             placeholder={f.kind === 'cpf' ? '000.000.000-00' : f.kind === 'doc' ? 'CPF ou CNPJ' : undefined}
             value={String(value)}
@@ -400,13 +411,13 @@ function ItemModal({
           <Select
             label="Tipo"
             required
-            style={{ gridColumn: '1 / -1' }}
+            span="full"
             value={kind}
             onChange={(e) => setKind(e.target.value as ItemKind)}
             options={ficha.kinds.map((k) => ({ value: k, label: ficha.id === 'outros' ? ITEM_KINDS[k].ficha : ITEM_KINDS[k].label }))}
           />
         )}
-        {fields.map(render)}
+        {fields.filter(applies).map(render)}
       </div>
     </Modal>
   );

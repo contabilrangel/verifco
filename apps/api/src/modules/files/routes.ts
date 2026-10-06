@@ -13,7 +13,7 @@ export async function fileRoutes(app: FastifyInstance) {
     const user = requireUser(req);
     const { id } = parse(uuidParam, req.params);
     await assertCanDownloadFile(app.ctx, user, id);
-    const { row, data } = await app.ctx.files.get(user.officeId, id);
-    return sendStoredFile(reply, row, data, (req.query as Record<string, string>).inline === '1');
+    const { row, stream } = await app.ctx.files.open(user.officeId, id);
+    return sendStoredFile(reply, row, stream, (req.query as Record<string, string>).inline === '1');
   });
 }

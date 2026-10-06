@@ -1,12 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import {
   INDIVIDUAL_REPORTS,
+  MAILING_SKIP_REASONS,
   MAILING_TYPES,
   annualProgressiveTax,
   compareTaxation,
+  decodeHtmlEntities,
+  escapeHtml,
   fineMeshCheck,
+  getMailingType,
+  htmlToText,
   isSafeUrl,
   mailingTypeForTemplate,
+  renderTemplate,
   sanitizeHtml,
   type DeclarationItem,
 } from '../src';
@@ -41,6 +47,29 @@ describe('sanitizeHtml', () => {
     expect(isSafeUrl('java\nscript:alert(1)')).toBe(false);
     expect(isSafeUrl('mailto:a@b.com')).toBe(true);
     expect(isSafeUrl('data:text/html;base64,xx', 'src')).toBe(false);
+    // referência numérica fora do Unicode não derruba a sanitização
+    expect(sanitizeHtml('<a href="&#x110000;x">y</a>')).toBe('<a href="&#x110000;x">y</a>');
+  });
+});
+
+describe('HTML para texto (CON-5)', () => {
+  it('um só conversor: decodifica todas as entidades e quebra a linha em br, p, div, títulos e itens com atributos', () => {
+    const html = renderTemplate('<div>Olá, {{CLIENTE}}!</div><div class="x">Prazo "final" &amp; multa&nbsp;&#8212; &eacute;poca</div><h2 style="color:red">Itens</h2><ul><li class="a">Um</li><li>Dois</li></ul><p>Fim<br class="q">linha</p>', {
+      CLIENTE: "Maria D'Ávila",
+    });
+    expect(html).toContain('D&#39;Ávila');
+    expect(htmlToText(html)).toBe(`Olá, Maria D'Ávila!\nPrazo "final" & multa — época\nItens\n• Um\n• Dois\nFim\nlinha`);
+  });
+
+  it('links com o endereço, texto de PDF com linha em branco entre parágrafos e escape uma vez só', () => {
+    const html = '<p>Acesse <a href="https://ex.com/a?b=1&amp;c=2" target="_blank">o portal</a>.</p><p><a href="https://ex.com">https://ex.com</a></p>';
+    expect(htmlToText(html)).toBe('Acesse o portal: https://ex.com/a?b=1&c=2.\nhttps://ex.com');
+    expect(htmlToText(html, { linksInParens: true, blankLines: true })).toBe('Acesse o portal (https://ex.com/a?b=1&c=2).\n\nhttps://ex.com');
+    // entidade escapada continua literal (uma decodificação só)
+    expect(decodeHtmlEntities('&amp;lt;b&amp;gt; &#39;x&#39; &quot;y&quot; &desconhecida;')).toBe(`&lt;b&gt; 'x' "y" &desconhecida;`);
+    expect(htmlToText('<p>a &lt;b&gt; c</p>')).toBe('a <b> c');
+    expect(escapeHtml(`<a href="x">D'Ávila & cia</a>`)).toBe('&lt;a href=&quot;x&quot;&gt;D&#39;Ávila &amp; cia&lt;/a&gt;');
+    expect(htmlToText(escapeHtml(`D'Ávila "&" <cia>`))).toBe(`D'Ávila "&" <cia>`);
   });
 });
 
@@ -104,6 +133,14 @@ describe('catálogos', () => {
     expect(MAILING_TYPES.every((t) => t.permission && t.templateKey)).toBe(true);
     expect(INDIVIDUAL_REPORTS.every((r) => r.permission.startsWith('report.'))).toBe(true);
     expect(mailingTypeForTemplate('budget_digital')?.key).toBe('budget');
+    expect(mailingTypeForTemplate('budget')?.key).toBe('budget');
     expect(mailingTypeForTemplate('planning')?.key).toBe('planning');
+  });
+
+  it('a mala direta de orçamento usa a proposta com link e os novos motivos de ficar de fora (INT-2, INT-5)', () => {
+    expect(getMailingType('budget')?.templateKey).toBe('budget_digital');
+    expect(MAILING_SKIP_REASONS.budget_approved).toBe('Orçamento já aprovado');
+    expect(MAILING_SKIP_REASONS.checklist_locked).toBe('Checklist bloqueado ou só para consulta');
+    expect(getMailingType('checklist_digital')?.note).not.toMatch(/portal/);
   });
 });

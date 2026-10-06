@@ -138,25 +138,6 @@ async function sheetsFor(ctx: AppContext, user: AuthUser, kind: ImportKind): Pro
         ],
       };
     }
-    case 'inss': {
-      const list = await scopedCustomers(ctx, user);
-      return {
-        textColumns: ['cpf', 'password'],
-        sheets: [
-          {
-            name: 'Clientes',
-            columns: [
-              { header: 'Nome', key: 'name', width: 36 },
-              { header: 'CPF', key: 'cpf', width: 20 },
-              { header: 'Senha gov.br', key: 'password', width: 22 },
-              { header: 'Senha já cadastrada', key: 'has', width: 22 },
-            ],
-            rows: list.map((c) => ({ name: c.name, cpf: formatCpfCnpj(c.cpfCnpj), password: '', has: yesNo(c.inssPasswordEnc) })),
-          },
-          instructions(kind),
-        ],
-      };
-    }
     case 'ecac': {
       const list = await scopedCustomers(ctx, user);
       return {

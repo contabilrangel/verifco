@@ -1,8 +1,14 @@
+import { randomBytes } from 'node:crypto';
+import { Readable } from 'node:stream';
 import JSZip from 'jszip';
 import ExcelJS from 'exceljs';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { INCOME_HEADERS, PAYMENT_HEADERS } from '@verifco/shared';
-import { contracts } from '../src/db/schema';
+import { eq, sql } from 'drizzle-orm';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { INCOME_HEADERS, PAYMENT_HEADERS, todayIso } from '@verifco/shared';
+import { contracts, customerGroupMembers, customerGroups, customers, files, procurators } from '../src/db/schema';
+import { sha256 } from '../src/lib/crypto';
+import { runBackupJob } from '../src/modules/advisory/backup';
+import type { MemoryBlobStore } from '../src/storage';
 import { VALID_CPFS, createEmployee, createTestEnv, registerOffice, type TestEnv } from './helpers';
 import { R, seedDeclaration, seedDocument, upload } from './advisory-helpers';
 
@@ -94,6 +100,28 @@ describe('livro caixa', () => {
     expect(Object.keys(zip.files).sort()).toEqual(['carne-leao-2025-parte-1.csv', 'carne-leao-2025-parte-2.csv']);
   });
 
+  it('falha ao gravar os lançamentos não deixa o envio registrado pela metade', async () => {
+    const o = await officeWithCustomer(VALID_CPFS[3]);
+    const url = `/api/customers/${o.customerId}/cashbook/import?year=2025`;
+    const file = { filename: 'p.csv', content: csv(PAYMENT_HEADERS, [['05/03/2025', 'P10.01.00012', '10,00', 'Material']]), type: 'text/csv' };
+    // falha simulada no banco ao incluir os lançamentos (depois de criar o envio)
+    await env.ctx.db.execute(sql`create function vf_test_fail_cashbook() returns trigger language plpgsql as $$ begin raise exception 'falha simulada'; end $$`);
+    await env.ctx.db.execute(sql`create trigger vf_test_fail_cashbook before insert on cashbook_entries for each row execute function vf_test_fail_cashbook()`);
+    try {
+      expect((await upload(env, o.token, url, [file])).status).toBe(500);
+    } finally {
+      await env.ctx.db.execute(sql`drop trigger vf_test_fail_cashbook on cashbook_entries`);
+      await env.ctx.db.execute(sql`drop function vf_test_fail_cashbook()`);
+    }
+    const list = await o.api.get(`/api/customers/${o.customerId}/cashbook?year=2025`);
+    expect(list.body).toMatchObject({ entries: [], batches: [] });
+
+    const ok = await upload(env, o.token, url, [file]);
+    expect(ok.body).toMatchObject({ total: 1, succeeded: 1 });
+    const batch = await o.api.get(`/api/customers/${o.customerId}/cashbook/batches/${ok.body.batchId}`);
+    expect(batch.body.results).toEqual([{ row: 2, ok: true, message: 'p.csv: Lançamento incluído (P10.01.00012).' }]);
+  });
+
   it('exige cashbook.use e isola escritórios', async () => {
     const o = await officeWithCustomer(VALID_CPFS[2]);
     const emp = await createEmployee(env, o.api, ['customer.list']);
@@ -124,7 +152,7 @@ describe('copiloto financeiro', () => {
     expect((await o.api.post('/api/copilot/enrollments', { customerId: ids[5] })).status).toBe(201);
 
     // contrato "pro" vigente amplia o limite
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayIso();
     await env.ctx.db.insert(contracts).values({ officeId: o.officeId, name: 'Pacote Pro', plan: 'pro', year: 2026, startsAt: '2020-01-01', expiresAt: '2099-12-31' });
     expect((await o.api.get('/api/copilot/enrollments')).body.limit).toBe(25);
     expect(today).toBeTruthy();
@@ -236,5 +264,134 @@ describe('backup', () => {
     const second = (await o.api.get('/api/backups')).body[0];
     const zip2 = await JSZip.loadAsync((await o.api.get(`/api/backups/${second.id}/download`)).raw.rawPayload);
     expect(Object.keys(zip2.files).some((n) => n.includes('backup-verifco'))).toBe(false);
+  });
+
+  it('gera o .zip em stream, com tabelas lidas em lotes e cada arquivo lido por stream, e baixa com Content-Length (DAD-3)', async () => {
+    const o = await officeWithCustomer(VALID_CPFS[7], 'Rita Alves');
+    const store = (env.ctx.files as unknown as { store: MemoryBlobStore }).store;
+    // vários arquivos com conteúdo conhecido
+    const contents = new Map<string, Buffer>();
+    for (let i = 0; i < 5; i++) {
+      const content = Buffer.concat([Buffer.from(`%PDF-1.4 documento ${i}\n`), randomBytes(40_000 + i)]);
+      const doc = await seedDocument(env, o.officeId, o.customerId, `doc-${i}.pdf`, content, 'application/pdf');
+      contents.set(doc.fileId, content);
+    }
+    // conteúdo que sumiu do armazenamento fica fora e vai para o manifesto; certificado nunca entra
+    const lost = await seedDocument(env, o.officeId, o.customerId, 'sumiu.pdf', '%PDF-sumiu', 'application/pdf');
+    await store.delete((await env.ctx.db.query.files.findFirst({ where: eq(files.id, lost.fileId) }))!.storageKey);
+    const cert = await env.ctx.files.save({ officeId: o.officeId, data: Buffer.from([0x30, 1, 2]), filename: 'procurador.pfx', mimeType: 'application/x-pkcs12' });
+    await env.ctx.db.insert(procurators).values({ officeId: o.officeId, name: 'Procurador', cpfCnpj: '11222333000181', certificateFileId: cert.id });
+    // tabelas com mais linhas que um lote (chave simples e chave composta)
+    const many = await env.ctx.db
+      .insert(customers)
+      .values(Array.from({ length: 1100 }, (_, i) => ({ officeId: o.officeId, name: `Cliente ${i}`, cpfCnpj: String(10_000_000_000 + i) })))
+      .returning({ id: customers.id });
+    const [group] = await env.ctx.db.insert(customerGroups).values({ officeId: o.officeId, name: 'Carteira' }).returning();
+    await env.ctx.db.insert(customerGroupMembers).values(many.map((c) => ({ customerId: c.id, groupId: group.id })));
+
+    const generateAsync = vi.spyOn(JSZip.prototype, 'generateAsync');
+    const put = vi.spyOn(store, 'put');
+    const putStream = vi.spyOn(store, 'putStream');
+    const get = vi.spyOn(store, 'get');
+    try {
+      expect((await o.api.post('/api/backups')).status).toBe(202);
+      await env.ctx.jobs.drain();
+      const job = (await o.api.get('/api/backups')).body[0];
+      expect(job.status).toBe('done');
+      expect(job.result).toMatchObject({ files: contents.size, missingFiles: 1, tables: { customers: 1101, customer_group_members: 1100 } });
+      // o .zip foi gravado em stream, sem buffer do .zip inteiro nem dos arquivos
+      expect(generateAsync).not.toHaveBeenCalled();
+      expect(put).not.toHaveBeenCalled();
+      expect(putStream).toHaveBeenCalledTimes(1);
+      expect(get).not.toHaveBeenCalled();
+
+      const dl = await o.api.get(`/api/backups/${job.id}/download`);
+      expect(dl.status).toBe(200);
+      expect(get).not.toHaveBeenCalled();
+      expect(dl.raw.headers['content-type']).toBe('application/zip');
+      expect(dl.raw.headers['x-content-type-options']).toBe('nosniff');
+      expect(dl.raw.headers['content-length']).toBe(String(job.result.size));
+      expect(dl.raw.rawPayload.length).toBe(job.result.size);
+      const saved = await env.ctx.db.query.files.findFirst({ where: eq(files.id, job.result.fileId) });
+      expect(saved).toMatchObject({ size: job.result.size, sha256: sha256(dl.raw.rawPayload) });
+
+      // o .zip lido de volta: conteúdo dos arquivos e manifesto iguais ao banco
+      const zip = await JSZip.loadAsync(dl.raw.rawPayload);
+      const names = Object.keys(zip.files);
+      for (const [fileId, content] of contents) {
+        const entry = names.find((n) => n.startsWith(`arquivos/${fileId}-`))!;
+        expect((await zip.file(entry)!.async('nodebuffer')).equals(content)).toBe(true);
+      }
+      expect(names.some((n) => n.includes(lost.fileId) || n.includes(cert.id))).toBe(false);
+      const manifest = JSON.parse(await zip.file('manifesto.json')!.async('string'));
+      expect(manifest).toMatchObject({ officeId: o.officeId, files: contents.size, missingFiles: [lost.fileId], excludedFiles: { certificates: 1, previousBackups: 0 } });
+      expect(manifest.tables).toEqual(job.result.tables);
+      for (const [table, count] of Object.entries(manifest.tables as Record<string, number>)) {
+        const text = await zip.file(`dados/${table}.json`)!.async('string');
+        const rows = JSON.parse(text);
+        expect(rows).toHaveLength(count);
+        // mesmo texto de JSON.stringify(linhas, null, 2), mesmo montado em lotes
+        expect(text).toBe(JSON.stringify(rows, null, 2));
+      }
+      const customerRows = JSON.parse(await zip.file('dados/customers.json')!.async('string'));
+      expect(new Set(customerRows.map((c: { id: string }) => c.id)).size).toBe(1101);
+      expect(customerRows.every((c: Record<string, unknown>) => !('ecacPasswordEnc' in c))).toBe(true);
+      const members = JSON.parse(await zip.file('dados/customer_group_members.json')!.async('string'));
+      expect(new Set(members.map((m: { customerId: string }) => m.customerId)).size).toBe(1100);
+      expect(JSON.parse(await zip.file('dados/procurators.json')!.async('string'))[0].certificatePasswordEnc).toBeUndefined();
+    } finally {
+      generateAsync.mockRestore();
+      put.mockRestore();
+      putStream.mockRestore();
+      get.mockRestore();
+    }
+  });
+
+  it('gera um backup por vez e não deixa arquivo órfão quando a geração falha (DAD-3)', async () => {
+    const a = await officeWithCustomer(VALID_CPFS[0], 'Escritório A');
+    const b = await officeWithCustomer(VALID_CPFS[1], 'Escritório B');
+    let running = 0;
+    let peak = 0;
+    const original = env.ctx.files.saveStream.bind(env.ctx.files);
+    const saveStream = vi.spyOn(env.ctx.files, 'saveStream').mockImplementation(async (input) => {
+      running++;
+      peak = Math.max(peak, running);
+      try {
+        return await original(input);
+      } finally {
+        running--;
+      }
+    });
+    try {
+      const [ra, rb] = await Promise.all([runBackupJob(env.ctx, a.officeId, a.userId), runBackupJob(env.ctx, b.officeId, b.userId)]);
+      expect(peak).toBe(1);
+      expect(ra.tables.customers).toBe(1);
+      expect(rb.tables.customers).toBe(1);
+    } finally {
+      saveStream.mockRestore();
+    }
+
+    // falha no meio da geração (arquivo ilegível): o job falha e nada fica gravado
+    const store = (env.ctx.files as unknown as { store: MemoryBlobStore }).store;
+    await seedDocument(env, a.officeId, a.customerId, 'quebrado.pdf', '%PDF-quebrado', 'application/pdf');
+    const before = (await env.ctx.db.select({ id: files.id }).from(files).where(eq(files.officeId, a.officeId))).length;
+    const stream = vi.spyOn(store, 'stream').mockImplementation(async () =>
+      Readable.from(
+        (async function* () {
+          yield Buffer.from('%PDF-');
+          throw new Error('falha de leitura');
+        })(),
+        { objectMode: false },
+      ),
+    );
+    const del = vi.spyOn(store, 'delete');
+    try {
+      await expect(runBackupJob(env.ctx, a.officeId, a.userId)).rejects.toThrow('falha de leitura');
+      expect(del).toHaveBeenCalledTimes(1);
+      expect((await env.ctx.db.select({ id: files.id }).from(files).where(eq(files.officeId, a.officeId))).length).toBe(before);
+    } finally {
+      stream.mockRestore();
+      del.mockRestore();
+    }
   });
 });

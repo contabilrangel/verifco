@@ -94,7 +94,7 @@ export function DocumentsStep() {
           }
         >
           <div className="vf-stack">
-            <DropFile multiple onFiles={(f) => void upload(f)} disabled={uploading} title={uploading ? 'Enviando...' : "Arraste os arquivos ou clique em 'Selecionar'"} hint="PDF, imagens, planilhas e outros arquivos até 25 MB cada, até 20 por vez." />
+            <DropFile multiple onFiles={(f) => void upload(f)} disabled={uploading} title={uploading ? 'Enviando...' : "Arraste os arquivos ou clique em 'Selecionar'"} hint="PDF, imagens, planilhas e outros arquivos até 25 MB cada, até 20 por vez e 100 MB por envio." />
           </div>
         </Card>
       )}

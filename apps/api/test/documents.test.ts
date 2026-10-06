@@ -1,5 +1,9 @@
 import JSZip from 'jszip';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { eq } from 'drizzle-orm';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { files } from '../src/db/schema';
+import type { MemoryBlobStore } from '../src/storage';
+import { MISSING_FILES_NAME } from '../src/storage/zip';
 import { VALID_CPFS, createEmployee, createTestEnv, registerOffice, type TestEnv } from './helpers';
 import { FAKE_PDF, upload } from './upload-helpers';
 
@@ -75,6 +79,41 @@ describe('documentos do cliente', () => {
 
     expect((await api.post('/api/documents/zip', { customerIds: [empty.id] })).status).toBe(400);
     expect((await api.post('/api/documents/zip', { customerIds: [] })).status).toBe(400);
+  });
+
+  it('o .zip sai em stream, lendo cada arquivo na sua vez, e respeita o limite de 1 GB (DAD-10)', async () => {
+    const { api, token } = await registerOffice(env);
+    const c = (await api.post('/api/customers', { name: 'Davi Souza', cpfCnpj: VALID_CPFS[5] })).body;
+    const big = Buffer.concat([FAKE_PDF, Buffer.alloc(300_000, 9)]);
+    const up = await upload(env, token, `/api/customers/${c.id}/documents?year=2026`, [
+      { name: 'grande.pdf', content: big },
+      { name: 'sumiu.pdf', content: FAKE_PDF },
+    ]);
+    const store = (env.ctx.files as unknown as { store: MemoryBlobStore }).store;
+    const lost = await env.ctx.db.query.files.findFirst({ where: eq(files.id, up.body[1].fileId) });
+    await store.delete(lost!.storageKey);
+    const get = vi.spyOn(store, 'get');
+    const generateAsync = vi.spyOn(JSZip.prototype, 'generateAsync');
+    try {
+      const res = await api.post('/api/documents/zip', { customerIds: [c.id], year: 2026 });
+      expect(res.status).toBe(200);
+      expect(res.raw.headers['content-type']).toBe('application/zip');
+      expect(res.raw.headers['x-content-type-options']).toBe('nosniff');
+      expect(get).not.toHaveBeenCalled();
+      expect(generateAsync).not.toHaveBeenCalled();
+      const zip = await JSZip.loadAsync(res.raw.rawPayload);
+      expect((await zip.file('Davi Souza - 987.654.321-00/grande.pdf')!.async('nodebuffer')).equals(big)).toBe(true);
+      // o que sumiu do armazenamento não derruba o download: fica listado
+      expect(zip.file('Davi Souza - 987.654.321-00/sumiu.pdf')).toBeNull();
+      expect(await zip.file(MISSING_FILES_NAME)!.async('string')).toContain('Davi Souza - 987.654.321-00/sumiu.pdf');
+    } finally {
+      get.mockRestore();
+      generateAsync.mockRestore();
+    }
+    await env.ctx.db.update(files).set({ size: 1100 * 1024 * 1024 }).where(eq(files.id, up.body[0].fileId));
+    const tooBig = await api.post('/api/documents/zip', { customerIds: [c.id] });
+    expect(tooBig.status).toBe(400);
+    expect(tooBig.body.error).toBe('Os arquivos passam de 1 GB. Selecione menos clientes.');
   });
 
   it('permissões e isolamento', async () => {

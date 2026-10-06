@@ -63,7 +63,7 @@ export function DarfStep() {
   const { can } = useAuth();
   const toast = useToast();
   const qc = useQueryClient();
-  const { declaration, isLoading, ensure } = useDeclaration(customer.id, year);
+  const { declaration, isLoading, error, ensure } = useDeclaration(customer.id, year);
   const q = useApi<DarfList>(['darfs', declaration?.id], declaration?.id ? `/declarations/${declaration.id}/darfs` : null);
   const [generate, setGenerate] = useState(false);
   const [edit, setEdit] = useState<DarfRow | 'new' | null>(null);
@@ -106,7 +106,8 @@ export function DarfStep() {
   };
 
   if (isLoading || (declaration?.id && q.isLoading)) return <Loading />;
-  if (q.error) return <Alert tone="danger">Não foi possível carregar as quotas do DARF.</Alert>;
+  // sem a declaração a etapa não sabe quais quotas buscar: avisa em vez de mostrar a lista vazia
+  if (error || q.error) return <Alert tone="danger">Não foi possível carregar as quotas do DARF.</Alert>;
   const data: DarfList = q.data ?? { autoSendDarfEmail: false, taxDueCents: declaration?.taxDueCents ?? 0, darfs: [] };
   const rows = data.darfs;
   const payable = (d: DarfRow) => d.amount?.totalCents ?? d.valueCents;
@@ -289,7 +290,9 @@ export function DarfStep() {
         R$ 10,00 sem DARF (soma-se ao imposto do próximo exercício). A 1ª quota vence na data informada e as demais no último dia com expediente bancário de cada mês seguinte (sem
         feriados nacionais nem 31/12). <strong>Juros:</strong> da 2ª quota em diante, a guia soma a Selic acumulada desde o mês seguinte ao vencimento da 1ª até o mês anterior ao do
         pagamento, mais 1% (a 2ª tem só 1%). As quotas geradas guardam o principal e mostram o valor com juros quando a Selic do período já foi publicada; sem ela, o envio ao cliente
-        avisa que há juros. Ao editar o valor de uma quota, vale o valor digitado (o da guia). Para o robô acompanhar o pagamento no eCAC, a procuração do cliente precisa estar válida.
+        avisa que há juros. Ao editar o valor de uma quota, vale o valor digitado (o da guia). <strong>Pagamento:</strong> com o SERPRO Integra Contador ativo e a procuração do
+        cliente válida, o robô consulta uma vez por dia os pagamentos da receita 0211 das quotas que vencem em até 7 dias ou venceram há até 120 e marca como paga a de mesmo
+        vencimento e valor (o principal ou o total da guia); nos demais casos, informe o pagamento na quota.
       </p>
 
       <input ref={fileInput} type="file" accept="application/pdf,.pdf" hidden onChange={(e) => (void onFile(e.target.files?.[0]), (e.target.value = ''))} />

@@ -109,6 +109,10 @@
 .vf-doc-list > label:hover, .vf-doc-row:hover { background: var(--color-surface-low); }
 .vf-doc-list input { width: 18px; height: 18px; accent-color: var(--color-interactive); }
 
+/* Passo a passo numerado (livro caixa: importar no Carnê-Leão Web). */
+.vf-adv-steps { margin: 0; padding-left: 20px; }
+.vf-adv-steps li + li { margin-top: var(--size-spacing-02); }
+
 @media print {
   .vf-no-print { display: none !important; }
 }

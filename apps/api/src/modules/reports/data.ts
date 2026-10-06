@@ -129,18 +129,21 @@ export async function findSpouse(ctx: AppContext, user: AuthUser, declaration: D
   }
   if (!spouse) {
     const cpf = onlyDigits(customer.cpfCnpj);
-    const digitsOf = (col: typeof declarationItems.counterpartyDoc | typeof declarationItems.ownerCpf) => sql`regexp_replace(coalesce(${col}, ''), '[^0-9]', '', 'g')`;
+    // CPF e documento das linhas já são gravados só com dígitos (normalizeItem nas fichas, parseAiExtraction
+    // na elaboração): a comparação é direta, sem regexp_replace por linha. As declarações do escritório no
+    // exercício saem do índice (office_id, exercise_year) e os dependentes de cada uma, do (declaration_id, kind).
     const rows = await ctx.db
       .select({ item: declarationItems, customerId: declarations.customerId })
       .from(declarationItems)
       .innerJoin(declarations, eq(declarations.id, declarationItems.declarationId))
       .where(
         and(
+          eq(declarations.officeId, user.officeId),
+          eq(declarations.exerciseYear, declaration.exerciseYear),
           eq(declarationItems.officeId, user.officeId),
           eq(declarationItems.kind, 'dependent'),
-          eq(declarations.exerciseYear, declaration.exerciseYear),
           ne(declarations.customerId, customer.id),
-          or(sql`${digitsOf(declarationItems.counterpartyDoc)} = ${cpf}`, sql`${digitsOf(declarationItems.ownerCpf)} = ${cpf}`, sql`${declarationItems.extra}->>'cpf' = ${cpf}`),
+          or(eq(declarationItems.counterpartyDoc, cpf), eq(declarationItems.ownerCpf, cpf), sql`${declarationItems.extra}->>'cpf' = ${cpf}`),
         ),
       );
     const match = rows.find((r) => isSpouseDependent(toItem(r.item)));

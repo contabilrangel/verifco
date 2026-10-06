@@ -1,7 +1,7 @@
 import { and, count, desc, eq, inArray } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { IMPORT_KINDS, IMPORT_KIND_LIST, IMPORT_MAX_ROWS, isImportKind, type ImportKind } from '@verifco/shared';
+import { IMPORT_KINDS, IMPORT_KIND_LIST, IMPORT_MAX_ROWS, isImportKind, todayIso, type ImportKind } from '@verifco/shared';
 import type { AuthUser } from '../../context';
 import { files, importBatches, users } from '../../db/schema';
 import { badRequest, forbidden, notFound } from '../../lib/errors';
@@ -30,10 +30,6 @@ const SIGNATURE_COLUMNS: Record<ImportKind, { aliases: readonly string[]; label:
   procuracoes: [
     { aliases: COLUMNS.cpf, label: 'CPF' },
     { aliases: COLUMNS.procurator, label: 'CPF/CNPJ do procurador' },
-  ],
-  inss: [
-    { aliases: COLUMNS.cpf, label: 'CPF' },
-    { aliases: COLUMNS.inssPassword, label: 'Senha gov.br' },
   ],
   ecac: [
     { aliases: COLUMNS.cpf, label: 'CPF' },
@@ -184,7 +180,7 @@ export async function importRoutes(app: FastifyInstance) {
         rows: batch.results.map((r) => ({ row: r.row, status: r.ok ? 'Importada' : 'Com erro', message: r.message })),
       },
     ]);
-    const stamp = batch.createdAt.toISOString().slice(0, 10);
+    const stamp = todayIso(batch.createdAt);
     return reply
       .header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
       .header('Content-Disposition', `attachment; filename="resultado-${batch.kind}-${stamp}.xlsx"`)

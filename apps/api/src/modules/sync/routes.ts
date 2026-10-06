@@ -6,8 +6,9 @@ import { apiTokens, customers, documents, ecacRecords, files, offices, prefilled
 import { HttpError, badRequest, notFound } from '../../lib/errors';
 import { audit, guard, parse, requireUser, uuidParam } from '../../lib/http';
 import { recordInputSchema, saveEcacRecord } from '../ecac/records';
+import { ECAC_SYNC_OFFICE, latestOfficeSync, nextScheduledOfficeSync } from '../ecac/jobs';
 import { loadSerproModule, requireSerpro } from '../ecac/serpro';
-import { jobView, latestJob, pendingJob } from '../ecac/util';
+import { fanoutJobView } from '../ecac/util';
 import { savePrefilled } from '../prefilled/service';
 import { customerByDoc, ingestSyncFile, machineAudit, resolveFileTarget } from './ingest';
 import { readMultipart } from './multipart';
@@ -124,20 +125,23 @@ export async function syncRoutes(app: FastifyInstance) {
             () => 'not_configured' as const,
           )
         : ('missing' as const),
-      lastOfficeSync: jobView(await latestJob(db, officeId, ['ecac.sync_office'])),
+      // andamento somado dos clientes; a rodada diária agendada para depois aparece à parte
+      lastOfficeSync: await fanoutJobView(db, await latestOfficeSync(db, officeId)),
+      nextAutoSync: await nextScheduledOfficeSync(db, officeId),
       activity,
     };
   });
 
-  /** Sincroniza pelo SERPRO todos os clientes com procurador. */
+  /** Sincroniza pelo SERPRO todos os clientes com procurador (um job por cliente). */
   app.post('/robot/sync-office', { preHandler: guard('ecac.sync') }, async (req, reply) => {
     const user = requireUser(req);
-    const pending = await pendingJob(db, user.officeId, 'ecac.sync_office', {});
-    if (pending) return { job: jobView(pending), alreadyQueued: true };
-    const job = await ctx.jobs.enqueue('ecac.sync_office', {}, { officeId: user.officeId, userId: user.userId, maxAttempts: 1 });
+    // não duplica uma sincronização na vez ou com clientes ainda em andamento
+    const current = await fanoutJobView(db, await latestOfficeSync(db, user.officeId));
+    if (current && (current.status === 'queued' || current.status === 'running')) return { job: current, alreadyQueued: true };
+    const job = await ctx.jobs.enqueue(ECAC_SYNC_OFFICE, {}, { officeId: user.officeId, userId: user.userId, maxAttempts: 1 });
     await audit(req, 'ecac_sync_office', 'office', user.officeId);
     reply.status(202);
-    return { job: jobView(job), alreadyQueued: false };
+    return { job: await fanoutJobView(db, job), alreadyQueued: false };
   });
 
   /** Pacotes da Central de downloads (sincronizador e extensão), para qualquer usuário logado. */

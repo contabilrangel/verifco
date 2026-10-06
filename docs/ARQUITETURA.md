@@ -57,25 +57,39 @@ Não há registro central para editar: criar a pasta basta.
 4. **Erros**: lance `badRequest`, `notFound`, `conflict`, `forbidden` (`lib/errors.ts`).
 5. **Auditoria**: ações relevantes chamam `audit(req, acao, entidade, id, dados)`.
 6. **Segredos**: senhas e chaves só cifradas (`ctx.secrets.encrypt`) e nunca devolvidas.
-7. **Dinheiro**: sempre em centavos (inteiro). Datas sem hora em `AAAA-MM-DD`.
+7. **Dinheiro**: sempre em centavos (inteiro). Datas sem hora em `AAAA-MM-DD`. "Hoje" é o dia de
+   Brasília: `todayIso()` e `addDaysIso()` de `@verifco/shared` (nunca `toISOString().slice(0, 10)`
+   nem dias somados em milissegundos; `packages/shared/test/dates.test.ts` recusa o padrão), e data
+   com hora gerada no servidor com `formatDateTimeBr()`.
 
 ### Serviços compartilhados (`src/services/`)
 
 | Serviço | Uso |
 | --- | --- |
 | `customers.ts` | `customerScope`, `getCustomerForUser`, `publicCustomer` |
-| `declarations.ts` | `getOrCreateDeclaration`, `setDeclarationSubstatus`, `advanceDeclaration`, `recomputeTotals`, `listItems` |
-| `delivery.ts` | `queueDelivery` (e-mail/WhatsApp por template ou texto, com idempotência e anexos) |
+| `declarations.ts` | `getOrCreateDeclaration`, `setDeclarationSubstatus`, `advanceDeclaration`, `recomputeTotals`, `listItems`; regras únicas de status: `changeSubstatus` (troca manual, com a permissão de finalizar e a situação eCAC), `syncDeclarationStage` (transmissão e situação eCAC), `syncSubstatus` ("Documentos faltantes"); `refreshDeclaration` (totais e saldo de caixa depois de mudar linhas ou outros gastos). Aceitam o banco ou uma transação aberta (`DbOrTx`; `refreshDeclaration` recebe `{ db }`) |
+| `delivery.ts` | `queueDelivery` (e-mail/WhatsApp por template ou texto, com idempotência e anexos); `createDeliveryBatch` (mala direta: envios, mensagens e jobs gravados em lote). O texto do WhatsApp sai de `htmlToText` (`packages/shared`), o mesmo da prévia e dos PDFs; para montar HTML, use `escapeHtml` de lá |
+| `plan.ts` | contratos vigentes (`planStatus`, `activeContracts`), limite de declarações por exercício (aplicado em `getOrCreateDeclaration`) e modo só consulta com o contrato vencido (hook em `app.ts`) |
 | `pdf.ts` | `PdfBuilder` + `loadBranding` (logo e cores do escritório) |
-| `xlsx.ts` | `buildWorkbook`, `readSheet`, `parseMoneyToCents`, `parseDate` |
+| `xlsx.ts` | `buildWorkbook`, `readSheet` (.xlsx, .csv e .txt), `sheetMoneyToCents`, `parseMoneyToCents`, `parseDate`, `decodeCsvText` (CSV/TXT em UTF-8 ou Windows-1252). Valor em reais de planilha sai de `SheetRow.numbers`/`sheetMoneyToCents` (no .xlsx, o texto de célula numérica usa ponto decimal: "104.895" é R$ 104,90); `parseMoneyToCents` só para texto digitado |
 | `settings.ts` | `getOfficeSettings` com os padrões aplicados |
 | `notify.ts` | notificação no sino |
-| `uploads.ts` | `readUploads` (multipart: tipo pela extensão conferida com o conteúdo, limites e mensagens em português), `sendStoredFile` (download com lista branca de tipos, `nosniff` e CSP `sandbox`), `safeFilename`, `safeZipName`, `uploadedFromBase64`, listas de tipos (`DOCUMENT_TYPES`, `SHEET_TYPES`, `PDF_TYPES`...) |
+| `uploads.ts` | `readUploads` (multipart: tipo pela extensão conferida com o conteúdo, limites por arquivo e pela soma do envio, mensagens em português; `firstFileOnly` consome e descarta os demais arquivos sem acumulá-los em memória), `sendStoredFile` (download com lista branca de tipos, `nosniff` e CSP `sandbox`; aceita stream, com `Content-Length` pelo `size`), `safeFilename`, `safeZipName`, `uploadedFromBase64`, listas de tipos (`DOCUMENT_TYPES`, `SHEET_TYPES`, `PDF_TYPES`...) |
 | `rate-limit.ts` | limite de tentativas no banco (vale entre instâncias): `consume`, `check`, `fail`, `allow`, `resetLimit`; `ROUTE_LIMITS` (por IP, aplicado em `app.ts`) e as regras por e-mail, CPF/link (`CUSTOMER_LOGIN_RULE`) e conta |
 
 **Arquivos**: todo upload usa `readUploads` (ou um leitor do módulo construído sobre ele, como
 `readChecklistUploads` e `readMultipart`) e todo download de arquivo gravado usa
 `sendStoredFile`. Nunca grave nem devolva o `Content-Type` informado por quem enviou.
+Downloads saem em stream: `ctx.files.open(officeId, fileId)` e `sendStoredFile(reply, row, stream)`
+(o `ctx.files.get`, com o arquivo inteiro na memória, fica para arquivos pequenos como logo e
+anexos; o `readFile` recusa acima de 2 GiB). Um .zip montado na hora para download usa
+`zipStoredFiles` (`storage/zip.ts`), que lê um arquivo de cada vez enquanto o navegador baixa,
+com teto `MAX_ZIP_DOWNLOAD_BYTES` (1 GB) conferido antes; um arquivo grande gerado no servidor
+(ex.: o backup) usa `ZipWriter` + `ctx.files.saveStream`, que grava em stream e calcula tamanho e
+sha256 no caminho. `files.size` é `bigint` (modo number).
+**Documentos de declaração**: quem grava, apaga ou muda a categoria de um documento com
+`declarationId` chama `refreshElaborationStatus(db, declarationId)` (`modules/elaboration/service.ts`):
+a central de elaboração lista a situação e os contadores gravados na declaração, sem ler os documentos.
 **Limites de tentativa**: use as funções de `rate-limit.ts` (nunca um contador em memória, que
 vale só para uma instância da API).
 
@@ -88,6 +102,27 @@ Contexto (`app.ctx`): `db`, `config`, `secrets`, `files` (salvar/ler arquivos), 
 externo ou demora (envios, exportações, IA, sincronizações) passa pela fila. Nos testes,
 `await env.ctx.jobs.drain()` executa o que estiver pendente.
 
+- **Execução**: cada instância com `RUN_WORKER` executa até `JOB_CONCURRENCY` jobs ao mesmo tempo
+  (padrão 4). Prioridade, tentativas e limites de cada tipo ficam em `src/jobs/policies.ts`:
+  envios e cobranças saem primeiro; tarefas longas (`heavy`: backup, eCAC do escritório, elaboração,
+  Radar) têm limite por escritório (`perOffice`) e nunca ocupam a última vaga do worker. O módulo
+  completa no `ctx.jobs.register(tipo, executor, { onFailed, ... })`.
+- **Lease**: o job em execução renova `locked_at` (a cada 30 s e no `progress`); se o processo cai,
+  outro worker o retoma quando o lease (5 min) vence, contando a tentativa, ou o marca como falho
+  se acabaram as tentativas. Ao desligar, `ctx.jobs.stop({ graceMs })` espera os jobs em andamento e
+  devolve à fila os que não terminam no prazo.
+- **"Já em andamento"**: deduplique com `activeJob()` (SQL) ou `isJobActive(job)`, nunca com
+  `status in ('queued', 'running')`: um job de processo que caiu, sem tentativas, não pode segurar
+  o botão para sempre.
+- **Nova tentativa**: `enqueue` com a mesma `idempotencyKey` reabre o job que falhou de vez;
+  `ctx.jobs.retryNow(tipo, [{ idempotencyKey, payload }])` atende "tentar de novo agora" (reabre
+  também o concluído e antecipa o que espera nova tentativa). Erro que repetir não resolve
+  (credencial recusada, integração desligada) é `PermanentJobError`: falha na hora. `onFailed` roda
+  uma vez na falha final (avise o escritório por ali).
+- **Fan-out**: um lote grande vira um job por item. O executor do pai cria os filhos de uma vez com
+  `spawn([...])` (chave por filho) e devolve `WAIT_FOR_CHILDREN`; sem ocupar o worker, o pai roda de
+  novo quando todos terminam e junta os resultados com `children()` (veja `elaboration.process`).
+
 ### Banco
 
 `src/db/schema.ts` concentra as tabelas. Depois de alterá-lo, gere a migração
@@ -96,6 +131,13 @@ preenchimento) vai numa migração própria, criada com
 `npx drizzle-kit generate --custom --name <nome>` dentro de `apps/api` (veja
 `0003_checklist_validade_links.sql`). `test/migrations.test.ts` confere que as migrações aplicam
 num banco vazio e chegam ao mesmo banco que o `schema.ts`.
+
+Escritas que dependem umas das outras vão numa `db.transaction`; quando duas requisições podem
+disputar a mesma declaração, a transação começa travando a linha dela
+(`select ... from declarations where id = ... for update`) e relê os dados já sob a trava. Dentro
+da transação, use só o `tx` (e funções que aceitam `DbOrTx`): no PGlite, uma consulta pelo `db`
+espera a transação terminar e a requisição fica parada. Arquivos (`ctx.files`) são apagados só
+depois do commit.
 
 ### Testes
 
@@ -128,6 +170,15 @@ permissões e isolamento entre escritórios.
   cabeçalho para escapar do limite.
 - Ao subir, a API aplica as migrações de `apps/api/drizzle/` (padrão `DB_SYNC=migrate`); não use
   `DB_SYNC=push` em produção.
+- **Fila de tarefas fora das instâncias HTTP (recomendado em produção)**: por padrão
+  (`RUN_WORKER=true`) cada processo da API também executa a fila, e jobs pesados (backup do
+  escritório, que lê todos os arquivos; exportações e processamento da elaboração; sincronizações
+  do eCAC) disputam CPU, memória e disco com as requisições de todos os escritórios. Rode as
+  instâncias que atendem o público com `RUN_WORKER=false` e uma instância separada com
+  `RUN_WORKER=true` (o mesmo `pnpm start`, fora do balanceador), com o mesmo `DATABASE_URL` e o
+  mesmo armazenamento de arquivos (`STORAGE_DIR` numa pasta compartilhada, se estiverem em máquinas
+  diferentes: o worker grava o .zip do backup e a API o entrega). A geração de backup roda um de
+  cada vez por processo; com um só worker, um de cada vez no total.
 
 ## Web (`apps/web`)
 

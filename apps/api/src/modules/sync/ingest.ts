@@ -12,7 +12,7 @@ import type { AppContext } from '../../context';
 import { auditLogs, customers, declarations, documents, files } from '../../db/schema';
 import { HttpError, badRequest, notFound } from '../../lib/errors';
 import { sha256 } from '../../lib/crypto';
-import { getOrCreateDeclaration } from '../../services/declarations';
+import { getOrCreateDeclaration, syncDeclarationStage } from '../../services/declarations';
 import type { CustomerRow } from '../../services/customers';
 import { isExtractable, refreshElaborationStatus } from '../elaboration/service';
 import type { MachineAuth } from './tokens';
@@ -62,6 +62,11 @@ export function resolveFileTarget(file: UploadedFile, fields: Record<string, str
  * Recebe um arquivo do sincronizador: cria o documento do cliente/exercício (uploadedBy `sync`)
  * e, para a declaração (.DEC) ou a cópia de segurança (.DBK, se ainda não houver arquivo de
  * origem), atualiza `declarations.sourceFileId`. O mesmo conteúdo não é gravado duas vezes.
+ * O recibo de entrega (.REC) fica guardado como documento "recibo" da declaração (categoria
+ * `irpf_receipt`) e marca a declaração como transmitida: grava a data da transmissão (a do
+ * recebimento do arquivo, se ainda não houver) e aplica a regra de etapa do resumo da declaração
+ * (`syncDeclarationStage`). O número do recibo não aparece no nome do arquivo e o conteúdo não é
+ * lido, então ele não é preenchido aqui (vem do eCAC ou da digitação).
  *
  * PONTO DE EXTENSÃO: o conteúdo de .DEC/.REC/.DBK não é lido porque o layout desses arquivos
  * não é público. Um leitor validado com arquivos oficiais entraria logo depois de gravar o
@@ -109,8 +114,17 @@ export async function ingestSyncFile(ctx: AppContext, auth: MachineAuth, file: U
   if (type === 'dec' || (type === 'dbk' && !decl.sourceFileId)) {
     await db.update(declarations).set({ sourceFileId: saved.id, updatedAt: new Date() }).where(eq(declarations.id, decl.id));
   }
+  let transmitted = false;
+  if (type === 'rec') {
+    // recibo de entrega: a declaração foi transmitida (mesma regra do resumo da declaração)
+    const [updated] = decl.transmittedAt
+      ? [decl]
+      : await db.update(declarations).set({ transmittedAt: new Date(), updatedAt: new Date() }).where(eq(declarations.id, decl.id)).returning();
+    const row = await syncDeclarationStage(db, decl, updated);
+    transmitted = row.stage !== decl.stage;
+  }
   const elaborationStatus = await refreshElaborationStatus(db, decl.id);
-  await machineAudit(ctx, auth, 'sync_file', 'document', doc.id, { customerId: customer.id, year, type, filename: file.filename });
+  await machineAudit(ctx, auth, 'sync_file', 'document', doc.id, { customerId: customer.id, year, type, filename: file.filename, ...(transmitted ? { transmitted } : {}) });
   return { ...base, duplicate: false, documentId: doc.id, fileId: saved.id, elaborationStatus };
 }
 

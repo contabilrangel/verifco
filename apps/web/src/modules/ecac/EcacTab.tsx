@@ -124,7 +124,7 @@ export function EcacTab() {
               { value: 'income', label: `Extrato de rendimentos (${d.incomeStatements.length})` },
               { value: 'darf', label: `DARF (${d.darfs.length})` },
               { value: 'cnd', label: 'CND' },
-              { value: 'simplified', label: 'Status simplificado' },
+              { value: 'simplified', label: 'Situação fiscal' },
               { value: 'mailbox', label: `Caixa postal (${d.mailbox.length})` },
             ]}
           />
@@ -220,10 +220,11 @@ function CredentialsCard({ panel, onSaved }: { panel: EcacPanel; onSaved: () => 
 }
 
 // ---------------------------------------------------------------- painéis
-const EMPTY_HINT = 'O painel é preenchido quando o robô (extensão, sincronizador ou SERPRO Integra Contador) traz os dados, ou por lançamento manual.';
+/** O SERPRO não informa a situação da declaração nem extratos: esses painéis vêm de lançamento manual. */
+const MANUAL_HINT = 'O SERPRO Integra Contador não informa este dado e a extensão ainda não lê esta página do eCAC: lance aqui o que consultar no eCAC (Lançar registro).';
 
 function DeclarationsPanel({ d }: { d: EcacPanel }) {
-  if (!d.declarations.length) return <EmptyState title="Nenhuma declaração processada registrada" description={EMPTY_HINT} />;
+  if (!d.declarations.length) return <EmptyState title="Nenhuma declaração processada registrada" description={`Situação, malha e lote de restituição. ${MANUAL_HINT}`} />;
   return (
     <div className="vf-table-wrap">
       <table className="vf-table">
@@ -261,7 +262,7 @@ function DeclarationsPanel({ d }: { d: EcacPanel }) {
 }
 
 function IncomePanel({ d }: { d: EcacPanel }) {
-  if (!d.incomeStatements.length) return <EmptyState title="Nenhum extrato de rendimentos" description={EMPTY_HINT} />;
+  if (!d.incomeStatements.length) return <EmptyState title="Nenhum extrato de rendimentos" description={MANUAL_HINT} />;
   return (
     <div className="vf-table-wrap">
       <table className="vf-table">
@@ -293,7 +294,14 @@ function IncomePanel({ d }: { d: EcacPanel }) {
 }
 
 function DarfPanel({ d }: { d: EcacPanel }) {
-  if (!d.darfs.length) return <EmptyState title="Nenhum DARF acompanhado" description="As guias aparecem aqui quando são lançadas na etapa DARF do IRPF ou trazidas do eCAC pelo robô." />;
+  if (!d.darfs.length) {
+    return (
+      <EmptyState
+        title="Nenhum DARF acompanhado"
+        description="As guias aparecem aqui quando são lançadas na etapa DARF do IRPF. Com o SERPRO ativo, o robô marca como pagas as quotas que encontrar no PAGTOWEB."
+      />
+    );
+  }
   return (
     <div className="vf-table-wrap">
       <table className="vf-table">
@@ -335,11 +343,10 @@ function DarfPanel({ d }: { d: EcacPanel }) {
 function CndPanel({ d }: { d: EcacPanel }) {
   return (
     <div className="vf-stack" style={{ padding: 24 }}>
-      {!d.cnd.autoGenerateCnd && (
-        <Alert tone="warning" title="Geração automática de CND desligada">
-          O escritório ainda não marcou a opção “Permitir geração automática de CND” nas preferências. <Link to="/admin/preferencias">Abrir Administração › Preferências</Link>
-        </Alert>
-      )}
+      <Alert title="A CND é lançada pelo escritório">
+        O robô não emite a certidão de pessoa física: o SERPRO Integra Contador não oferece esse serviço. Emita a CND no site da Receita e lance-a aqui (Lançar
+        registro › Certidão). O relatório de situação fiscal, na aba ao lado, mostra as pendências que impedem a certidão.
+      </Alert>
       <dl className="vf-ecac-facts">
         <dt>Situação</dt>
         <dd>
@@ -369,12 +376,12 @@ function SimplifiedPanel({ d }: { d: EcacPanel }) {
   if (!s) {
     return (
       <div style={{ padding: 24 }}>
-        <Alert title="Caso já tenha feito o passo a passo, basta esperar o robô passar na sua base">
+        <Alert title="O relatório de situação fiscal vem do SERPRO Integra Contador">
           <ol className="vf-ecac-steps">
             <li>Associe um procurador ao cliente (aba Identificação).</li>
             <li>Confirme a procuração eletrônica no eCAC, em nome do cliente.</li>
-            <li>Instale a extensão ou o sincronizador (Central de downloads) ou configure o SERPRO em Administração › Integrações.</li>
-            <li>Use “Solicitar sincronização” acima. O resultado aparece nesta aba.</li>
+            <li>Configure e ative o SERPRO em Administração › Integrações.</li>
+            <li>A sincronização diária emite o relatório a cada 30 dias; “Solicitar sincronização” acima emite na hora. O PDF aparece nesta aba.</li>
           </ol>
         </Alert>
       </div>
@@ -383,8 +390,15 @@ function SimplifiedPanel({ d }: { d: EcacPanel }) {
   return (
     <div className="vf-stack" style={{ padding: 24 }}>
       <dl className="vf-ecac-facts">
+        <dt>Documento</dt>
+        <dd>
+          <span className="vf-inline">
+            {s.kind === 'fiscal_situation' ? 'Relatório de situação fiscal' : 'Status simplificado'}
+            {s.fileId && <ViewFileButton fileId={s.fileId} label="Abrir relatório" />}
+          </span>
+        </dd>
         <dt>Situação</dt>
-        <dd>{s.situation ?? '—'}</dd>
+        <dd>{s.situation ?? (s.fileId ? 'Veja as pendências no PDF' : '—')}</dd>
         <dt>Atualizado em</dt>
         <dd>
           {formatDateTime(s.fetchedAt)} <span className="vf-muted">· {sourceLabel(s.source)}</span>
@@ -410,7 +424,9 @@ function SimplifiedPanel({ d }: { d: EcacPanel }) {
 }
 
 function MailboxPanel({ d }: { d: EcacPanel }) {
-  if (!d.mailbox.length) return <EmptyState title="Nenhuma mensagem registrada" description={EMPTY_HINT} />;
+  if (!d.mailbox.length) {
+    return <EmptyState title="Nenhuma mensagem registrada" description="As mensagens chegam pela sincronização do SERPRO Integra Contador (clientes com procuração) ou por lançamento manual." />;
+  }
   return (
     <div className="vf-table-wrap">
       <table className="vf-table">

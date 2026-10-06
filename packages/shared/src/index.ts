@@ -1,4 +1,5 @@
 export * from './permissions';
+export * from './dates';
 export * from './enums';
 export * from './validators';
 export * from './templates';
@@ -6,6 +7,7 @@ export * from './dirpf';
 export * from './tax/params';
 export * from './tax/cash-analysis';
 export * from './integrations';
+export * from './whatsapp';
 export * from './pricing';
 export * from './money-words';
 export * from './imports';

@@ -26,7 +26,6 @@ export interface CustomerDetail {
   ecacMailboxMessages: number;
   cndStatus: string;
   hasEcacCredentials: boolean;
-  hasInssPassword: boolean;
   portalEnabled: boolean;
   groups: { id: string; name: string }[];
 }

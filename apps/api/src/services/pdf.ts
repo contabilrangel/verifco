@@ -1,6 +1,6 @@
 import PDFDocument from 'pdfkit';
 import { eq } from 'drizzle-orm';
-import { formatMoney } from '@verifco/shared';
+import { formatDateTimeBr, formatMoney } from '@verifco/shared';
 import type { AppContext } from '../context';
 import { offices } from '../db/schema';
 import { DEFAULT_SETTINGS } from './settings';
@@ -177,7 +177,7 @@ export class PdfBuilder {
         .fillColor('#97a1ac')
         .font('Helvetica')
         .fontSize(7)
-        .text(`${this.brand.officeName} · gerado em ${new Date().toLocaleString('pt-BR')} · página ${i + 1} de ${range.count}`, this.margin, bottom, {
+        .text(`${this.brand.officeName} · gerado em ${formatDateTimeBr()} · página ${i + 1} de ${range.count}`, this.margin, bottom, {
           width: this.width,
           align: 'center',
           lineBreak: false,

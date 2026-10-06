@@ -172,7 +172,7 @@ export async function portalRoutes(app: FastifyInstance) {
       ),
     });
     if (!doc) throw notFound('Documento');
-    const { row, data } = await ctx.files.get(auth.officeId, doc.fileId);
-    return sendStoredFile(reply, row, data, (req.query as Record<string, string>).inline === '1');
+    const { row, stream } = await ctx.files.open(auth.officeId, doc.fileId);
+    return sendStoredFile(reply, row, stream, (req.query as Record<string, string>).inline === '1');
   });
 }

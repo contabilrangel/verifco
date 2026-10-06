@@ -29,8 +29,18 @@ const FILTERS = [
 
 const STEPS: { title: string; body: React.ReactNode }[] = [
   { title: 'Cadastro do procurador', body: <>Cadastre quem tem a procuração eletrônica dos clientes em <Link to="/admin/procuradores">Administração › Procuradores</Link>.</> },
-  { title: 'Associação de clientes', body: <>Associe o procurador a cada cliente (na identificação ou em lote na lista de clientes). Clientes sem procurador associado são ignorados pela busca.</> },
-  { title: 'Busca pelo robô', body: <>A extensão do navegador ou o sincronizador buscam os arquivos e os enviam ao Verifco com um token (<Link to="/admin/robo">Administração › Robô</Link>). Também é possível enviar o arquivo à mão em cada cliente.</> },
+  { title: 'Associação de clientes', body: <>Associe o procurador a cada cliente (na identificação ou em lote na lista de clientes). Com a procuração eletrônica, o procurador baixa a pré-preenchida do cliente no eCAC.</> },
+  {
+    title: 'Download no eCAC',
+    body: (
+      <>
+        Baixe a pré-preenchida de cada cliente no eCAC (Meu Imposto de Renda) e salve na pasta de pré-preenchidas do sincronizador (configurada com{' '}
+        <span className="vf-mono">npm run config -- --pasta-pre &quot;pasta&quot;</span>; instalação na <Link to="/downloads">Central de downloads</Link>): ele envia o arquivo
+        sozinho, vinculando o cliente pelo CPF no nome do arquivo. Sem o sincronizador, envie o arquivo à mão na linha do cliente. O Verifco não busca o arquivo no eCAC por
+        conta própria.
+      </>
+    ),
+  },
   { title: 'Download dos arquivos', body: <>Baixe um arquivo por vez, só os novos (ainda não baixados) ou todos do exercício em um .zip.</> },
   { title: 'Restaurar no programa IRPF', body: <>No programa IRPF do exercício, inicie a declaração do cliente a partir do arquivo da pré-preenchida baixado e confira os dados importados antes de transmitir.</> },
 ];
@@ -78,7 +88,7 @@ export function PrefilledPage() {
     <>
       <PageHeader
         title="Pré-preenchidas IRPF"
-        description={`Arquivos das declarações pré-preenchidas do exercício ${year} obtidos pelo robô a partir das procurações.`}
+        description={`Arquivos das declarações pré-preenchidas do exercício ${year} baixados no eCAC e enviados pelo sincronizador ou à mão.`}
         crumbs={[{ label: 'Início', to: '/' }, { label: 'Pré-preenchidas IRPF' }]}
         actions={
           <>
@@ -118,7 +128,7 @@ export function PrefilledPage() {
               <Stat label="Clientes ativos" value={s.customers} />
               <Stat label="Com arquivo no exercício" value={s.withFiles} />
               <Stat label="Arquivos novos" value={s.newFiles} hint="Ainda não baixados" />
-              <Stat label="Sem procurador" value={s.withoutProcurator} hint="Ignorados pela busca do robô" tone={s.withoutProcurator ? 'danger' : undefined} />
+              <Stat label="Sem procurador" value={s.withoutProcurator} hint="Sem procuração, o escritório não baixa a pré-preenchida no eCAC" tone={s.withoutProcurator ? 'danger' : undefined} />
             </div>
           )}
         </Card>
@@ -132,7 +142,7 @@ export function PrefilledPage() {
           {list.isLoading ? (
             <Loading />
           ) : !list.data?.data.length ? (
-            <EmptyState icon={<FileStack />} title="Nenhum cliente encontrado" description={debounced || filter ? 'Revise a busca ou o filtro.' : 'Cadastre clientes e associe um procurador para o robô buscar as pré-preenchidas.'} />
+            <EmptyState icon={<FileStack />} title="Nenhum cliente encontrado" description={debounced || filter ? 'Revise a busca ou o filtro.' : 'Cadastre clientes e associe um procurador para baixar as pré-preenchidas no eCAC.'} />
           ) : (
             <div className="vf-table-wrap">
               <table className="vf-table">
@@ -156,7 +166,7 @@ export function PrefilledPage() {
                             <span className="vf-text-xs vf-muted">Procurador: {r.procuratorName}</span>
                           ) : (
                             <span>
-                              <Tag tone="warning">Sem procurador associado — ignorado pela busca</Tag>
+                              <Tag tone="warning">Sem procurador associado</Tag>
                             </span>
                           )}
                         </div>
@@ -212,7 +222,7 @@ function UploadModal({ row, year, onClose }: { row: PrefilledRow | null; year: n
   return (
     <Modal open={Boolean(row)} title={`Enviar pré-preenchida — ${row?.name ?? ''}`} onClose={onClose} width={520}>
       <div className="vf-stack">
-        <Alert>Use quando o arquivo foi baixado fora do robô. Ele fica disponível para download junto dos demais do exercício {year}.</Alert>
+        <Alert>Use quando o arquivo não veio pelo sincronizador. Ele fica disponível para download junto dos demais do exercício {year}.</Alert>
         <DropFile onFiles={(fs) => fs[0] && upload.mutate(fs[0])} disabled={upload.isPending} title="Arraste o arquivo da pré-preenchida ou clique em 'Selecionar'" hint="Até 25 MB" />
       </div>
     </Modal>

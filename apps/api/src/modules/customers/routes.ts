@@ -5,20 +5,22 @@ import {
   CND_STATUS,
   DECLARATION_SUBSTATUS,
   PROCURATION_STATUS,
+  addDaysIso,
   formatCep,
   formatCpfCnpj,
   formatPhone,
   isValidCpfCnpj,
   onlyDigits,
   stageOfSubstatus,
+  todayIso,
   type DeclarationSubstatus,
 } from '@verifco/shared';
-import { customerGroupMembers, customerGroups, customers, declarations, procurators, users } from '../../db/schema';
+import { auditLogs, budgets, checklists, copilotEnrollments, customerGroupMembers, customerGroups, customers, declarations, procurators, users } from '../../db/schema';
 import { randomCode, sha256 } from '../../lib/crypto';
 import { badRequest, conflict, forbidden, notFound } from '../../lib/errors';
 import { audit, can, dateStr, guard, optionalText, paginate, parse, requirePermission, requireUser, uuidParam, yearSchema } from '../../lib/http';
 import { customerScope, getCustomerForUser, publicCustomer } from '../../services/customers';
-import { getOrCreateDeclaration, setDeclarationSubstatus } from '../../services/declarations';
+import { assertCanSetSubstatus, changeSubstatus, getOrCreateDeclarations } from '../../services/declarations';
 import { queueDelivery } from '../../services/delivery';
 import { PdfBuilder, loadBranding } from '../../services/pdf';
 import { CERTIFICATE_TYPES, readUploads } from '../../services/uploads';
@@ -51,6 +53,10 @@ const listQuery = z.object({
   sort: z.enum(['name', 'created', 'updated']).default('name'),
 });
 type ListQuery = z.infer<typeof listQuery>;
+
+/** Filtros efetivamente usados (sem paginação, ordem e valores vazios), para a auditoria. */
+const usedFilters = (q: Partial<ListQuery>) =>
+  Object.fromEntries(Object.entries(q).filter(([k, v]) => !['page', 'pageSize', 'sort'].includes(k) && v !== undefined && v !== '' && !(Array.isArray(v) && !v.length)));
 
 const addressSchema = z
   .object({
@@ -105,9 +111,8 @@ export async function customerRoutes(app: FastifyInstance) {
     if (q.mailbox) conds.push(sql`${customers.ecacMailboxMessages} > 0`);
     if (q.govbrRequired) conds.push(eq(customers.govbrLevel, 'bronze'));
     if (q.expiring) {
-      const today = new Date().toISOString().slice(0, 10);
-      const in30 = new Date(Date.now() + 30 * 86400_000).toISOString().slice(0, 10);
-      conds.push(and(gte(customers.procurationExpiresAt, today), lte(customers.procurationExpiresAt, in30))!);
+      const today = todayIso();
+      conds.push(and(gte(customers.procurationExpiresAt, today), lte(customers.procurationExpiresAt, addDaysIso(today, 30)))!);
     }
     if (q.cnd?.length) conds.push(inArray(customers.cndStatus, q.cnd));
     const memberOf = (ids: string[]) =>
@@ -146,6 +151,30 @@ export async function customerRoutes(app: FastifyInstance) {
     return { groups, decls };
   };
 
+  /**
+   * Exclusão (lógica) de clientes, numa transação só: libera a vaga do Copiloto, cancela as
+   * propostas enviadas (o link de aprovação passa a responder 410) e invalida o acesso ao portal
+   * e aos links dos checklists. Devolve quantas propostas foram canceladas.
+   */
+  async function softDeleteCustomers(ids: string[], officeId: string) {
+    const now = new Date();
+    return db.transaction(async (tx) => {
+      await tx
+        .update(customers)
+        .set({ deletedAt: now, portalEnabled: false, portalCodeHash: null, portalCodeExpiresAt: null })
+        .where(and(eq(customers.officeId, officeId), inArray(customers.id, ids)));
+      await tx.update(copilotEnrollments).set({ status: 'inactive' }).where(and(eq(copilotEnrollments.officeId, officeId), inArray(copilotEnrollments.customerId, ids)));
+      const canceled = await tx
+        .update(budgets)
+        .set({ status: 'canceled', updatedAt: now })
+        .where(and(eq(budgets.officeId, officeId), inArray(budgets.customerId, ids), eq(budgets.status, 'sent')))
+        .returning({ id: budgets.id });
+      const decls = tx.select({ id: declarations.id }).from(declarations).where(and(eq(declarations.officeId, officeId), inArray(declarations.customerId, ids)));
+      await tx.update(checklists).set({ accessExpiresAt: null }).where(and(eq(checklists.officeId, officeId), inArray(checklists.declarationId, decls)));
+      return { canceledBudgets: canceled.length };
+    });
+  }
+
   app.get('/customers', { preHandler: guard('customer.list') }, async (req) => {
     const q = parse(listQuery, req.query);
     const { where } = await buildWhere(req, q);
@@ -183,8 +212,8 @@ export async function customerRoutes(app: FastifyInstance) {
       const rows = await db.select({ k: col, n: count() }).from(customers).where(scope).groupBy(col);
       return Object.fromEntries(rows.map((r) => [r.k, r.n]));
     };
-    const today = new Date().toISOString().slice(0, 10);
-    const in30 = new Date(Date.now() + 30 * 86400_000).toISOString().slice(0, 10);
+    const today = todayIso();
+    const in30 = addDaysIso(today, 30);
     const groupCounts = await db
       .select({ id: customerGroups.id, name: customerGroups.name, n: count(customers.id) })
       .from(customerGroups)
@@ -311,17 +340,19 @@ export async function customerRoutes(app: FastifyInstance) {
       .set({ address: clean(body.address), secondaryAddress: clean(body.secondaryAddress), updatedAt: new Date() })
       .where(eq(customers.id, c.id))
       .returning();
+    await audit(req, 'update_address', 'customer', c.id);
     return publicCustomer(row);
   });
 
-  /** Credenciais eCAC/gov.br e INSS: gravadas cifradas, nunca devolvidas ao navegador. */
+  /** Credenciais eCAC/gov.br: gravadas cifradas, nunca devolvidas ao navegador. */
   app.put('/customers/:id/credentials', { preHandler: guard('ecac.credentials') }, async (req) => {
     const user = requireUser(req);
     const { id } = parse(uuidParam, req.params);
-    const body = parse(
-      z.object({ ecacLogin: z.string().max(200).nullable().optional(), ecacPassword: z.string().max(200).nullable().optional(), inssPassword: z.string().max(200).nullable().optional() }),
-      req.body,
-    );
+    // COB-7: sem consulta ao INSS, a senha gov.br para ele não é mais guardada (LGPD, necessidade)
+    if (req.body && typeof req.body === 'object' && 'inssPassword' in req.body) {
+      throw badRequest('O Verifco não guarda mais a senha gov.br do INSS: não há consulta ao INSS que a use.');
+    }
+    const body = parse(z.object({ ecacLogin: z.string().max(200).nullable().optional(), ecacPassword: z.string().max(200).nullable().optional() }), req.body);
     const c = await getCustomerForUser(app.ctx, user, id);
     const enc = (v: string | null | undefined, current: string | null) => (v === undefined ? current : v === null || v === '' ? null : secrets.encrypt(v));
     const [row] = await db
@@ -329,7 +360,6 @@ export async function customerRoutes(app: FastifyInstance) {
       .set({
         ecacLoginEnc: enc(body.ecacLogin, c.ecacLoginEnc),
         ecacPasswordEnc: enc(body.ecacPassword, c.ecacPasswordEnc),
-        inssPasswordEnc: enc(body.inssPassword, c.inssPasswordEnc),
         updatedAt: new Date(),
       })
       .where(eq(customers.id, c.id))
@@ -342,8 +372,8 @@ export async function customerRoutes(app: FastifyInstance) {
     const user = requireUser(req);
     const { id } = parse(uuidParam, req.params);
     const c = await getCustomerForUser(app.ctx, user, id);
-    await db.update(customers).set({ deletedAt: new Date() }).where(eq(customers.id, c.id));
-    await audit(req, 'delete', 'customer', c.id, { name: c.name });
+    const done = await softDeleteCustomers([c.id], user.officeId);
+    await audit(req, 'delete', 'customer', c.id, { name: c.name, ...done });
     return { ok: true };
   });
 
@@ -403,6 +433,7 @@ export async function customerRoutes(app: FastifyInstance) {
     const ids = targets.map((t) => t.id);
     if (!ids.length) throw notFound('Cliente');
     const now = new Date();
+    let extra: Record<string, unknown> = {};
     switch (body.action) {
       case 'status': {
         const v = parse(z.enum(['active', 'inactive']), body.value);
@@ -447,18 +478,34 @@ export async function customerRoutes(app: FastifyInstance) {
       }
       case 'substatus': {
         const v = parse(z.enum(Object.keys(DECLARATION_SUBSTATUS) as [DeclarationSubstatus, ...DeclarationSubstatus[]]), body.value);
-        if (!body.year) throw badRequest('Informe o ano-exercício.');
-        for (const cid of ids) {
-          const d = await getOrCreateDeclaration(db, user.officeId, cid, body.year);
-          await setDeclarationSubstatus(db, d.id, v);
-        }
+        const year = body.year;
+        if (!year) throw badRequest('Informe o ano-exercício.');
+        // mesma regra do status da declaração (finalizar exige permissão própria, conferida antes
+        // de gravar; a situação eCAC acompanha), numa transação e com consultas em lote
+        assertCanSetSubstatus(user, v);
+        await db.transaction(async (tx) => {
+          const decls = await getOrCreateDeclarations(tx, user.officeId, ids, year);
+          const changed = await changeSubstatus(tx, user, decls, v);
+          if (changed.length) {
+            await tx.insert(auditLogs).values(
+              changed.map(({ before }) => ({
+                officeId: user.officeId,
+                userId: user.userId,
+                action: 'substatus',
+                entity: 'declaration',
+                entityId: before.id,
+                data: { from: before.substatus, to: v, bulk: true },
+              })),
+            );
+          }
+        });
         break;
       }
       case 'delete':
-        await db.update(customers).set({ deletedAt: now }).where(inArray(customers.id, ids));
+        extra = await softDeleteCustomers(ids, user.officeId);
         break;
     }
-    await audit(req, `bulk_${body.action}`, 'customer', null, { count: ids.length });
+    await audit(req, `bulk_${body.action}`, 'customer', null, { count: ids.length, ...extra });
     return { ok: true, affected: ids.length, stage: body.action === 'substatus' ? stageOfSubstatus(body.value as DeclarationSubstatus) : undefined };
   });
 
@@ -475,6 +522,8 @@ export async function customerRoutes(app: FastifyInstance) {
       .where(body.ids?.length ? and(where, inArray(customers.id, body.ids)) : where)
       .orderBy(asc(customers.name));
     const { groups, decls } = await loadExtras(rows.map((r) => r.c.id), q.year);
+    // trilha da exportação de dados pessoais: quantos e com quais filtros (sem os dados)
+    await audit(req, 'export', 'customer', null, { count: rows.length, filters: usedFilters(q), ids: body.ids?.length ?? 0 });
     const xlsx = await buildWorkbook([
       {
         name: 'Clientes',
@@ -585,6 +634,7 @@ export async function customerRoutes(app: FastifyInstance) {
     if (dup) throw conflict('Já existe um procurador com este CPF/CNPJ.');
     if (body.userId && !(await db.query.users.findFirst({ where: and(eq(users.id, body.userId), eq(users.officeId, user.officeId)) }))) throw badRequest('Colaborador inválido.');
     const [row] = await db.insert(procurators).values({ ...body, authType: body.authType ?? 'govbr', cpfCnpj: doc, officeId: user.officeId }).returning();
+    await audit(req, 'create', 'procurator', row.id, { name: row.name });
     reply.status(201);
     return publicProcurator(row);
   });
@@ -604,6 +654,7 @@ export async function customerRoutes(app: FastifyInstance) {
       .where(and(eq(procurators.id, id), eq(procurators.officeId, user.officeId)))
       .returning();
     if (!row) throw notFound('Procurador');
+    await audit(req, 'update', 'procurator', row.id, { name: row.name });
     return publicProcurator(row);
   });
 
@@ -613,6 +664,7 @@ export async function customerRoutes(app: FastifyInstance) {
     const rows = await db.delete(procurators).where(and(eq(procurators.id, id), eq(procurators.officeId, user.officeId))).returning();
     if (!rows.length) throw notFound('Procurador');
     await db.update(customers).set({ procurationStatus: 'none' }).where(and(eq(customers.officeId, user.officeId), isNull(customers.procuratorId), ne(customers.procurationStatus, 'none')));
+    await audit(req, 'delete', 'procurator', id, { name: rows[0].name });
     return { ok: true };
   });
 

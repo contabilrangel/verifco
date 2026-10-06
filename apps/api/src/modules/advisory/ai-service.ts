@@ -1,4 +1,5 @@
 import ExcelJS from 'exceljs';
+import { formatDate, todayIso } from '@verifco/shared';
 import type { AppContext } from '../../context';
 import type { AiCompletion, AiMessage } from '../../integrations/providers';
 import { HttpError, badRequest } from '../../lib/errors';
@@ -19,15 +20,14 @@ export const AI_LIMITS = { chatTimeoutMs: 60_000, analysisTimeoutMs: 180_000 };
 export const MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024;
 export const MAX_ATTACHMENTS = 10;
 
-const today = () => new Date().toLocaleDateString('pt-BR');
-
-const COMMON_RULES = `Regras:
+/** Regras comuns aos assistentes. Função, e não constante: a data de hoje (em Brasília) muda com o dia. */
+const commonRules = () => `Regras:
 - Responda em português do Brasil, de forma objetiva, para um contador (profissional da área).
 - Fundamente com a legislação (lei, artigo, instrução normativa) e diga quando houver dúvida, divergência de interpretação ou necessidade de regulamentação.
 - Use apenas os dados fornecidos e os anexos; quando faltar informação, diga o que precisa ser conferido. Não invente valores.
 - Lembre que a resposta deve ser conferida pelo contador antes de qualquer uso com o cliente.
 - Pontos legais recentes: a Lei 15.270/2025 instituiu, a partir do ano-calendário 2026 (declaração de 2027), a redução do IR para rendimentos até R$ 5 mil/mês, a retenção de 10% sobre lucros e dividendos acima de R$ 50 mil/mês de uma mesma empresa e a tributação mínima (IRPFM) para rendimentos totais acima de R$ 600 mil/ano (alíquota de 0% a 10% entre R$ 600 mil e R$ 1,2 milhão, com dedução do IR já pago e redutor pela carga da empresa).
-- Hoje é ${today()}.`;
+- Hoje é ${formatDate(todayIso())}.`;
 
 const PERSONAS: Record<AssistantKey, string> = {
   ir: 'Você é um especialista em Imposto de Renda da Pessoa Física (DIRPF) que apoia escritórios contábeis: rendimentos, deduções, bens e direitos, dependentes, carnê-leão, ganhos, atividade rural e obrigações acessórias.',
@@ -42,10 +42,10 @@ const PERSONAS: Record<AssistantKey, string> = {
 };
 
 export function systemPrompt(assistant: AssistantKey, context: string) {
-  return `${PERSONAS[assistant]}\n\n${COMMON_RULES}\n\nContexto do cliente (dados do sistema do escritório):\n${context}`;
+  return `${PERSONAS[assistant]}\n\n${commonRules()}\n\nContexto do cliente (dados do sistema do escritório):\n${context}`;
 }
 
-export const FINANCIAL_ADVISOR_PROMPT = `Você é um assessor financeiro que trabalha junto a um escritório contábil. Analise os documentos anexados (extratos, faturas, informes, planilhas) e escreva uma análise em Markdown simples com as seções:
+export const financialAdvisorPrompt = () => `Você é um assessor financeiro que trabalha junto a um escritório contábil. Analise os documentos anexados (extratos, faturas, informes, planilhas) e escreva uma análise em Markdown simples com as seções:
 ## Resumo
 ## Receitas e entradas
 ## Despesas e saídas
@@ -53,7 +53,7 @@ export const FINANCIAL_ADVISOR_PROMPT = `Você é um assessor financeiro que tra
 ## Riscos e alertas
 ## Oportunidades e recomendações
 ## Pontos para o contador conferir
-Use listas e valores em reais quando estiverem nos documentos. Não invente números. Termine lembrando que a análise deve ser conferida pelo contador.\n\n${COMMON_RULES}`;
+Use listas e valores em reais quando estiverem nos documentos. Não invente números. Termine lembrando que a análise deve ser conferida pelo contador.\n\n${commonRules()}`;
 
 export const DEFENSE_PROMPT = `Redija a MINUTA de uma defesa administrativa (impugnação/esclarecimentos) relativa à malha fina do IRPF do cliente, com base na conversa, no contexto e nas observações do contador.
 Estrutura: endereçamento (Delegacia da Receita Federal de Julgamento ou unidade indicada na notificação), qualificação do contribuinte usando exatamente os marcadores [NOME DO CONTRIBUINTE] e [CPF DO CONTRIBUINTE], dos fatos, do direito (com fundamentação legal), das provas (lista de documentos anexos), do pedido, local, data e assinatura.

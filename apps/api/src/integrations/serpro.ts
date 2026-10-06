@@ -13,6 +13,9 @@
  * - Códigos de retorno (codigos_retorno/): 200 ok, 202/204 em processamento (aguardar `tempoEspera`/ETag),
  *   403 sem procuração, 429 limite. Quando o autor do pedido é um procurador diferente do contratante,
  *   envie o `autenticar_procurador_token` obtido em AUTENTICAPROCURADOR/ENVIOXMLASSINADO81.
+ *   O SITFIS responde 304 quando o protocolo do dia ainda não foi usado (o protocolo vem no ETag).
+ * - Cada autenticação feita com o certificado grava no procurador dono dele a situação do login
+ *   (`login_status` ok/error/expired e `last_validated_at`), que alimenta o indicador do dashboard.
  */
 import https from 'node:https';
 import { and, eq } from 'drizzle-orm';
@@ -243,12 +246,19 @@ const niTipo = (ni: string) => (ni.length === 11 ? 1 : 2);
 const TOKEN_MARGIN_MS = 60_000;
 const tokenCache = new Map<string, SerproToken>();
 
+/** Situação do login gravada no procurador dono do certificado (indicador do dashboard). */
+export type ProcuratorLoginStatus = 'ok' | 'error' | 'expired';
+
+/** Erro de autenticação que diz algo sobre o certificado ou as credenciais (não é falha de rede). */
+const loginError = (message: string, loginStatus: Exclude<ProcuratorLoginStatus, 'ok'>, status?: number) =>
+  new IntegrationError('serpro', message, status, { loginStatus });
+
 function certificateError(err: unknown): IntegrationError {
   const e = err as { code?: string; message?: string };
   const msg = `${e?.code ?? ''} ${e?.message ?? ''}`;
-  if (/mac verify failure|bad decrypt/i.test(msg)) return new IntegrationError('serpro', 'A senha do certificado digital está incorreta.');
+  if (/mac verify failure|bad decrypt/i.test(msg)) return loginError('A senha do certificado digital está incorreta.', 'error');
   if (/unsupported|ERR_OSSL_EVP_UNSUPPORTED|not enough data|wrong tag/i.test(msg)) {
-    return new IntegrationError('serpro', 'Não foi possível ler o certificado (.pfx). Exporte-o novamente com criptografia AES-256 e cadastre de novo.');
+    return loginError('Não foi possível ler o certificado (.pfx). Exporte-o novamente com criptografia AES-256 e cadastre de novo.', 'error');
   }
   if (/ETIMEDOUT|timeout/i.test(msg)) return new IntegrationError('serpro', 'O SERPRO não respondeu à autenticação a tempo. Tente novamente.');
   return new IntegrationError('serpro', `Falha na conexão com o SERPRO: ${errorMessage(err)}`);
@@ -264,6 +274,8 @@ export interface SerproClientOptions {
   certificate: () => Promise<{ pfx: Buffer; passphrase: string }>;
   /** Chave do cache de token (escritório + credenciais). */
   cacheKey: string;
+  /** Avisado a cada autenticação feita de verdade (não as do cache), com o resultado do login. */
+  onLogin?: (status: ProcuratorLoginStatus) => Promise<void>;
 }
 
 export class SerproClient {
@@ -273,10 +285,32 @@ export class SerproClient {
     return this.opts.contractorCnpj;
   }
 
-  /** OAuth2 client_credentials com mTLS; reaproveita o token até perto de expirar. */
+  /**
+   * OAuth2 client_credentials com mTLS; reaproveita o token até perto de expirar.
+   * O resultado (ok, erro do certificado ou das credenciais, certificado vencido) vai para
+   * `onLogin`; falha de rede ou do próprio SERPRO (timeout, 5xx) não muda a situação gravada.
+   */
   async authenticate(force = false): Promise<SerproToken> {
     const cached = tokenCache.get(this.opts.cacheKey);
     if (!force && cached && cached.expiresAt > Date.now() + TOKEN_MARGIN_MS) return cached;
+    let token: SerproToken;
+    try {
+      token = await this.requestToken();
+    } catch (err) {
+      const status = err instanceof IntegrationError ? (err.details as { loginStatus?: ProcuratorLoginStatus } | undefined)?.loginStatus : undefined;
+      if (status) await this.reportLogin(status);
+      throw err;
+    }
+    await this.reportLogin('ok');
+    return token;
+  }
+
+  private async reportLogin(status: ProcuratorLoginStatus) {
+    // gravar a situação nunca derruba a chamada
+    await this.opts.onLogin?.(status).catch(() => undefined);
+  }
+
+  private async requestToken(): Promise<SerproToken> {
     const { pfx, passphrase } = await this.opts.certificate();
     const basic = Buffer.from(`${this.opts.consumerKey}:${this.opts.consumerSecret}`).toString('base64');
     let res: { status: number; body: string };
@@ -298,7 +332,7 @@ export class SerproClient {
       /* corpo não JSON */
     }
     if (res.status === 401 || res.status === 403) {
-      throw new IntegrationError('serpro', `O SERPRO recusou a autenticação (HTTP ${res.status}). Confira a Consumer Key, o Consumer Secret e se o certificado é o do contratante.`, res.status);
+      throw loginError(`O SERPRO recusou a autenticação (HTTP ${res.status}). Confira a Consumer Key, o Consumer Secret e se o certificado é o do contratante.`, 'error', res.status);
     }
     if (res.status < 200 || res.status >= 300 || !data.access_token || !data.jwt_token) {
       const detail = data.error_description ?? data.message ?? res.body.slice(0, 200);
@@ -353,6 +387,11 @@ export class SerproClient {
 
     const payload = (res.data && typeof res.data === 'object' ? res.data : {}) as { dados?: unknown; mensagens?: SerproMensagem[]; status?: number };
     const mensagens = Array.isArray(payload.mensagens) ? payload.mensagens : [];
+    if (res.status === 304) {
+      // SITFIS: o protocolo do dia ainda não usado continua valendo e vem no ETag ("protocoloRelatorio:...")
+      const cached = /protocoloRelatorio:([^"]+)/.exec(res.headers.get('etag') ?? '')?.[1];
+      return { status: 304, dados: (cached ? { protocoloRelatorio: cached } : null) as T | null, mensagens, pending: false, raw: res.data };
+    }
     if (res.status === 202 || res.status === 204) {
       const dadosObj = parseDados(payload.dados) as { tempoEspera?: number } | null;
       const etag = res.headers.get('etag');
@@ -395,10 +434,10 @@ async function loadCertificate(ctx: AppContext, officeId: string, procuratorId: 
     : null;
   if (!proc) throw new IntegrationError('serpro', 'Selecione o certificado digital do escritório na integração SERPRO.');
   if (!proc.certificateFileId || !proc.certificatePasswordEnc) {
-    throw new IntegrationError('serpro', `O procurador ${proc.name} não tem certificado A1 (.pfx) e senha cadastrados.`);
+    throw loginError(`O procurador ${proc.name} não tem certificado A1 (.pfx) e senha cadastrados.`, 'error');
   }
   if (proc.certificateExpiresAt && proc.certificateExpiresAt < todayIso()) {
-    throw new IntegrationError('serpro', `O certificado de ${proc.name} venceu em ${proc.certificateExpiresAt.split('-').reverse().join('/')}.`);
+    throw loginError(`O certificado de ${proc.name} venceu em ${proc.certificateExpiresAt.split('-').reverse().join('/')}.`, 'expired');
   }
   const file = await ctx.files.get(officeId, proc.certificateFileId);
   return { pfx: file.data, passphrase: ctx.secrets.decrypt(proc.certificatePasswordEnc) };
@@ -428,7 +467,17 @@ export async function serproClientFrom(
     contractorCnpj: cnpj,
     certificate: () => loadCertificate(ctx, officeId, procuratorId),
     cacheKey: `${officeId}:${procuratorId}:${sha256(`${consumerKey}:${consumerSecret}`)}`,
+    onLogin: (status) => recordProcuratorLogin(ctx, officeId, procuratorId, status),
   });
+}
+
+/** Grava a situação do login no procurador do certificado (teste da integração e uso pelo robô). */
+async function recordProcuratorLogin(ctx: AppContext, officeId: string, procuratorId: string, status: ProcuratorLoginStatus) {
+  if (!procuratorId) return;
+  await ctx.db
+    .update(procurators)
+    .set({ loginStatus: status, lastValidatedAt: new Date() })
+    .where(and(eq(procurators.officeId, officeId), eq(procurators.id, procuratorId)));
 }
 
 /**

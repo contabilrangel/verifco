@@ -11,10 +11,25 @@
  * - POST https://graph.facebook.com/{versão}/{phone-number-id}/messages
  *   `{ messaging_product: 'whatsapp', to, type: 'text'|'document', ... }` → `messages[0].id`.
  * - POST .../{phone-number-id}/media (multipart: messaging_product, type, file) → `{ id }`.
- * Mensagens livres só valem dentro da janela de 24 h aberta pelo cliente.
+ * Mensagens livres só valem dentro da janela de 24 h aberta pelo cliente. Fora dela, com um
+ * modelo aprovado configurado para o tipo de envio, vai `type: 'template'`
+ * `{ template: { name, language: { code }, components: [header (documento), body (parâmetros)] } }`
+ * (developers.facebook.com/documentation/business-messaging/whatsapp/templates/utility-templates).
+ * O recebimento das respostas (webhook) fica em `whatsapp-inbound.ts`.
  */
-import { onlyDigits } from '@verifco/shared';
+import { and, eq, gt } from 'drizzle-orm';
+import {
+  WHATSAPP_MESSAGE_VARIABLE,
+  WHATSAPP_SERVICE_WINDOW_MS,
+  onlyDigits,
+  parseWhatsAppTemplates,
+  whatsappTemplateFor,
+  whatsappTemplateParam,
+  type WhatsAppTemplateConfig,
+} from '@verifco/shared';
 import type { AppContext } from '../context';
+import { messages } from '../db/schema';
+import { baseTemplateValues } from '../services/delivery';
 import { IntegrationError, ensureOk, httpRequest } from './http';
 import { assertSafeBaseUrl } from './ssrf';
 import type { OutgoingWhatsApp, WhatsAppSender } from './providers';
@@ -26,10 +41,18 @@ export interface WhatsAppConfig {
   instance?: string;
   phoneNumberId?: string;
   apiVersion?: string;
+  /** Modelos aprovados por tipo de envio (texto lido por `parseWhatsAppTemplates`). */
+  templates?: string;
 }
 export interface WhatsAppSecrets {
   apiKey?: string;
   accessToken?: string;
+  /** Chave secreta do app da Meta: confere a assinatura X-Hub-Signature-256 do webhook. */
+  appSecret?: string;
+  /** Token de verificação do webhook da Meta (hub.verify_token). */
+  webhookVerifyToken?: string;
+  /** Evolution API: token exigido no cabeçalho `Authorization: Bearer` do webhook (opcional). */
+  webhookAuthToken?: string;
 }
 
 export const META_GRAPH_URL = 'https://graph.facebook.com';
@@ -166,6 +189,22 @@ export class MetaWhatsAppClient {
     if (caption && kind !== 'audio') media.caption = caption;
     return this.sendMessage({ to, type: kind, [kind]: media });
   }
+
+  /** Modelo aprovado: parâmetros do corpo (posicionais ou nomeados) e, se houver, o PDF no cabeçalho. */
+  async sendTemplate(
+    to: string,
+    tpl: { name: string; language: string; body: { name: string | null; text: string }[]; document?: { filename: string; content: Buffer; contentType?: string } },
+  ) {
+    const components: Record<string, unknown>[] = [];
+    if (tpl.document) {
+      const id = await this.uploadMedia(tpl.document);
+      components.push({ type: 'header', parameters: [{ type: 'document', document: { id, filename: tpl.document.filename } }] });
+    }
+    if (tpl.body.length) {
+      components.push({ type: 'body', parameters: tpl.body.map((p) => ({ type: 'text', ...(p.name ? { parameter_name: p.name } : {}), text: p.text })) });
+    }
+    return this.sendMessage({ to, type: 'template', template: { name: tpl.name, language: { code: tpl.language }, ...(components.length ? { components } : {}) } });
+  }
 }
 
 type LoadedWhatsApp = LoadedIntegration<WhatsAppConfig, WhatsAppSecrets>;
@@ -196,11 +235,56 @@ async function deliver(fetchImpl: typeof fetch, loaded: LoadedWhatsApp, msg: Out
   return c.mode === 'meta' ? c.client.sendDocument(to, doc, text) : c.client.sendMedia(to, doc, text);
 }
 
+/**
+ * Modelo a usar no envio: só na Cloud API da Meta, para um cliente conhecido, com modelo
+ * configurado para o tipo de envio e sem mensagem dele pelo WhatsApp nas últimas 24 h.
+ */
+async function templateOutsideWindow(ctx: AppContext, officeId: string, loaded: LoadedWhatsApp, msg: OutgoingWhatsApp): Promise<WhatsAppTemplateConfig | null> {
+  if (loaded.config.mode !== 'meta' || !msg.customerId) return null;
+  const template = whatsappTemplateFor(parseWhatsAppTemplates(loaded.config.templates).templates, msg.templateKey);
+  if (!template) return null;
+  const since = new Date(Date.now() - WHATSAPP_SERVICE_WINDOW_MS);
+  const recent = await ctx.db.query.messages.findFirst({
+    where: and(eq(messages.officeId, officeId), eq(messages.customerId, msg.customerId), eq(messages.direction, 'in'), eq(messages.channel, 'whatsapp'), gt(messages.createdAt, since)),
+  });
+  return recent ? null : template;
+}
+
+/** Envia o modelo aprovado com as variáveis do envio (`MENSAGEM` = o texto inteiro, em uma linha). */
+async function deliverTemplate(ctx: AppContext, fetchImpl: typeof fetch, loaded: LoadedWhatsApp, officeId: string, msg: OutgoingWhatsApp, template: WhatsAppTemplateConfig) {
+  const to = onlyDigits(msg.to);
+  if (to.length < 10) throw new IntegrationError('whatsapp', `Número de WhatsApp inválido: ${msg.to}`);
+  const c = clientFor(fetchImpl, loaded);
+  if (c.mode !== 'meta') throw new IntegrationError('whatsapp', 'Modelos aprovados só existem na WhatsApp Cloud API da Meta.');
+  // fora da janela, o PDF só chega pelo cabeçalho de documento do modelo
+  if (template.document && !msg.document) {
+    throw new IntegrationError('whatsapp', `O modelo “${template.name}” leva um PDF no cabeçalho, mas este envio não tem anexo. Ajuste os modelos em Administração › Integrações › WhatsApp.`);
+  }
+  if (msg.document && !template.document) {
+    throw new IntegrationError(
+      'whatsapp',
+      `O cliente não escreveu nas últimas 24 h e o modelo “${template.name}” não leva documento: marque “documento” num modelo com PDF no cabeçalho ou envie por e-mail.`,
+    );
+  }
+  const values: Record<string, string | number | null | undefined> = {
+    ...(msg.values ?? (await baseTemplateValues(ctx, officeId, msg.customerId ?? null))),
+    [WHATSAPP_MESSAGE_VARIABLE]: msg.text,
+  };
+  return c.client.sendTemplate(to, {
+    name: template.name,
+    language: template.language,
+    body: template.params.map((p) => ({ name: p.name, text: whatsappTemplateParam(values[p.variable]) })),
+    document: template.document ? msg.document : undefined,
+  });
+}
+
 export function createWhatsAppSender(ctx: AppContext, getFetch: () => typeof fetch, getUserFetch: () => typeof fetch = getFetch): WhatsAppSender {
   return {
     async send(officeId, msg) {
       const loaded = await loadIntegration<WhatsAppConfig, WhatsAppSecrets>(ctx, officeId, 'whatsapp');
       if (!loaded || !loaded.row.enabled) throw new IntegrationError('whatsapp', 'Configure o WhatsApp em Administração › Integrações.');
+      const template = await templateOutsideWindow(ctx, officeId, loaded, msg);
+      if (template) return { messageId: await deliverTemplate(ctx, getFetch(), loaded, officeId, msg, template) };
       return { messageId: await deliver(getFetch(), loaded, msg, getUserFetch()) };
     },
   };

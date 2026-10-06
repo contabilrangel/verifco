@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { CheckCircle2, ExternalLink, FileText, Mail, MessageCircle, MoreHorizontal, Pencil, Undo2 } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
+import { CheckCircle2, ExternalLink, FileText, Mail, MessageCircle, MoreHorizontal, Pencil, RefreshCw, Undo2 } from 'lucide-react';
 import { todayIso } from '@verifco/shared';
 import { Alert, Button, ConfirmDialog, IconButton, Input, Menu, MenuItem, Modal, MoneyInput, Stat } from '../../ds';
 import { ApiError, api } from '../../lib/api';
@@ -20,9 +21,26 @@ const PROVIDERS: Record<string, string> = { asaas: 'Asaas', omie: 'Omie' };
 
 export function BillingPanel({ billing, customerId, contact }: { billing: Billing; customerId: string; contact: { email: boolean; mobile: boolean } }) {
   const { can } = useAuth();
+  const qc = useQueryClient();
   const [dialog, setDialog] = useState<Dialog>(null);
+  const [emitOpen, setEmitOpen] = useState(false);
   const invalidate = [['finance', 'budgets', customerId]];
   const close = () => setDialog(null);
+  const provider = billing.provider ? (PROVIDERS[billing.provider] ?? billing.provider) : '';
+
+  // emissão em andamento no provedor: atualiza até os links chegarem (ou a falha aparecer)
+  const sync = billing.externalSync;
+  const emitting = Boolean(sync && (sync.status === 'running' || (sync.status === 'queued' && !sync.error)));
+  useEffect(() => {
+    if (!emitting) return;
+    const t = setInterval(() => void qc.invalidateQueries({ queryKey: ['finance', 'budgets', customerId] }), 5000);
+    return () => clearInterval(t);
+  }, [emitting, qc, customerId]);
+  const emit = useAction(() => api.post(`/finance/billings/${billing.id}/sync`), {
+    success: 'Emissão da cobrança colocada na fila.',
+    invalidate,
+    onSuccess: () => setEmitOpen(false),
+  });
 
   const receipt = useAction((inst: Installment) => api.post<{ receiptNumber: number; fileId: string }>(`/finance/installments/${inst.id}/receipt`), {
     success: (r) => `Recibo nº ${r.receiptNumber} gerado.`,
@@ -52,9 +70,7 @@ export function BillingPanel({ billing, customerId, contact }: { billing: Billin
         <Stat label="Em aberto" value={formatMoney(billing.openCents)} />
         <Stat label="Vencido" value={formatMoney(billing.overdueCents)} tone={billing.overdueCents > 0 ? 'danger' : undefined} />
       </div>
-      {billing.provider && billing.installments.every((i) => !i.externalUrl) && (
-        <Alert tone="primary">A cobrança está sendo emitida no {PROVIDERS[billing.provider] ?? billing.provider}. Os links de pagamento aparecem aqui assim que ficarem prontos.</Alert>
-      )}
+      <ExternalSyncNotice billing={billing} canEmit={can('billing.edit')} onEmit={() => setEmitOpen(true)} />
       <div className="vf-table-wrap vf-fin-subtable">
         <table className="vf-table">
           <thead>
@@ -150,6 +166,15 @@ export function BillingPanel({ billing, customerId, contact }: { billing: Billin
         onClose={close}
       />
       <ConfirmDialog
+        open={emitOpen}
+        title={`Emitir cobrança no ${provider}`}
+        message={`As parcelas em aberto ainda sem boleto ou Pix serão enviadas agora ao ${provider}. As que já têm cobrança emitida não são duplicadas.`}
+        confirmLabel="Emitir"
+        loading={emit.isPending}
+        onConfirm={() => emit.mutate(undefined)}
+        onClose={() => setEmitOpen(false)}
+      />
+      <ConfirmDialog
         open={dialog?.kind === 'reopen'}
         title="Desfazer recebimento"
         message="A parcela volta a ficar em aberto. Use quando o recebimento foi lançado por engano."
@@ -160,6 +185,58 @@ export function BillingPanel({ billing, customerId, contact }: { billing: Billin
         onClose={close}
       />
     </div>
+  );
+}
+
+/** Situação da emissão no Asaas/Omie: em andamento, nova tentativa agendada ou falha (com "Emitir novamente"). */
+function ExternalSyncNotice({ billing, canEmit, onEmit }: { billing: Billing; canEmit: boolean; onEmit: () => void }) {
+  const sync = billing.externalSync;
+  if (!billing.provider || !sync) return null;
+  const label = PROVIDERS[billing.provider] ?? billing.provider;
+  const pending = billing.installments.some((i) => (i.status === 'open' || i.status === 'overdue') && !i.externalId);
+  const action = (text: string) =>
+    canEmit && (
+      <Button size="sm" kind="secondary" icon={<RefreshCw />} onClick={onEmit}>
+        {text}
+      </Button>
+    );
+  const activate = !sync.integrationReady && <span>Ao ativar a integração em Administração › Integrações, a cobrança é emitida automaticamente.</span>;
+  if (sync.status === 'running' || (sync.status === 'queued' && !sync.error)) {
+    return <Alert tone="primary">A cobrança está sendo emitida no {label}. Os links de pagamento aparecem aqui assim que ficarem prontos.</Alert>;
+  }
+  if (sync.status === 'queued') {
+    return (
+      <Alert tone="warning" title={`Não foi possível emitir a cobrança no ${label}`}>
+        <div className="vf-fin-sync">
+          <span>{sync.error}</span>
+          <span>
+            {sync.nextAttemptAt ? `Nova tentativa automática em ${formatDateTime(sync.nextAttemptAt)}` : 'Nova tentativa automática em instantes'} (tentativa {sync.attempts} de {sync.maxAttempts}).
+          </span>
+          {action('Tentar agora')}
+        </div>
+      </Alert>
+    );
+  }
+  if (!pending) return null;
+  if (sync.status === 'failed') {
+    return (
+      <Alert tone="danger" title={`Falha ao emitir a cobrança no ${label}`}>
+        <div className="vf-fin-sync">
+          <span>{sync.error}</span>
+          {activate}
+          {action('Emitir novamente')}
+        </div>
+      </Alert>
+    );
+  }
+  return (
+    <Alert tone="warning" title={`Cobrança não emitida no ${label}`}>
+      <div className="vf-fin-sync">
+        <span>Há parcela em aberto sem boleto ou Pix no {label}.</span>
+        {activate}
+        {action('Emitir cobrança')}
+      </div>
+    </Alert>
   );
 }
 

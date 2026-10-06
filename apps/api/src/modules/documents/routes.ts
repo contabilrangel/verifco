@@ -1,6 +1,5 @@
 import { and, asc, desc, eq, inArray, type SQL } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
-import JSZip from 'jszip';
 import { z } from 'zod';
 import { DOCUMENT_CATEGORY_LIST, formatCpfCnpj, type DocumentCategory } from '@verifco/shared';
 import type { AppContext, AuthUser } from '../../context';
@@ -10,9 +9,10 @@ import { audit, guard, parse, requireUser, uuidParam, yearSchema } from '../../l
 import { customerScope, getCustomerForUser } from '../../services/customers';
 import { getOrCreateDeclaration } from '../../services/declarations';
 import { DOCUMENT_TYPES, readUploads, sendStoredFile } from '../../services/uploads';
+import { MAX_ZIP_DOWNLOAD_BYTES, zipStoredFiles, type StoredZipEntry } from '../../storage/zip';
+import { refreshElaborationStatus } from '../elaboration/service';
 
 const categoryEnum = z.enum(DOCUMENT_CATEGORY_LIST as [DocumentCategory, ...DocumentCategory[]]);
-const MAX_ZIP_BYTES = 1024 * 1024 * 1024;
 
 /** Nome seguro para pastas e arquivos dentro do .zip. */
 const safeName = (s: string) =>
@@ -89,6 +89,7 @@ export async function documentRoutes(app: FastifyInstance) {
         .returning();
       created.push({ ...doc, filename: saved.filename, mimeType: saved.mimeType, size: saved.size, exerciseYear: year });
     }
+    await refreshElaborationStatus(db, declaration.id);
     await audit(req, 'upload', 'document', customer.id, { count: created.length, year });
     reply.status(201);
     return created;
@@ -100,6 +101,9 @@ export async function documentRoutes(app: FastifyInstance) {
     const { category } = parse(z.object({ category: categoryEnum }), req.body);
     const doc = await getDocumentForUser(app.ctx, user, id);
     const [row] = await db.update(documents).set({ category }).where(eq(documents.id, doc.id)).returning();
+    await audit(req, 'update', 'document', doc.id, { category, from: doc.category });
+    // a categoria conta nos arquivos do programa IRPF da elaboração
+    if (doc.declarationId) await refreshElaborationStatus(db, doc.declarationId);
     return row;
   });
 
@@ -110,6 +114,7 @@ export async function documentRoutes(app: FastifyInstance) {
     // o documento é apagado em cascata com o arquivo
     await app.ctx.files.remove(user.officeId, doc.fileId);
     await db.delete(documents).where(eq(documents.id, doc.id));
+    if (doc.declarationId) await refreshElaborationStatus(db, doc.declarationId);
     await audit(req, 'delete', 'document', doc.id);
     return { ok: true };
   });
@@ -118,8 +123,8 @@ export async function documentRoutes(app: FastifyInstance) {
     const user = requireUser(req);
     const { id } = parse(uuidParam, req.params);
     const doc = await getDocumentForUser(app.ctx, user, id);
-    const { row, data } = await app.ctx.files.get(user.officeId, doc.fileId);
-    return sendStoredFile(reply, row, data, (req.query as Record<string, string>).inline === '1');
+    const { row, stream } = await app.ctx.files.open(user.officeId, doc.fileId);
+    return sendStoredFile(reply, row, stream, (req.query as Record<string, string>).inline === '1');
   });
 
   /** Baixa os documentos de vários clientes num .zip, com uma pasta por cliente. */
@@ -135,12 +140,19 @@ export async function documentRoutes(app: FastifyInstance) {
     if (!visible.length) throw notFound('Cliente');
     const conds: SQL[] = [eq(documents.officeId, user.officeId), inArray(documents.customerId, visible.map((c) => c.id))];
     if (body.year) conds.push(eq(declarations.exerciseYear, body.year));
-    const docs = await selectDocs(and(...conds)!).orderBy(asc(documents.createdAt));
+    // a chave do armazenamento fica só aqui (a listagem não a devolve)
+    const docs = await db
+      .select({ customerId: documents.customerId, exerciseYear: declarations.exerciseYear, filename: files.filename, size: files.size, storageKey: files.storageKey, createdAt: files.createdAt })
+      .from(documents)
+      .innerJoin(files, eq(files.id, documents.fileId))
+      .leftJoin(declarations, eq(declarations.id, documents.declarationId))
+      .where(and(...conds))
+      .orderBy(asc(documents.createdAt));
     if (!docs.length) throw badRequest(body.year ? `Nenhum documento do exercício ${body.year} para os clientes selecionados.` : 'Nenhum documento para os clientes selecionados.');
     const totalSize = docs.reduce((a, d) => a + d.size, 0);
-    if (totalSize > MAX_ZIP_BYTES) throw badRequest('Os arquivos passam de 1 GB. Selecione menos clientes.');
+    if (totalSize > MAX_ZIP_DOWNLOAD_BYTES) throw badRequest('Os arquivos passam de 1 GB. Selecione menos clientes.');
 
-    const zip = new JSZip();
+    const entries: StoredZipEntry[] = [];
     const used = new Set<string>();
     for (const c of visible) {
       const mine = docs.filter((d) => d.customerId === c.id);
@@ -154,13 +166,12 @@ export async function documentRoutes(app: FastifyInstance) {
         let path = `${folder}/${sub}${base}`;
         for (let n = 2; used.has(path.toLowerCase()); n++) path = `${folder}/${sub}${stem} (${n})${ext}`;
         used.add(path.toLowerCase());
-        const { data } = await app.ctx.files.get(user.officeId, d.fileId);
-        zip.file(path, data);
+        entries.push({ path, file: { storageKey: d.storageKey, createdAt: d.createdAt } });
       }
     }
-    const buf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } });
     await audit(req, 'download_zip', 'document', null, { customers: visible.length, files: docs.length, year: body.year ?? null });
     const name = body.year ? `documentos-${body.year}.zip` : 'documentos.zip';
-    return reply.header('Content-Type', 'application/zip').header('Content-Disposition', `attachment; filename="${name}"`).send(buf);
+    // montado em stream enquanto é baixado: cada arquivo é lido do armazenamento na sua vez
+    return sendStoredFile(reply, { filename: name, mimeType: 'application/zip' }, zipStoredFiles(app.ctx.files, entries));
   });
 }

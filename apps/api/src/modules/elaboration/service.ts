@@ -1,18 +1,20 @@
-import { eq, inArray } from 'drizzle-orm';
+import { and, asc, count, eq, ilike, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import JSZip from 'jszip';
 import { z } from 'zod';
 import {
+  ELABORATION_STATUS,
   ITEM_KINDS,
   ITEM_KIND_LIST,
   formatCpfCnpj,
+  formatDateTimeBr,
   onlyDigits,
   type DeclarationItem,
   type ElaborationStatus,
   type ItemKind,
 } from '@verifco/shared';
 import type { AppContext } from '../../context';
-import type { Db } from '../../db/client';
-import { declarations, documents, files } from '../../db/schema';
+import type { DbOrTx } from '../../db/client';
+import { customers, declarations, documents, files, type ElaborationCounts } from '../../db/schema';
 import type { CustomerRow } from '../../services/customers';
 import type { DeclarationRow } from '../../services/declarations';
 import { listItems } from '../../services/declarations';
@@ -64,8 +66,11 @@ export function getExtraction(extracted: Record<string, unknown> | null | undefi
   return e && Array.isArray(e.lines) ? e : null;
 }
 
-/** Documentos (com dados do arquivo) das declarações informadas. */
-export async function loadDocStats(db: Db, declarationIds: string[]): Promise<Map<string, DocStat[]>> {
+/** O banco ou uma transação aberta nele. */
+type Queryable = Pick<DbOrTx, 'select'>;
+
+/** Documentos (com dados do arquivo e o JSON `extracted`) das declarações informadas. */
+export async function loadDocStats(db: Queryable, declarationIds: string[]): Promise<Map<string, DocStat[]>> {
   const map = new Map<string, DocStat[]>();
   if (!declarationIds.length) return map;
   const rows = await db
@@ -86,7 +91,11 @@ export async function loadDocStats(db: Db, declarationIds: string[]): Promise<Ma
     .innerJoin(files, eq(files.id, documents.fileId))
     .where(inArray(documents.declarationId, declarationIds))
     .orderBy(documents.createdAt);
-  for (const r of rows) map.set(r.declarationId!, [...(map.get(r.declarationId!) ?? []), r]);
+  for (const r of rows) {
+    const list = map.get(r.declarationId!);
+    if (list) list.push(r);
+    else map.set(r.declarationId!, [r]);
+  }
   return map;
 }
 
@@ -106,7 +115,7 @@ export function computeElaborationStatus(stored: string, docs: DocStat[]): Elabo
   return stored === 'exported' ? 'exported' : 'ok';
 }
 
-export function docCounts(docs: DocStat[]) {
+export function docCounts(docs: DocStat[]): ElaborationCounts {
   const eligible = docs.filter((d) => isExtractable(d.mimeType));
   const lines = eligible.flatMap((d) => getExtraction(d.extracted)?.lines ?? []);
   return {
@@ -121,16 +130,139 @@ export function docCounts(docs: DocStat[]) {
   };
 }
 
-/** Recalcula e grava a situação da elaboração da declaração. */
-export async function refreshElaborationStatus(db: Db, declarationId: string): Promise<ElaborationStatus> {
-  const decl = await db.query.declarations.findFirst({ where: eq(declarations.id, declarationId) });
-  if (!decl) return 'no_files';
-  const docs = (await loadDocStats(db, [declarationId])).get(declarationId) ?? [];
-  const status = computeElaborationStatus(decl.elaborationStatus, docs);
-  if (status !== decl.elaborationStatus) {
-    await db.update(declarations).set({ elaborationStatus: status, updatedAt: new Date() }).where(eq(declarations.id, declarationId));
+const COUNT_KEYS = ['total', 'eligible', 'processed', 'errors', 'programFiles', 'lines', 'conflicts', 'pendingLines'] as const;
+
+/** Contadores gravados, na ordem de `docCounts` (o jsonb guarda as chaves em outra ordem); vazio = zeros. */
+export const storedCounts = (c: Partial<ElaborationCounts> | null | undefined): ElaborationCounts =>
+  Object.fromEntries(COUNT_KEYS.map((k) => [k, Number(c?.[k] ?? 0)])) as ElaborationCounts;
+
+const sameCounts = (a: ElaborationCounts | null, b: ElaborationCounts) => Boolean(a) && COUNT_KEYS.every((k) => a![k] === b[k]);
+
+/**
+ * Recalcula e grava a situação e os contadores da elaboração da declaração. A listagem da central
+ * lê só o que fica gravado aqui, então quem grava, apaga ou muda a categoria de um documento da
+ * declaração chama esta função. A trava na linha da declaração ordena atualizações simultâneas
+ * (ex.: vários arquivos do sincronizador): a última a gravar sempre leu todos os documentos.
+ */
+export async function refreshElaborationStatus(db: DbOrTx, declarationId: string): Promise<ElaborationStatus> {
+  return db.transaction(async (tx) => {
+    const [decl] = await tx
+      .select({ status: declarations.elaborationStatus, counts: declarations.elaborationCounts })
+      .from(declarations)
+      .where(eq(declarations.id, declarationId))
+      .for('update');
+    if (!decl) return 'no_files';
+    const docs = (await loadDocStats(tx, [declarationId])).get(declarationId) ?? [];
+    const status = computeElaborationStatus(decl.status, docs);
+    const counts = docCounts(docs);
+    if (status !== decl.status || !sameCounts(decl.counts, counts)) {
+      await tx
+        .update(declarations)
+        .set({ elaborationStatus: status, elaborationCounts: counts, ...(status !== decl.status ? { updatedAt: new Date() } : {}) })
+        .where(eq(declarations.id, declarationId));
+    }
+    return status;
+  });
+}
+
+/** Declarações por lote no cálculo inicial dos contadores (limita a memória com o JSON `extracted`). */
+const FILL_BATCH = 200;
+
+/**
+ * Calcula, uma vez, os contadores ainda vazios das declarações do exercício: as gravadas antes de
+ * existirem os contadores e as criadas depois sem nenhum documento (os documentos novos já
+ * atualizam pela `refreshElaborationStatus`). Usa as mesmas regras de `computeElaborationStatus`
+ * e só grava onde o contador continua vazio: uma atualização feita nesse meio-tempo prevalece.
+ */
+export async function fillElaborationCounts(db: DbOrTx, officeId: string, year: number) {
+  const pending = await db
+    .select({ id: declarations.id, status: declarations.elaborationStatus })
+    .from(declarations)
+    .where(and(eq(declarations.officeId, officeId), eq(declarations.exerciseYear, year), isNull(declarations.elaborationCounts)));
+  for (let i = 0; i < pending.length; i += FILL_BATCH) {
+    const part = pending.slice(i, i + FILL_BATCH);
+    const docs = await loadDocStats(db, part.map((p) => p.id));
+    const values = part.map((p) => {
+      const list = docs.get(p.id) ?? [];
+      return sql`(${p.id}::uuid, ${computeElaborationStatus(p.status, list)}::text, ${JSON.stringify(docCounts(list))}::jsonb)`;
+    });
+    await db.execute(sql`
+      update "declarations" as d set "elaboration_status" = v.status, "elaboration_counts" = v.counts
+      from (values ${sql.join(values, sql`, `)}) as v(id, status, counts)
+      where d."id" = v.id and d."elaboration_counts" is null`);
   }
-  return status;
+}
+
+const STATUS_KEYS = Object.keys(ELABORATION_STATUS) as ElaborationStatus[];
+
+export interface ElaborationListQuery {
+  year: number;
+  search?: string;
+  status?: ElaborationStatus;
+  page: number;
+  pageSize: number;
+}
+
+/**
+ * Central de elaboração: clientes ativos do escopo com a declaração do ano (pode não existir),
+ * situação e contadores gravados na declaração. Filtro, contagem e paginação no banco, sem ler
+ * os documentos. `statusCounts` conta a pesquisa sem o filtro de situação.
+ */
+export async function listElaboration(db: DbOrTx, scope: SQL, q: ElaborationListQuery) {
+  const conds: SQL[] = [scope, eq(customers.status, 'active')];
+  if (q.search) {
+    const digits = onlyDigits(q.search);
+    const byText: SQL[] = [ilike(customers.name, `%${q.search}%`)];
+    if (digits.length >= 3) byText.push(ilike(customers.cpfCnpj, `%${digits}%`));
+    conds.push(or(...byText)!);
+  }
+  const ofYear = and(eq(declarations.customerId, customers.id), eq(declarations.exerciseYear, q.year));
+  // sem declaração no exercício, a situação é "Sem arquivos"
+  const status = sql<string>`coalesce(${declarations.elaborationStatus}, 'no_files')`;
+
+  const grouped = await db.select({ status, n: count() }).from(customers).leftJoin(declarations, ofYear).where(and(...conds)).groupBy(status);
+  const statusCounts = Object.fromEntries(STATUS_KEYS.map((s) => [s, 0])) as Record<ElaborationStatus, number>;
+  for (const g of grouped) if (g.status in statusCounts) statusCounts[g.status as ElaborationStatus] += g.n;
+  const total = q.status ? statusCounts[q.status] : grouped.reduce((a, g) => a + g.n, 0);
+
+  const rows = total
+    ? await db
+        .select({
+          id: customers.id,
+          name: customers.name,
+          cpfCnpj: customers.cpfCnpj,
+          declarationId: declarations.id,
+          status: declarations.elaborationStatus,
+          counts: declarations.elaborationCounts,
+          sourceFileId: declarations.sourceFileId,
+          exportedFileId: declarations.exportedFileId,
+          exportedAt: files.createdAt,
+        })
+        .from(customers)
+        .leftJoin(declarations, ofYear)
+        .leftJoin(files, eq(files.id, declarations.exportedFileId))
+        .where(and(...conds, ...(q.status ? [sql`${status} = ${q.status}`] : [])))
+        .orderBy(asc(customers.name), asc(customers.id))
+        .limit(q.pageSize)
+        .offset((q.page - 1) * q.pageSize)
+    : [];
+  return {
+    data: rows.map((r) => ({
+      customerId: r.id,
+      name: r.name,
+      cpfCnpj: r.cpfCnpj,
+      declarationId: r.declarationId ?? null,
+      status: (r.declarationId ? r.status : 'no_files') as ElaborationStatus,
+      counts: storedCounts(r.counts),
+      sourceFileId: r.sourceFileId ?? null,
+      exported: r.exportedFileId ? { fileId: r.exportedFileId, at: r.exportedAt } : null,
+    })),
+    total,
+    page: q.page,
+    pageSize: q.pageSize,
+    pages: Math.max(1, Math.ceil(total / q.pageSize)),
+    statusCounts,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -304,7 +436,7 @@ export async function extractDocument(
   return extraction;
 }
 
-export async function saveExtraction(db: Db, doc: Pick<DocStat, 'id' | 'extracted'>, status: string, extraction: ElaborationExtraction) {
+export async function saveExtraction(db: DbOrTx, doc: Pick<DocStat, 'id' | 'extracted'>, status: string, extraction: ElaborationExtraction) {
   const extracted = { ...(doc.extracted ?? {}), elaboration: extraction };
   await db.update(documents).set({ processingStatus: status, extracted }).where(eq(documents.id, doc.id));
   doc.extracted = extracted;
@@ -342,7 +474,7 @@ export function itemsToCsv(items: DeclarationItem[]): string {
 const README = (customer: CustomerRow, year: number) => `PACOTE DE CONFERÊNCIA — VERIFCO
 Cliente: ${customer.name} (CPF ${formatCpfCnpj(customer.cpfCnpj)})
 Exercício ${year} · ano-calendário ${year - 1}
-Gerado em ${new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}
+Gerado em ${formatDateTimeBr()}
 
 Este pacote serve para CONFERIR e DIGITAR a declaração. Ele NÃO é um arquivo para restaurar
 no programa IRPF: o formato das cópias de segurança (.DBK) do programa não é público.

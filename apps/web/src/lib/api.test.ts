@@ -24,3 +24,37 @@ describe('errorMessage', () => {
     }
   });
 });
+
+/** Download de arquivos grandes (DAD-3): o backup pode ter alguns GB. */
+describe('api.download', () => {
+  const createObjectURL = URL.createObjectURL;
+  const revokeObjectURL = URL.revokeObjectURL;
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    URL.createObjectURL = createObjectURL;
+    URL.revokeObjectURL = revokeObjectURL;
+  });
+
+  it('salva a resposta como blob (que o navegador pode guardar em disco), sem montar um ArrayBuffer do arquivo', async () => {
+    const arrayBuffer = vi.fn(() => Promise.reject(new RangeError('Array buffer allocation failed')));
+    const body = new Blob(['PK-conteúdo do backup']);
+    const blob = vi.fn(async () => body);
+    const headers = new Headers({ 'content-type': 'application/zip', 'content-disposition': "attachment; filename*=UTF-8''backup-verifco-2026-10-06.zip" });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200, headers, blob, arrayBuffer }));
+    const saved: Blob[] = [];
+    URL.createObjectURL = vi.fn((b: Blob | MediaSource) => (saved.push(b as Blob), 'blob:backup'));
+    URL.revokeObjectURL = vi.fn();
+    let name = '';
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      name = this.download;
+    });
+    await api.download('/backups/1/download', 'backup.zip');
+    expect(arrayBuffer).not.toHaveBeenCalled();
+    expect(blob).toHaveBeenCalledTimes(1);
+    expect(name).toBe('backup-verifco-2026-10-06.zip');
+    // salvo como binário, com o conteúdo da resposta
+    expect(saved[0].type).toBe('application/octet-stream');
+    expect(saved[0].size).toBe(body.size);
+  });
+});

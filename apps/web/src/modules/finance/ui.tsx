@@ -26,6 +26,12 @@ export const paymentStatusTone = (s: PaymentStatus): Tone => (s === 'paid' ? 'su
 
 export const budgetTypeLabel = (t: string) => BUDGET_TYPES[t as keyof typeof BUDGET_TYPES] ?? t;
 
+/** Forma de pagamento Asaas/Omie cuja integração não está ativa: nome do provedor (para avisar); senão null. */
+export function inactiveIntegration(methodType: string | null | undefined, integrations: { asaas: boolean; omie: boolean } | undefined) {
+  if (!integrations || (methodType !== 'asaas' && methodType !== 'omie')) return null;
+  return integrations[methodType] ? null : methodType === 'asaas' ? 'Asaas' : 'Omie';
+}
+
 /** Número com até 2 casas, no formato brasileiro (ex.: 12,5). */
 export const formatNumber = (n: number) => n.toLocaleString('pt-BR', { maximumFractionDigits: 2 });
 

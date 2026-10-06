@@ -1,5 +1,5 @@
 import ExcelJS from 'exceljs';
-import { parseBrDate, parseBrMoney, toCents } from '@verifco/shared';
+import { parseBrDate, parseBrMoney, toCents, utcDateIso } from '@verifco/shared';
 
 export interface SheetColumn {
   header: string;
@@ -48,6 +48,20 @@ const normalize = (s: string) =>
     .replace(/^_|_$/g, '');
 
 /**
+ * Caracteres do Windows-1252 nos bytes 0x80–0x9F (no Latin-1 são controles invisíveis). Os bytes
+ * sem caractere (0x81, 0x8D, 0x8F, 0x90, 0x9D) ficam como estão, igual à norma WHATWG.
+ */
+const CP1252_80_9F = '€\u0081‚ƒ„…†‡ˆ‰Š‹Œ\u008DŽ\u008F\u0090‘’“”•–—˜™š›œ\u009DžŸ';
+
+/**
+ * Windows-1252 de verdade. O `TextDecoder('windows-1252')` do Node 22 decodifica como Latin-1 e
+ * deixa "–", "“" e "€" (0x96, 0x93, 0x80) como controles; aqui eles viram o caractere certo.
+ */
+export function decodeWindows1252(data: Buffer): string {
+  return data.toString('latin1').replace(/[\u0080-\u009f]/g, (c) => CP1252_80_9F[c.charCodeAt(0) - 0x80]);
+}
+
+/**
  * Texto de um CSV/TXT: UTF-8 (com ou sem BOM) ou, se não for UTF-8 válido, Windows-1252 (o
  * "CSV (separado por vírgulas)" do Excel em português). Sem isso, "Descrição" chega quebrado.
  */
@@ -56,7 +70,7 @@ export function decodeCsvText(data: Buffer): string {
   try {
     text = new TextDecoder('utf-8', { fatal: true }).decode(data);
   } catch {
-    text = new TextDecoder('windows-1252').decode(data);
+    text = decodeWindows1252(data);
   }
   return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
 }
@@ -106,7 +120,8 @@ export async function readSheet(data: Buffer, filename: string): Promise<SheetRo
       const key = headers[col];
       if (!key) return;
       const v = cell.value;
-      values[key] = v instanceof Date ? v.toISOString().slice(0, 10) : String(cell.text ?? '').trim();
+      // célula de data do Excel: dia sem fuso (meia-noite UTC)
+      values[key] = v instanceof Date ? utcDateIso(v) : String(cell.text ?? '').trim();
       const n = cellNumber(cell);
       if (n !== undefined) numbers[key] = n;
     });

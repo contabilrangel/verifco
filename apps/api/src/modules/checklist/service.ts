@@ -15,10 +15,11 @@ import type { Db } from '../../db/client';
 import { checklistItems, checklistSections, checklists, customers, declarations, documents, files } from '../../db/schema';
 import { randomCode, randomToken, sha256 } from '../../lib/crypto';
 import { conflict } from '../../lib/errors';
-import { listItems } from '../../services/declarations';
+import { getOrCreateDeclaration, listItems } from '../../services/declarations';
 import { getOfficeSettings } from '../../services/settings';
 import { notify } from '../../services/notify';
 import { safeFilename, type UploadedFile } from '../../services/uploads';
+import { refreshElaborationStatus } from '../elaboration/service';
 
 export type ChecklistRow = typeof checklists.$inferSelect;
 export type SectionRow = typeof checklistSections.$inferSelect;
@@ -96,6 +97,35 @@ export async function rotateAccess(db: Db, checklistId: string) {
     .set({ accessTokenHash: sha256(token), accessCodeHash: checklistCodeHash(checklistId, code), accessExpiresAt: expiresAt })
     .where(eq(checklists.id, checklistId));
   return { token, code, expiresAt };
+}
+
+/** Endereço do checklist para o cliente entrar com CPF e código. */
+export const checklistLink = (ctx: AppContext, token: string) => `${ctx.config.WEB_URL.replace(/\/$/, '')}/checklist/${token}`;
+
+/**
+ * Checklist do exercício do cliente com um novo link e código de acesso. Cria o checklist (com os
+ * dados do ano anterior, como em "Criar checklist") se ainda não existir, gera o par novo (os
+ * anteriores deixam de valer) e, com `markSent`, registra a data do envio. É o mesmo caminho do
+ * envio do acesso na etapa Documentação e da mala direta "Checklist digital".
+ */
+export async function issueChecklistAccess(ctx: AppContext, input: { officeId: string; customer: CustomerRow; year: number; markSent: boolean }) {
+  const { db } = ctx;
+  const declaration = await getOrCreateDeclaration(db, input.officeId, input.customer.id, input.year);
+  let checklist = await db.query.checklists.findFirst({ where: eq(checklists.declarationId, declaration.id) });
+  let created = false;
+  if (!checklist) {
+    try {
+      checklist = (await createChecklist(db, { officeId: input.officeId, customer: input.customer, declaration })).checklist;
+      created = true;
+    } catch (err) {
+      // criado ao mesmo tempo por outra requisição: segue com o que ficou gravado
+      checklist = await db.query.checklists.findFirst({ where: eq(checklists.declarationId, declaration.id) });
+      if (!checklist) throw err;
+    }
+  }
+  const { token, code, expiresAt } = await rotateAccess(db, checklist.id);
+  if (input.markSent) await db.update(checklists).set({ sentAt: new Date() }).where(eq(checklists.id, checklist.id));
+  return { checklist, declaration, created, token, code, expiresAt, link: checklistLink(ctx, token) };
 }
 
 export interface ChecklistDoc {
@@ -250,13 +280,19 @@ export async function attachFiles(
       .returning();
     created.push(doc.id);
   }
+  if (created.length) await refreshElaborationStatus(ctx.db, input.declarationId);
   return created;
 }
 
 /** Remove o documento e o arquivo; se o item ficou sem arquivos, volta a "pendente". */
-export async function removeDocument(ctx: AppContext, officeId: string, doc: { id: string; fileId: string; checklistItemId: string | null }) {
+export async function removeDocument(
+  ctx: AppContext,
+  officeId: string,
+  doc: { id: string; fileId: string; checklistItemId: string | null; declarationId?: string | null },
+) {
   await ctx.db.delete(documents).where(eq(documents.id, doc.id));
   await ctx.files.remove(officeId, doc.fileId);
+  if (doc.declarationId) await refreshElaborationStatus(ctx.db, doc.declarationId);
   if (doc.checklistItemId) {
     const left = await ctx.db.select({ id: documents.id }).from(documents).where(eq(documents.checklistItemId, doc.checklistItemId)).limit(1);
     if (!left.length) {

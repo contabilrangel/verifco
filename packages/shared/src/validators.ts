@@ -1,4 +1,5 @@
 /** Validação e formatação de documentos brasileiros. */
+import { BRAZIL_TIME_ZONE, todayIso } from './dates';
 
 export const onlyDigits = (v: string | null | undefined): string => (v ?? '').replace(/\D+/g, '');
 
@@ -68,13 +69,15 @@ export const fromCents = (cents: number) => cents / 100;
 const brl = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' });
 export const formatMoney = (cents: number | null | undefined) => brl.format((cents ?? 0) / 100);
 
+/** dd/mm/aaaa: data sem hora (AAAA-MM-DD) como está; data com hora no dia de Brasília. */
 export function formatDate(value: string | Date | null | undefined): string {
   if (!value) return '';
-  const d = typeof value === 'string' ? new Date(value.length === 10 ? `${value}T12:00:00` : value) : value;
-  return d.toLocaleDateString('pt-BR');
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) return `${value.slice(8, 10)}/${value.slice(5, 7)}/${value.slice(0, 4)}`;
+  const d = typeof value === 'string' ? new Date(value) : value;
+  return d.toLocaleDateString('pt-BR', { timeZone: BRAZIL_TIME_ZONE });
 }
 
-/** Ano-exercício corrente: a declaração entregue em 2026 é do exercício 2026 (ano-calendário 2025). */
+/** Ano-exercício corrente: a declaração entregue em 2026 é do exercício 2026 (ano-calendário 2025). Conta o ano de Brasília. */
 export function currentExerciseYear(now = new Date()): number {
-  return now.getFullYear();
+  return Number(todayIso(now).slice(0, 4));
 }

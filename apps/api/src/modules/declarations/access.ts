@@ -1,11 +1,9 @@
 import { and, eq } from 'drizzle-orm';
-import { cashAnalysis, type CashAnalysisResult, type DeclarationSubstatus, type EcacDeclarationStatus } from '@verifco/shared';
 import type { AppContext, AuthUser } from '../../context';
 import { declarations } from '../../db/schema';
 import { HttpError, notFound } from '../../lib/errors';
 import { getCustomerForUser, type CustomerRow } from '../../services/customers';
-import { listItems, recomputeTotals, type DeclarationRow } from '../../services/declarations';
-import { getOfficeSettings } from '../../services/settings';
+import type { DeclarationRow } from '../../services/declarations';
 
 /**
  * Carrega a declaração pelo id garantindo escritório e visibilidade do cliente
@@ -58,49 +56,6 @@ export function emptyDeclaration(customerId: string, exerciseYear: number) {
 
 export const presentDeclaration = (d: DeclarationRow) => ({ ...d, exists: true });
 
-/** Situação eCAC → subestado da etapa "Transmitida". */
-export const ECAC_TO_SUBSTATUS: Record<EcacDeclarationStatus, DeclarationSubstatus> = {
-  unknown: 'ecac_unknown',
-  waiting: 'ecac_waiting',
-  processing: 'ecac_processing',
-  fine_mesh: 'ecac_fine_mesh',
-  pending_issues: 'ecac_fine_mesh',
-  refund_lot: 'ecac_refund',
-  processed: 'ecac_processed',
-};
-
-/** Subestado da etapa "Transmitida" → situação eCAC (mantém os dois coerentes). */
-export const SUBSTATUS_TO_ECAC: Partial<Record<DeclarationSubstatus, EcacDeclarationStatus>> = {
-  ecac_unknown: 'unknown',
-  ecac_waiting: 'waiting',
-  ecac_processing: 'processing',
-  ecac_fine_mesh: 'fine_mesh',
-  ecac_refund: 'refund_lot',
-  ecac_processed: 'processed',
-};
-
-/** Roda a análise de caixa da declaração com as preferências do escritório. */
-export async function computeCashAnalysis(ctx: AppContext, declaration: DeclarationRow): Promise<{ result: CashAnalysisResult; itemCount: number }> {
-  const items = await listItems(ctx.db, declaration.id);
-  const settings = await getOfficeSettings(ctx.db, declaration.officeId);
-  const result = cashAnalysis({
-    exerciseYear: declaration.exerciseYear,
-    taxation: declaration.taxation === 'complete' || declaration.taxation === 'simplified' ? declaration.taxation : null,
-    items,
-    otherExpenses: declaration.otherExpenses ?? {},
-    simplifiedDiscountMode: settings.cashAnalysisSimplifiedDiscount,
-  });
-  return { result, itemCount: items.length };
-}
-
-/**
- * Depois de mudar linhas ou o resumo: recalcula os totais e grava o saldo de caixa
- * (usado nos alertas do dashboard). Sem linhas, o saldo fica vazio.
- */
-export async function refreshDeclaration(ctx: AppContext, declarationId: string): Promise<DeclarationRow> {
-  const row = await recomputeTotals(ctx.db, declarationId);
-  const { result, itemCount } = await computeCashAnalysis(ctx, row);
-  const cashBalanceCents = itemCount ? result.balanceCents : null;
-  const [updated] = await ctx.db.update(declarations).set({ cashBalanceCents }).where(eq(declarations.id, declarationId)).returning();
-  return updated;
-}
+// a análise de caixa e os mapas da situação eCAC ficam em services/declarations.ts (usados também
+// pelos módulos de eCAC, elaboração e relatórios); reexportados para quem já importa daqui
+export { ECAC_TO_SUBSTATUS, SUBSTATUS_TO_ECAC, computeCashAnalysis, refreshDeclaration } from '../../services/declarations';

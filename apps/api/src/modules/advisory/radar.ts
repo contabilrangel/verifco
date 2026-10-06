@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { OPPORTUNITY_CATEGORIES, OPPORTUNITY_STATUS, RADAR_RULES, evaluateRadar, type DeclarationItem, type OpportunityCategory } from '@verifco/shared';
 import type { AppContext } from '../../context';
 import { customers, declarationItems, declarations, jobs, opportunities } from '../../db/schema';
+import { isJobActive } from '../../jobs/queue';
 import { notFound } from '../../lib/errors';
 import { audit, guard, parse, requireUser, uuidParam, yearSchema } from '../../lib/http';
 import { customerScope, getCustomerForUser } from '../../services/customers';
@@ -89,7 +90,7 @@ export async function radarRoutes(app: FastifyInstance) {
     const user = requireUser(req);
     const { year } = parse(z.object({ year: yearSchema }), req.body);
     const job = await lastJob(user.officeId, year);
-    if (job && (job.status === 'queued' || job.status === 'running')) return { job, alreadyRunning: true };
+    if (job && isJobActive(job)) return { job, alreadyRunning: true };
     const created = await app.ctx.jobs.enqueue('radar.compute', { officeId: user.officeId, year }, { officeId: user.officeId, userId: user.userId, maxAttempts: 2 });
     await audit(req, 'refresh', 'radar', null, { year });
     reply.status(202);

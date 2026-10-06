@@ -1,10 +1,10 @@
-import { randomUUID } from 'node:crypto';
-import { and, asc, count, desc, eq, exists, ilike, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, count, desc, eq, exists, ilike, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import {
   DELIVERY_CHANNELS,
   DELIVERY_STATUS,
+  MAILING_MAX_RECIPIENTS,
   MAILING_TYPES,
   TEMPLATES,
   getMailingType,
@@ -15,15 +15,26 @@ import {
   unknownVariables,
 } from '@verifco/shared';
 import type { AuthUser } from '../../context';
-import { customers, deliveries, emailTemplates, offices } from '../../db/schema';
+import { customers, deliveries, emailTemplates, jobs, offices } from '../../db/schema';
+import { activeJob } from '../../jobs/queue';
 import { badRequest, conflict, notFound } from '../../lib/errors';
 import { audit, can, dateStr, guard, paginate, parse, requirePermission, requireUser, yearSchema } from '../../lib/http';
 import { getCustomerForUser } from '../../services/customers';
 import { resolveTemplate } from '../../services/delivery';
 import { getOfficeSettings } from '../../services/settings';
+import { customerChecklistPdf } from '../checklist/pdf';
 import { buildKitPdf } from '../reports/kit';
-import { buildChecklistPdf } from './checklist-pdf';
-import { executeMailing, mailingSchema, planMailing, renderForCustomer, summarize } from './mailing';
+import {
+  checklistPdfFilename,
+  findMailingRequest,
+  mailingRequestView,
+  mailingSchema,
+  planMailing,
+  renderForCustomer,
+  requestMailing,
+  retryMailingRequest,
+  summarize,
+} from './mailing';
 
 const keyParam = z.object({ key: z.string().refine((k) => Boolean(getTemplateDef(k)), 'Template desconhecido') });
 const SEND_PERMS = [...new Set([...MAILING_TYPES.map((t) => t.permission), 'message.send'])];
@@ -54,6 +65,8 @@ const deliveriesQuery = z.object({
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(200).default(25),
 });
+/** Filtros da lista (menos situação e página): valem também para o reenvio em massa. */
+const deliveryFilterSchema = deliveriesQuery.pick({ search: true, templateKey: true, channel: true, from: true, to: true });
 
 export async function communicationRoutes(app: FastifyInstance) {
   const { ctx } = app;
@@ -146,9 +159,8 @@ export async function communicationRoutes(app: FastifyInstance) {
     return and(...conds)!;
   };
 
-  app.get('/deliveries', { preHandler: guard('mailing.list') }, async (req) => {
-    const user = requireUser(req);
-    const q = parse(deliveriesQuery, req.query);
+  /** Condições dos filtros da lista (consulta com `left join customers`). */
+  const deliveryFilters = async (user: AuthUser, q: z.infer<typeof deliveryFilterSchema>): Promise<SQL[]> => {
     const conds: SQL[] = [await deliveryScope(user)];
     if (q.search) {
       const term = `%${q.search}%`;
@@ -156,12 +168,24 @@ export async function communicationRoutes(app: FastifyInstance) {
     }
     if (q.templateKey) conds.push(q.templateKey === 'none' ? isNull(deliveries.templateKey) : eq(deliveries.templateKey, q.templateKey));
     if (q.channel) conds.push(eq(deliveries.channel, q.channel));
-    if (q.status) conds.push(eq(deliveries.status, q.status));
     const day = sql`(${deliveries.createdAt} at time zone 'America/Sao_Paulo')::date`;
     if (q.from) conds.push(sql`${day} >= ${q.from}::date`);
     if (q.to) conds.push(sql`${day} <= ${q.to}::date`);
-    const where = and(...conds);
+    return conds;
+  };
+
+  app.get('/deliveries', { preHandler: guard('mailing.list') }, async (req) => {
+    const user = requireUser(req);
+    const q = parse(deliveriesQuery, req.query);
+    const filters = await deliveryFilters(user, q);
+    const where = and(...filters, q.status ? eq(deliveries.status, q.status) : undefined);
     const [{ total }] = await db.select({ total: count() }).from(deliveries).leftJoin(customers, eq(customers.id, deliveries.customerId)).where(where);
+    // falhos dentro dos mesmos filtros (qualquer situação escolhida): o botão de reenvio em massa
+    const [{ failedCount }] = await db
+      .select({ failedCount: count() })
+      .from(deliveries)
+      .leftJoin(customers, eq(customers.id, deliveries.customerId))
+      .where(and(...filters, eq(deliveries.status, 'failed')));
     const rows = await db
       .select({
         id: deliveries.id,
@@ -184,12 +208,15 @@ export async function communicationRoutes(app: FastifyInstance) {
       .orderBy(desc(deliveries.createdAt), asc(deliveries.id))
       .limit(q.pageSize)
       .offset((q.page - 1) * q.pageSize);
-    return paginate(
-      rows.map((r) => ({ ...r, attachments: r.attachments.length })),
-      total,
-      q.page,
-      q.pageSize,
-    );
+    return {
+      ...paginate(
+        rows.map((r) => ({ ...r, attachments: r.attachments.length })),
+        total,
+        q.page,
+        q.pageSize,
+      ),
+      failedCount,
+    };
   });
 
   const loadDelivery = async (user: AuthUser, id: string) => {
@@ -202,6 +229,22 @@ export async function communicationRoutes(app: FastifyInstance) {
     return row;
   };
 
+  /** Pode reenviar: falhou, ou ficou "na fila" sem job que ainda vá enviá-lo (o processo caiu). */
+  const resendable = async (d: typeof deliveries.$inferSelect) => {
+    if (d.status === 'failed') return true;
+    if (d.status !== 'queued') return false;
+    const job = await db.query.jobs.findFirst({ where: and(eq(jobs.type, 'delivery.send'), sql`${jobs.payload}->>'deliveryId' = ${d.id}`, activeJob()) });
+    return !job;
+  };
+
+  /** Volta envios para a fila pelo job do próprio envio (reaberto, nunca duplicado). */
+  const requeueDeliveries = (list: { id: string; officeId: string }[], userId: string) =>
+    ctx.jobs.retryNow(
+      'delivery.send',
+      list.map((r) => ({ idempotencyKey: r.id, payload: { deliveryId: r.id }, officeId: r.officeId })),
+      { userId },
+    );
+
   app.get('/deliveries/:id', { preHandler: guard('mailing.list') }, async (req) => {
     const user = requireUser(req);
     const { id } = parse(z.object({ id: z.uuid() }), req.params);
@@ -212,26 +255,45 @@ export async function communicationRoutes(app: FastifyInstance) {
       body: d.channel === 'email' ? sanitizeHtml(d.body) : d.body,
       customerName,
       templateName: d.templateKey ? (getTemplateDef(d.templateKey)?.name ?? d.templateKey) : null,
-      canResend: d.status === 'failed',
+      canResend: await resendable(d),
     };
   });
 
-  /** Reenvia um envio que falhou (o mesmo registro volta para a fila). */
+  /** Reenvia um envio que falhou ou que ficou parado na fila (o mesmo registro volta para a fila). */
   app.post('/deliveries/:id/resend', { preHandler: guard('mailing.list') }, async (req) => {
     const user = requirePermission(req, ...SEND_PERMS);
     const { id } = parse(z.object({ id: z.uuid() }), req.params);
     const { d } = await loadDelivery(user, id);
-    if (d.status !== 'failed') throw conflict('Só é possível reenviar envios que falharam.');
+    if (!(await resendable(d))) throw conflict(d.status === 'queued' ? 'Este envio já foi colocado na fila novamente.' : 'Só é possível reenviar envios que falharam.');
     // troca de estado atômica: dois cliques seguidos não geram dois reenvios
     const [row] = await db
       .update(deliveries)
       .set({ status: 'queued', error: null })
-      .where(and(eq(deliveries.id, d.id), eq(deliveries.status, 'failed')))
+      .where(and(eq(deliveries.id, d.id), eq(deliveries.status, d.status)))
       .returning();
     if (!row) throw conflict('Este envio já foi colocado na fila novamente.');
-    await ctx.jobs.enqueue('delivery.send', { deliveryId: row.id }, { officeId: user.officeId, idempotencyKey: `${row.id}:resend:${randomUUID()}`, userId: user.userId });
+    await requeueDeliveries([row], user.userId);
     await audit(req, 'resend', 'delivery', row.id);
     return { ok: true, status: row.status };
+  });
+
+  /** Reenvio em massa: todos os envios que falharam dentro dos filtros da lista. */
+  app.post('/deliveries/resend-failed', { preHandler: guard('mailing.list') }, async (req) => {
+    const user = requirePermission(req, ...SEND_PERMS);
+    const q = parse(deliveryFilterSchema, req.body ?? {});
+    const failed = db
+      .select({ id: deliveries.id })
+      .from(deliveries)
+      .leftJoin(customers, eq(customers.id, deliveries.customerId))
+      .where(and(...(await deliveryFilters(user, q)), eq(deliveries.status, 'failed')));
+    const rows = await db
+      .update(deliveries)
+      .set({ status: 'queued', error: null })
+      .where(and(inArray(deliveries.id, failed), eq(deliveries.status, 'failed')))
+      .returning({ id: deliveries.id, officeId: deliveries.officeId });
+    await requeueDeliveries(rows, user.userId);
+    await audit(req, 'resend_failed', 'delivery', null, { count: rows.length, ...q });
+    return { queued: rows.length };
   });
 
   /** Opções dos filtros de envios. */
@@ -258,7 +320,7 @@ export async function communicationRoutes(app: FastifyInstance) {
   app.post('/mailing/preview', async (req) => {
     const input = parse(mailingSchema, req.body);
     const user = typePermission(req, input.type);
-    const { type, entries } = await planMailing(ctx, user, input);
+    const { type, entries, truncated, matched } = await planMailing(ctx, user, input);
     const wanted = input.channel === 'both' ? 2 : 1;
     // exemplo: o cliente escolhido ou, de preferência, um que receba por todos os canais pedidos
     const sampleEntry =
@@ -282,6 +344,10 @@ export async function communicationRoutes(app: FastifyInstance) {
     return {
       type: { key: type.key, label: type.label, templateKey: type.templateKey, note: type.note ?? null, attachment: type.attachment },
       ...summarize(entries),
+      // acima do limite, o envio vai só para os primeiros: a tela avisa quantos ficam de fora
+      truncated,
+      matched,
+      limit: MAILING_MAX_RECIPIENTS,
       recipients: entries.slice(0, 300).map((e) => ({
         id: e.customer.id,
         name: e.customer.name,
@@ -295,15 +361,45 @@ export async function communicationRoutes(app: FastifyInstance) {
     };
   });
 
-  /** Envia: um envio por cliente e canal. Devolve quantos enfileirou e quantos ficaram de fora e por quê. */
-  app.post('/mailing/send', async (req) => {
+  /**
+   * Envia: registra o pedido e coloca na fila o job que gera um envio por cliente e canal (link,
+   * código e anexos também são gerados lá, fora da requisição). Devolve a revisão do pedido; a
+   * tela acompanha o andamento em `/mailing/requests/:requestId`. Repetir o mesmo pedido
+   * (mesmo `requestId`) devolve o já registrado, sem duplicar envios.
+   */
+  app.post('/mailing/send', async (req, reply) => {
     const input = parse(mailingSchema.extend({ requestId: z.uuid() }), req.body);
     const user = typePermission(req, input.type);
-    const result = await executeMailing(ctx, user, input);
-    const summary = summarize(result.entries);
+    const previous = await findMailingRequest(ctx, user.officeId, input.requestId);
+    if (previous) {
+      if (previous.payload.type !== input.type) throw conflict('Este pedido de envio já foi registrado com outro tipo.');
+      // repetir um pedido que falhou o coloca de novo na fila (sem duplicar o que já foi gravado)
+      return { ...(await mailingRequestView(ctx, await retryMailingRequest(ctx, previous))), repeated: true };
+    }
+    const plan = await planMailing(ctx, user, input);
+    const summary = summarize(plan.entries);
     if (!summary.customers) throw badRequest('Nenhum cliente selecionado pode receber este envio.');
-    await audit(req, 'mailing_send', 'mailing', input.requestId, { type: input.type, channel: input.channel, queued: result.queued, year: input.year });
-    return { queued: result.queued, alreadyQueued: result.alreadyQueued, customers: summary.customers, deliveries: summary.deliveries, skipped: summary.skipped };
+    const job = await requestMailing(ctx, user, input, plan, summary);
+    await audit(req, 'mailing_send', 'mailing', input.requestId, {
+      type: input.type,
+      channel: input.channel,
+      year: input.year,
+      customers: summary.customers,
+      deliveries: summary.deliveries.total,
+      truncated: plan.truncated,
+    });
+    reply.status(202);
+    return { ...(await mailingRequestView(ctx, job)), repeated: false };
+  });
+
+  /** Andamento de uma mala direta: preparação dos envios e, com anexo, a geração dos PDFs. */
+  app.get('/mailing/requests/:requestId', async (req) => {
+    const user = requireUser(req);
+    const { requestId } = parse(z.object({ requestId: z.uuid() }), req.params);
+    const job = await findMailingRequest(ctx, user.officeId, requestId);
+    if (!job) throw notFound('Envio');
+    typePermission(req, String(job.payload.type));
+    return mailingRequestView(ctx, job);
   });
 
   /** Anexo de exemplo (kit ou checklist em PDF) de um cliente, para conferir antes do envio. */
@@ -317,7 +413,8 @@ export async function communicationRoutes(app: FastifyInstance) {
       if (!declaration) throw badRequest('O cliente não tem declaração neste exercício.');
       file = await buildKitPdf(ctx, declaration, customer);
     } else {
-      file = await buildChecklistPdf(ctx, customer, q.year);
+      // o mesmo PDF da etapa Documentação e do envio pela mala direta
+      file = { buffer: await customerChecklistPdf(ctx, customer, q.year), filename: checklistPdfFilename(customer, q.year) };
     }
     return reply.header('Content-Type', 'application/pdf').header('Content-Disposition', `inline; filename="${file.filename}"`).send(file.buffer);
   });

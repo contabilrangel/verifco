@@ -8,6 +8,7 @@
  */
 import { sql } from 'drizzle-orm';
 import {
+  type AnyPgColumn,
   bigint,
   boolean,
   date,
@@ -38,6 +39,18 @@ export type Address = {
   city?: string;
   state?: string;
   zip?: string;
+};
+
+/** Contadores da central de elaboração guardados na declaração (ver `refreshElaborationStatus`). */
+export type ElaborationCounts = {
+  total: number;
+  eligible: number;
+  processed: number;
+  errors: number;
+  programFiles: number;
+  lines: number;
+  conflicts: number;
+  pendingLines: number;
 };
 
 export type OfficeSettings = {
@@ -112,14 +125,19 @@ export const users = pgTable(
   (t) => [uniqueIndex('users_email_uq').on(sql`lower(${t.email})`)],
 );
 
-export const passwordResets = pgTable('password_resets', {
-  id: id(),
-  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
-  tokenHash: text('token_hash').notNull(),
-  expiresAt: ts('expires_at').notNull(),
-  usedAt: ts('used_at'),
-  createdAt: createdAt(),
-});
+export const passwordResets = pgTable(
+  'password_resets',
+  {
+    id: id(),
+    userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+    tokenHash: text('token_hash').notNull(),
+    expiresAt: ts('expires_at').notNull(),
+    usedAt: ts('used_at'),
+    createdAt: createdAt(),
+  },
+  // busca pelo token na rota pública de redefinição de senha
+  (t) => [index('password_resets_token_idx').on(t.tokenHash)],
+);
 
 export const userFavorites = pgTable(
   'user_favorites',
@@ -158,7 +176,8 @@ export const files = pgTable(
     storageKey: text('storage_key').notNull(),
     filename: text('filename').notNull(),
     mimeType: text('mime_type').notNull(),
-    size: integer('size').notNull(),
+    /** Bytes. `bigint` porque o .zip do backup passa de 2 GiB; em modo number (seguro até 2^53). */
+    size: bigint('size', { mode: 'number' }).notNull(),
     sha256: text('sha256').notNull(),
     createdByUserId: uuid('created_by_user_id'),
     createdAt: createdAt(),
@@ -288,6 +307,8 @@ export const declarations = pgTable(
     debtsPrevTotalCents: money('debts_prev_total_cents').notNull().default(0),
     cashBalanceCents: money('cash_balance_cents'),
     elaborationStatus: text('elaboration_status').notNull().default('no_files'),
+    /** Contadores dos documentos na elaboração; vazio = ainda não calculados (a listagem calcula). */
+    elaborationCounts: jsonb('elaboration_counts').$type<ElaborationCounts>(),
     exportedFileId: uuid('exported_file_id'),
     sourceFileId: uuid('source_file_id'),
     checklistLocked: boolean('checklist_locked').notNull().default(false),
@@ -367,7 +388,7 @@ export const darfs = pgTable(
     source: text('source').notNull().default('manual'),
     createdAt: createdAt(),
   },
-  (t) => [index('darfs_customer_idx').on(t.customerId)],
+  (t) => [index('darfs_customer_idx').on(t.customerId), index('darfs_declaration_idx').on(t.declarationId)],
 );
 
 // ---------------------------------------------------------------------------
@@ -388,7 +409,8 @@ export const checklists = pgTable(
     finishedAt: ts('finished_at'),
     createdAt: createdAt(),
   },
-  (t) => [uniqueIndex('checklists_decl_uq').on(t.declarationId)],
+  // o token é o hash de um valor aleatório: único, e buscado pela rota pública do checklist
+  (t) => [uniqueIndex('checklists_decl_uq').on(t.declarationId), uniqueIndex('checklists_access_token_uq').on(t.accessTokenHash)],
 );
 
 export const checklistSections = pgTable(
@@ -439,7 +461,11 @@ export const documents = pgTable(
     extracted: jsonb('extracted').$type<Record<string, unknown>>(),
     createdAt: createdAt(),
   },
-  (t) => [index('documents_customer_idx').on(t.customerId)],
+  (t) => [
+    index('documents_customer_idx').on(t.customerId),
+    index('documents_declaration_idx').on(t.declarationId),
+    index('documents_checklist_item_idx').on(t.checklistItemId),
+  ],
 );
 
 // ---------------------------------------------------------------------------
@@ -510,7 +536,8 @@ export const budgets = pgTable(
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [index('budgets_customer_idx').on(t.customerId, t.exerciseYear)],
+  // o token de aprovação é o hash de um valor aleatório (vazio até o envio): único e buscado pela rota pública
+  (t) => [index('budgets_customer_idx').on(t.customerId, t.exerciseYear), uniqueIndex('budgets_approval_token_uq').on(t.approvalTokenHash)],
 );
 
 export const billings = pgTable(
@@ -547,7 +574,12 @@ export const installments = pgTable(
     externalUrl: text('external_url'),
     createdAt: createdAt(),
   },
-  (t) => [uniqueIndex('installments_billing_number_uq').on(t.billingId, t.number), index('installments_external_idx').on(t.externalId)],
+  (t) => [
+    uniqueIndex('installments_billing_number_uq').on(t.billingId, t.number),
+    index('installments_external_idx').on(t.externalId),
+    // maior número de recibo do escritório (assignReceiptNumber)
+    index('installments_office_receipt_idx').on(t.officeId, t.receiptNumber),
+  ],
 );
 
 // ---------------------------------------------------------------------------
@@ -590,6 +622,7 @@ export const deliveries = pgTable(
   (t) => [
     index('deliveries_office_idx').on(t.officeId, t.createdAt),
     uniqueIndex('deliveries_idempotency_uq').on(t.officeId, t.idempotencyKey),
+    index('deliveries_customer_idx').on(t.customerId, t.createdAt),
   ],
 );
 
@@ -606,8 +639,13 @@ export const messages = pgTable(
     deliveryId: uuid('delivery_id'),
     readAt: ts('read_at'),
     createdAt: createdAt(),
+    /** Id da mensagem no provedor (WhatsApp recebido pelo webhook): o reenvio não duplica. */
+    externalId: text('external_id'),
   },
-  (t) => [index('messages_customer_idx').on(t.customerId, t.createdAt)],
+  (t) => [
+    index('messages_customer_idx').on(t.customerId, t.createdAt),
+    uniqueIndex('messages_office_external_uq').on(t.officeId, t.externalId).where(sql`${t.externalId} is not null`),
+  ],
 );
 
 /**
@@ -664,7 +702,8 @@ export const integrations = pgTable(
     webhookToken: text('webhook_token'),
     updatedAt: updatedAt(),
   },
-  (t) => [uniqueIndex('integrations_office_provider_uq').on(t.officeId, t.provider)],
+  // o token do webhook é aleatório: único, e buscado pela rota pública do webhook
+  (t) => [uniqueIndex('integrations_office_provider_uq').on(t.officeId, t.provider), uniqueIndex('integrations_webhook_token_uq').on(t.webhookToken)],
 );
 
 export const ecacRecords = pgTable(
@@ -733,15 +772,27 @@ export const jobs = pgTable(
     maxAttempts: integer('max_attempts').notNull().default(3),
     runAt: ts('run_at').notNull().defaultNow(),
     lockedAt: ts('locked_at'),
+    /** Rodada em execução (novo a cada claim): só quem tem o token grava o resultado. */
+    lockToken: uuid('lock_token'),
     progress: integer('progress').notNull().default(0),
     result: jsonb('result').$type<Record<string, unknown>>(),
     error: text('error'),
     idempotencyKey: text('idempotency_key'),
     createdByUserId: uuid('created_by_user_id'),
+    /** Ordem na fila: maior sai primeiro (envios e cobranças antes das tarefas longas). */
+    priority: integer('priority').notNull().default(0),
+    /** Job que criou este (fan-out): o pai espera os filhos terminarem e junta os resultados. */
+    parentId: uuid('parent_id').references((): AnyPgColumn => jobs.id, { onDelete: 'cascade' }),
     createdAt: createdAt(),
     finishedAt: ts('finished_at'),
   },
-  (t) => [index('jobs_status_run_idx').on(t.status, t.runAt), uniqueIndex('jobs_idempotency_uq').on(t.type, t.idempotencyKey)],
+  (t) => [
+    index('jobs_status_run_idx').on(t.status, t.runAt),
+    uniqueIndex('jobs_idempotency_uq').on(t.type, t.idempotencyKey),
+    index('jobs_parent_idx').on(t.parentId),
+    // limite por escritório no claim e deduplicações ("já em andamento")
+    index('jobs_running_idx').on(t.officeId, t.type).where(sql`${t.status} = 'running'`),
+  ],
 );
 
 export const importBatches = pgTable('import_batches', {
@@ -818,17 +869,21 @@ export const aiConversations = pgTable(
   (t) => [index('ai_conversations_customer_idx').on(t.customerId, t.assistant)],
 );
 
-export const aiMessages = pgTable('ai_messages', {
-  id: id(),
-  conversationId: uuid('conversation_id').notNull().references(() => aiConversations.id, { onDelete: 'cascade' }),
-  role: text('role').notNull(),
-  content: text('content').notNull(),
-  attachments: jsonb('attachments').$type<{ fileId: string; filename: string }[]>().notNull().default([]),
-  inputTokens: integer('input_tokens'),
-  outputTokens: integer('output_tokens'),
-  rating: integer('rating'),
-  createdAt: createdAt(),
-});
+export const aiMessages = pgTable(
+  'ai_messages',
+  {
+    id: id(),
+    conversationId: uuid('conversation_id').notNull().references(() => aiConversations.id, { onDelete: 'cascade' }),
+    role: text('role').notNull(),
+    content: text('content').notNull(),
+    attachments: jsonb('attachments').$type<{ fileId: string; filename: string }[]>().notNull().default([]),
+    inputTokens: integer('input_tokens'),
+    outputTokens: integer('output_tokens'),
+    rating: integer('rating'),
+    createdAt: createdAt(),
+  },
+  (t) => [index('ai_messages_conversation_idx').on(t.conversationId, t.createdAt)],
+);
 
 /** Arquivos enviados como anexo na conversa com a IA, vinculados ao cliente da conversa. */
 export const aiAttachments = pgTable(

@@ -267,7 +267,5 @@ export function darfStatus(darf: { status?: string | null; paidAt?: string | nul
   return darf.dueDate < today ? 'overdue' : 'open';
 }
 
-/** Data de hoje no fuso de Brasília (AAAA-MM-DD), usada para vencimentos. */
-export function brazilToday(now = new Date()): string {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
-}
+/** Data de hoje no fuso de Brasília (AAAA-MM-DD), usada para vencimentos: o mesmo `todayIso`. */
+export { todayIso as brazilToday } from './dates';
