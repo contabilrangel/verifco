@@ -58,6 +58,9 @@ importers:
       pg:
         specifier: ^8.16.0
         version: 8.23.1
+      tsx:
+        specifier: ^4.20.0
+        version: 4.23.15
       yazl:
         specifier: ^3.3.1
         version: 3.3.1
@@ -80,9 +83,6 @@ importers:
       '@types/yazl':
         specifier: ^3.3.1
         version: 3.3.1
-      tsx:
-        specifier: ^4.20.0
-        version: 4.23.15
       typescript:
         specifier: 5.9.3
         version: 5.9.3
