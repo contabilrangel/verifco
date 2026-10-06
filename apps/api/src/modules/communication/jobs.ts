@@ -1,7 +1,8 @@
 import type { AppContext } from '../../context';
-import { deliverWithAttachment, type MailingJobPayload } from './mailing';
+import { MAILING_DELIVER_JOB, MAILING_JOB, deliverWithAttachment, runMailingRequest, type MailingJobPayload } from './mailing';
 
-/** Mala direta com anexo por cliente (kit pós-declaração, checklist em PDF). */
+/** Mala direta: o pedido inteiro (envios em lote) e o anexo por cliente (kit pós-declaração, checklist em PDF). */
 export function registerJobs(ctx: AppContext) {
-  ctx.jobs.register('mailing.deliver', async (job) => deliverWithAttachment(ctx, job.payload as MailingJobPayload));
+  ctx.jobs.register(MAILING_JOB, async (job, { progress }) => runMailingRequest(ctx, job, progress));
+  ctx.jobs.register(MAILING_DELIVER_JOB, async (job) => deliverWithAttachment(ctx, job.payload as MailingJobPayload));
 }

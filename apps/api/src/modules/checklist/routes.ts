@@ -15,13 +15,13 @@ import {
   attachFiles,
   buildZip,
   createChecklist,
+  issueChecklistAccess,
   loadBundle,
   lockOf,
   officeView,
   previousYearItems,
   refreshFinished,
   removeDocument,
-  rotateAccess,
 } from './service';
 import { sendStoredFile } from '../../services/uploads';
 import { readChecklistUploads } from './uploads';
@@ -272,8 +272,8 @@ export async function checklistRoutes(app: FastifyInstance) {
     const unique = [...new Set(channels)];
     if (unique.includes('email') && !customer.email) throw badRequest('O cliente não tem e-mail cadastrado.');
     if (unique.includes('whatsapp') && !customer.mobile) throw badRequest('O cliente não tem celular cadastrado.');
-    const { token, code, expiresAt } = await rotateAccess(db, checklistId);
-    const link = `${ctx.config.WEB_URL.replace(/\/$/, '')}/checklist/${token}`;
+    // o mesmo caminho da mala direta "Checklist digital"
+    const { token, code, expiresAt, link } = await issueChecklistAccess(ctx, { officeId: user.officeId, customer, year: declaration.exerciseYear, markSent: unique.length > 0 });
     for (const channel of unique) {
       await queueDelivery(ctx, {
         officeId: user.officeId,
@@ -287,7 +287,6 @@ export async function checklistRoutes(app: FastifyInstance) {
         userId: user.userId,
       });
     }
-    if (unique.length) await db.update(checklists).set({ sentAt: new Date() }).where(eq(checklists.id, checklistId));
     await audit(req, unique.length ? 'send_access' : 'regenerate_access', 'checklist', checklistId, { channels: unique });
     return { link, code, channels: unique, expiresAt };
   });

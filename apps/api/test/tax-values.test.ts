@@ -132,9 +132,12 @@ describe('orçamentos em lote por CSV do Excel', () => {
     ].join('\r\n');
     const res = await upload(env, token, '/api/finance/budget-import', [{ name: 'orcamentos.csv', content: Buffer.from(csv, 'latin1'), type: 'text/csv' }], { year: '2026' });
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ total: 3, succeeded: 1, failed: 2 });
-    expect(res.body.results[1].message).toBe('Início da cobrança "31/02/2026" inválido: use uma data que exista, no formato DD/MM/AAAA.');
-    expect(res.body.results[2].message).toMatch(/Valor "1,500" inválido/);
+    // a importação roda no job; o resultado fica no lote
+    await env.ctx.jobs.drain();
+    const batch = (await api.get(`/api/finance/budget-import/batches/${res.body.id}`)).body;
+    expect(batch).toMatchObject({ total: 3, succeeded: 1, failed: 2 });
+    expect(batch.results[1].message).toBe('Início da cobrança "31/02/2026" inválido: use uma data que exista, no formato DD/MM/AAAA.');
+    expect(batch.results[2].message).toMatch(/Valor "1,500" inválido/);
     const list = (await api.get(`/api/finance/customers/${maria.body.id}/budgets?year=2026`)).body.data;
     expect(list).toHaveLength(1);
     expect(list[0]).toMatchObject({ amountCents: 150_000, description: 'Declaração completa', internalNote: 'Cliente antigo', billingStartDate: '2026-11-10', category: 'irpf' });
@@ -165,7 +168,9 @@ describe('importações por .xlsx com células numéricas', () => {
     const xlsx = Buffer.from(await wb.xlsx.writeBuffer());
     const res = await upload(env, token, '/api/finance/budget-import', [{ name: 'orcamentos.xlsx', content: xlsx }], { year: '2026' });
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ total: 5, succeeded: 5, failed: 0 });
+    // a importação roda no job; o resultado fica no lote
+    await env.ctx.jobs.drain();
+    expect((await api.get(`/api/finance/budget-import/batches/${res.body.id}`)).body).toMatchObject({ total: 5, succeeded: 5, failed: 0 });
     const amounts: number[] = [];
     for (const id of ids) {
       const list = (await api.get(`/api/finance/customers/${id}/budgets?year=2026`)).body.data;

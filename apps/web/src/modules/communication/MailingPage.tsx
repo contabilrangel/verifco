@@ -18,9 +18,10 @@ import {
   Send,
   TrendingUp,
   Users,
+  XCircle,
 } from 'lucide-react';
-import { DECLARATION_STAGES, formatPhone, mailingTypeForTemplate, type MailingType, type MailingTypeKey } from '@verifco/shared';
-import { Alert, Button, Card, Checkbox, ConfirmDialog, EmptyState, Loading, Select, Stat, Tag, cx, useToast } from '../../ds';
+import { DECLARATION_STAGES, MAILING_MAX_RECIPIENTS, formatPhone, mailingTypeForTemplate, type MailingType, type MailingTypeKey } from '@verifco/shared';
+import { Alert, Button, Card, Checkbox, ConfirmDialog, EmptyState, Loading, Progress, Select, Stat, Tag, cx, useToast } from '../../ds';
 import { PageHeader } from '../../app/Shell';
 import { ApiError, api } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
@@ -44,6 +45,10 @@ interface PreviewResult {
   customers: number;
   deliveries: { email: number; whatsapp: number; total: number };
   skipped: { reason: string; label: string; count: number; names: string[] }[];
+  /** A seleção passou do limite: o envio vai só para os primeiros `limit` (de `matched`). */
+  truncated: boolean;
+  matched: number;
+  limit: number;
   recipients: { id: string; name: string; email: string | null; mobile: string | null; channels: string[]; skips: string[]; stage: string }[];
   sample: null | {
     customerId: string;
@@ -57,13 +62,32 @@ interface PreviewResult {
   };
 }
 
-interface SendResult {
-  queued: number;
-  alreadyQueued: number;
+/** Pedido de mala direta: preparado na fila de tarefas, acompanhado pela tela. */
+interface MailingRequest {
+  requestId: string;
+  status: 'queued' | 'running' | 'done' | 'failed';
+  progress: number;
+  error: string | null;
   customers: number;
   deliveries: { email: number; whatsapp: number; total: number };
   skipped: PreviewResult['skipped'];
+  truncated: boolean;
+  matched: number;
+  result: null | { queued: number; alreadyQueued: number; failed: { customerId: string; name: string; message: string }[] };
+  /** Anexos em PDF (um job por cliente), contados depois da preparação. */
+  attachments: null | { total: number; done: number; failed: number };
+  repeated?: boolean;
 }
+
+/** Terminou a preparação e, com anexo, a geração dos PDFs? */
+const finished = (r: MailingRequest) =>
+  r.status === 'failed' || (r.status === 'done' && (!r.attachments || r.attachments.done + r.attachments.failed >= r.attachments.total));
+
+const int = (n: number) => n.toLocaleString('pt-BR');
+
+/** Aviso de corte: acima do limite, o envio vai só para os primeiros em ordem alfabética. */
+const truncatedText = (matched: number, limit: number) =>
+  `A seleção tem ${int(matched)} clientes, mais que o limite de ${int(limit)} por envio. Esta mala direta vai para os ${int(limit)} primeiros em ordem alfabética; refine os filtros e faça outro envio para os demais.`;
 
 const ICONS: Record<MailingTypeKey, ReactNode> = {
   checklist_digital: <ClipboardList />,
@@ -101,7 +125,7 @@ export function MailingPage() {
   const [sampleId, setSampleId] = useState<string>('');
   const [confirm, setConfirm] = useState(false);
   const [requestId, setRequestId] = useState(() => crypto.randomUUID());
-  const [result, setResult] = useState<SendResult | null>(null);
+  const [result, setResult] = useState<MailingRequest | null>(null);
 
   const selected = types.data?.find((t) => t.key === type);
   // tipo vindo da URL sem permissão: volta para a escolha
@@ -132,13 +156,20 @@ export function MailingPage() {
   });
   const p = preview.data;
 
-  const send = useAction(() => api.post<SendResult>('/mailing/send', { ...body, previewCustomerId: undefined, requestId }), {
+  const send = useAction(() => api.post<MailingRequest>('/mailing/send', { ...body, previewCustomerId: undefined, requestId }), {
     invalidate: [['deliveries']],
     onSuccess: (r) => {
       setConfirm(false);
       setResult(r);
     },
   });
+  // o servidor prepara os envios na fila: acompanha até terminar (e, com anexo, até gerar os PDFs)
+  const tracking = useApi<MailingRequest>(['mailing', 'request', result?.requestId], result ? `/mailing/requests/${result.requestId}` : null, {
+    refetchInterval: result && !finished(result) ? 1500 : undefined,
+  });
+  useEffect(() => {
+    if (tracking.data) setResult(tracking.data);
+  }, [tracking.data]);
 
   const restart = () => {
     setResult(null);
@@ -164,34 +195,14 @@ export function MailingPage() {
         crumbs={[{ label: 'Início', to: '/' }, { label: 'Comunicação' }, { label: 'Mala direta' }]}
       />
       {result ? (
-        <Card>
-          <EmptyState
-            icon={<CircleCheck />}
-            title={result.queued ? `${result.queued} envio(s) na fila para ${result.customers} cliente(s)` : 'Este envio já tinha sido feito'}
-            description={
-              <div className="vf-stack" style={{ '--gap': '8px' } as React.CSSProperties}>
-                <span>
-                  {result.deliveries.email} por e-mail e {result.deliveries.whatsapp} por WhatsApp.
-                  {result.alreadyQueued > 0 && ` ${result.alreadyQueued} já estavam na fila e não foram duplicados.`}
-                  {selected?.attachment && ' Os anexos em PDF são gerados um a um e podem levar alguns minutos.'}
-                </span>
-                {result.skipped.map((s) => (
-                  <span key={s.reason} className="vf-text-xs">
-                    {s.count} sem envio — {s.label.toLowerCase()}: {names(s.names, s.count)}
-                  </span>
-                ))}
-              </div>
-            }
-            action={
-              <div className="vf-inline">
-                <Button onClick={() => navigate('/comunicacao/envios')}>Acompanhar envios</Button>
-                <Button kind="secondary" onClick={restart}>
-                  Nova mala direta
-                </Button>
-              </div>
-            }
-          />
-        </Card>
+        <MailingProgress
+          request={result}
+          withAttachment={Boolean(selected?.attachment)}
+          retrying={send.isPending}
+          onRetry={() => send.mutate(undefined)}
+          onTrack={() => navigate('/comunicacao/envios')}
+          onRestart={restart}
+        />
       ) : (
         <>
           <nav className="vf-wizard-steps" aria-label="Etapas">
@@ -309,6 +320,11 @@ export function MailingPage() {
                         <Stat label="WhatsApp" value={p.deliveries.whatsapp} hint={`${p.withoutMobile} cliente(s) sem celular`} />
                       </div>
                       {p.type.note && <Alert>{p.type.note}</Alert>}
+                      {p.truncated && (
+                        <Alert tone="warning" title="Limite de destinatários">
+                          {truncatedText(p.matched, p.limit)}
+                        </Alert>
+                      )}
                       {p.skipped.length > 0 && (
                         <Alert tone="warning" title={`${p.skipped.reduce((a, s) => a + s.count, 0)} situação(ões) sem envio`}>
                           <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
@@ -406,6 +422,7 @@ export function MailingPage() {
                 <strong>{selected?.label}</strong> para <strong>{p.customers}</strong> cliente(s): {p.deliveries.email} e-mail(s) e {p.deliveries.whatsapp} WhatsApp.
               </span>
               {p.total - p.customers > 0 && <span>{p.total - p.customers} cliente(s) ficarão de fora por falta de contato ou de dados.</span>}
+              {p.truncated && <span>Outros {int(p.matched - p.limit)} cliente(s) da seleção ficam de fora pelo limite de {int(p.limit)} por envio.</span>}
               {!can('mailing.list') && <span>Depois do envio, acompanhe a situação com quem tem acesso a E-mails enviados.</span>}
             </div>
           )
@@ -495,6 +512,13 @@ function RecipientsStep({
         <div style={{ padding: '0 24px 12px' }} className="vf-text-xs vf-muted">
           {mode === 'selected' ? `Clientes escolhidos na lista de clientes (${ids.length}).` : 'Clientes ativos que atendem aos filtros. Sem filtros, todos os clientes ativos.'}
         </div>
+        {preview?.truncated && (
+          <div style={{ padding: '0 24px 12px' }}>
+            <Alert tone="warning" title="Limite de destinatários">
+              {truncatedText(preview.matched, preview.limit)}
+            </Alert>
+          </div>
+        )}
         {!preview ? (
           <Loading />
         ) : preview.recipients.length === 0 ? (
@@ -536,6 +560,92 @@ function RecipientsStep({
         </div>
       </Card>
     </div>
+  );
+}
+
+/** Andamento do pedido: preparação na fila, anexos em PDF e o resumo final. */
+function MailingProgress({
+  request: r,
+  withAttachment,
+  retrying,
+  onRetry,
+  onTrack,
+  onRestart,
+}: {
+  request: MailingRequest;
+  withAttachment: boolean;
+  retrying: boolean;
+  onRetry: () => void;
+  onTrack: () => void;
+  onRestart: () => void;
+}) {
+  const done = finished(r);
+  const att = r.attachments;
+  const generating = r.status === 'done' && !done;
+  const title =
+    r.status === 'failed'
+      ? 'Não foi possível preparar os envios'
+      : r.status !== 'done'
+        ? 'Preparando os envios...'
+        : generating
+          ? 'Gerando os anexos em PDF...'
+          : r.result?.queued
+            ? `${int(r.result.queued)} envio(s) na fila para ${int(r.customers)} cliente(s)`
+            : 'Este envio já tinha sido feito';
+  const progress = generating && att ? ((att.done + att.failed) / Math.max(1, att.total)) * 100 : r.progress;
+  const failed = r.result?.failed ?? [];
+  return (
+    <Card>
+      <EmptyState
+        icon={r.status === 'failed' ? <XCircle /> : done ? <CircleCheck /> : <Send />}
+        title={title}
+        description={
+          <div className="vf-stack" style={{ '--gap': '8px' } as React.CSSProperties}>
+            {!done && <Progress value={progress} />}
+            {r.error && <span>{r.error}</span>}
+            <span>
+              {int(r.deliveries.email)} por e-mail e {int(r.deliveries.whatsapp)} por WhatsApp.
+              {r.result && r.result.alreadyQueued > 0 && ` ${int(r.result.alreadyQueued)} já estavam na fila e não foram duplicados.`}
+              {!done && ' Você pode sair desta tela: a preparação continua e os envios aparecem em E-mails enviados.'}
+            </span>
+            {withAttachment &&
+              (att ? (
+                <span>
+                  Anexos em PDF gerados: {int(att.done)} de {int(att.total)}
+                  {att.failed > 0 && ` (${int(att.failed)} com erro)`}.
+                </span>
+              ) : (
+                !done && <span>Os anexos em PDF são gerados um a um e podem levar alguns minutos.</span>
+              ))}
+            {r.truncated && <span className="vf-text-xs">{truncatedText(r.matched, MAILING_MAX_RECIPIENTS)}</span>}
+            {r.skipped.map((s) => (
+              <span key={s.reason} className="vf-text-xs">
+                {s.count} sem envio — {s.label.toLowerCase()}: {names(s.names, s.count)}
+              </span>
+            ))}
+            {failed.length > 0 && (
+              <span className="vf-text-xs">
+                {failed.length} sem envio por erro: {names(failed.slice(0, 8).map((f) => `${f.name} (${f.message})`), failed.length)}
+              </span>
+            )}
+          </div>
+        }
+        action={
+          <div className="vf-inline">
+            {r.status === 'failed' ? (
+              <Button loading={retrying} onClick={onRetry}>
+                Tentar de novo
+              </Button>
+            ) : (
+              <Button onClick={onTrack}>Acompanhar envios</Button>
+            )}
+            <Button kind="secondary" onClick={onRestart}>
+              Nova mala direta
+            </Button>
+          </div>
+        }
+      />
+    </Card>
   );
 }
 

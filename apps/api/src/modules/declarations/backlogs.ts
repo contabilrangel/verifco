@@ -1,7 +1,7 @@
 import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { brazilToday, formatDate } from '@verifco/shared';
+import { brazilToday, escapeHtml, formatDate } from '@verifco/shared';
 import type { AppContext, AuthUser } from '../../context';
 import { backlogs } from '../../db/schema';
 import { HttpError, badRequest, notFound } from '../../lib/errors';
@@ -15,8 +15,6 @@ type BacklogRow = typeof backlogs.$inferSelect;
 
 const description = z.string().trim().min(2, 'Descreva o documento').max(2000);
 const dueDate = z.preprocess((v) => (v === '' ? null : v), dateStr.nullable().optional());
-
-const escapeHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
 /** Lista HTML das pendências em aberto para o template `missing_document`. */
 export function backlogListHtml(items: { description: string; dueDate: string | null }[]): string {

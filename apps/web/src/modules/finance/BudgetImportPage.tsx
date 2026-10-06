@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { CheckCircle2, Download, FileSpreadsheet, XCircle } from 'lucide-react';
-import { Alert, Button, Card, ConfirmDialog, DropFile, EmptyState, Loading, Select, Stat, Tag, useToast } from '../../ds';
+import { Alert, Button, Card, ConfirmDialog, DropFile, EmptyState, Loading, Progress, Select, Stat, Tag, useToast } from '../../ds';
 import { PageHeader } from '../../app/Shell';
 import { api } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
@@ -16,6 +17,7 @@ export function BudgetImportPage() {
   const { can } = useAuth();
   const { year: globalYear } = useYear();
   const toast = useToast();
+  const qc = useQueryClient();
   const [year, setYear] = useState(String(globalYear));
   const [file, setFile] = useState<File | null>(null);
   const [result, setResult] = useState<ImportBatch | null>(null);
@@ -23,13 +25,29 @@ export function BudgetImportPage() {
   const batches = useApi<ImportBatch[]>(KEY, can('worksheet.budget') ? '/finance/budget-import/batches' : null);
 
   const upload = useAction((f: File) => api.upload<ImportBatch>('/finance/budget-import', f, { year }), {
-    success: (r) => `Importação concluída: ${r.succeeded} linha(s) gravada(s)${r.failed ? `, ${r.failed} com erro` : ''}.`,
-    invalidate: [KEY, ['finance', 'budgets']],
+    success: 'Planilha recebida: a importação continua em segundo plano.',
+    invalidate: [KEY],
     onSuccess: (r) => {
       setResult(r);
       setFile(null);
     },
   });
+  // as linhas são gravadas na fila de tarefas: acompanha o lote até o resultado
+  const processing = result?.status === 'processing';
+  const tracking = useApi<ImportBatch>(['finance', 'budget-import', 'batch', result?.id], processing ? `/finance/budget-import/batches/${result.id}` : null, {
+    refetchInterval: processing ? 1500 : undefined,
+  });
+  useEffect(() => {
+    const b = tracking.data;
+    if (!b || !result || b.id !== result.id || (b.status === result.status && b.succeeded === result.succeeded && b.failed === result.failed)) return;
+    // a contagem de linhas sem valor só vem na resposta do envio
+    setResult({ ...b, skipped: result.skipped, year: result.year });
+    if (b.status === 'processing') return;
+    for (const key of [KEY, ['finance', 'budgets']]) void qc.invalidateQueries({ queryKey: key });
+    if (b.status === 'done') toast.success(`Importação concluída: ${b.succeeded} linha(s) gravada(s)${b.failed ? `, ${b.failed} com erro` : ''}.`);
+    else toast.error('Não foi possível concluir a importação.');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tracking.data]);
 
   if (!can('worksheet.budget')) {
     return <EmptyState title="Sem acesso" description="Seu perfil não tem permissão para importar orçamentos em lote." />;
@@ -71,20 +89,21 @@ export function BudgetImportPage() {
             <ul className="vf-fin-rules">
               <li>O cliente é identificado pelo CPF/CNPJ.</li>
               <li>Se já houver orçamento da mesma categoria no ano, ele é atualizado; senão, um novo é criado.</li>
-              <li>Status “Aprovado” gera o faturamento. O envio ao cliente é feito pela tela do orçamento.</li>
+              <li>Status “Aprovado” gera o faturamento. O envio ao cliente é feito pela tela do orçamento ou pela mala direta.</li>
+              <li>A importação roda em segundo plano: acompanhe o andamento aqui ou saia da tela e veja o resultado depois.</li>
               <li>Orçamentos já aprovados não mudam de valor pela planilha.</li>
             </ul>
           </div>
         </Card>
         <Card title="2. Envie a planilha preenchida">
           <div className="vf-stack">
-            <DropFile accept=".xlsx,.csv" onFiles={(fs) => fs[0] && setFile(fs[0])} disabled={upload.isPending} hint={`Formatos .xlsx ou .csv · exercício ${year}`} />
-            {upload.isPending && <Loading label="Importando orçamentos..." />}
+            <DropFile accept=".xlsx,.csv" onFiles={(fs) => fs[0] && setFile(fs[0])} disabled={upload.isPending || processing} hint={`Formatos .xlsx ou .csv · exercício ${year}`} />
+            {upload.isPending && <Loading label="Enviando a planilha..." />}
           </div>
         </Card>
       </div>
 
-      {result && <ImportResult key={result.id} batch={result} />}
+      {result && <ImportResult key={`${result.id}:${result.status}`} batch={result} />}
 
       <Card title="Importações recentes" flush style={{ marginTop: 24 }}>
         {batches.isLoading ? (
@@ -106,7 +125,10 @@ export function BudgetImportPage() {
               <tbody>
                 {batches.data.map((b) => (
                   <tr key={b.id}>
-                    <td>{formatDateTime(b.createdAt)}</td>
+                    <td>
+                      {formatDateTime(b.createdAt)} {b.status === 'processing' && <Tag tone="primary">Em andamento</Tag>}
+                      {b.status === 'failed' && <Tag tone="danger">Não concluída</Tag>}
+                    </td>
                     <td className="num">{b.total}</td>
                     <td className="num">{b.succeeded}</td>
                     <td className="num">{b.failed ? <Tag tone="danger">{b.failed}</Tag> : 0}</td>
@@ -139,6 +161,21 @@ export function BudgetImportPage() {
 function ImportResult({ batch }: { batch: ImportBatch }) {
   const [onlyErrors, setOnlyErrors] = useState(batch.failed > 0);
   const rows = onlyErrors ? batch.results.filter((r) => !r.ok) : batch.results;
+  if (batch.status === 'processing') {
+    const done = batch.succeeded + batch.failed;
+    return (
+      <Card title="Importando a planilha" style={{ marginTop: 24 }}>
+        <div className="vf-stack">
+          <Progress value={(done / Math.max(1, batch.total)) * 100} />
+          <span className="vf-muted">
+            {done} de {batch.total} linha(s) processada(s). Você pode sair desta tela: a importação continua e o resultado fica em “Importações recentes”.
+          </span>
+        </div>
+      </Card>
+    );
+  }
+  // importação interrompida: a última linha do resultado diz onde e por quê
+  const stopped = batch.status === 'failed' ? (batch.results.at(-1)?.message ?? 'Não foi possível concluir a importação.') : null;
   return (
     <Card
       title="Resultado da importação"
@@ -152,6 +189,11 @@ function ImportResult({ batch }: { batch: ImportBatch }) {
       }
     >
       <div className="vf-stack">
+        {stopped && (
+          <Alert tone="danger" title="A importação não foi concluída">
+            {stopped}
+          </Alert>
+        )}
         <div className="vf-fin-stats">
           <Stat label="Linhas processadas" value={batch.total} />
           <Stat label="Gravadas" value={batch.succeeded} tone="success" />

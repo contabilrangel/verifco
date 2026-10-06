@@ -165,6 +165,8 @@ export interface BillingReport {
 export interface ImportBatch {
   id: string;
   createdAt: string;
+  /** "processing" enquanto a fila de tarefas importa as linhas. */
+  status: 'processing' | 'done' | 'failed';
   total: number;
   succeeded: number;
   failed: number;

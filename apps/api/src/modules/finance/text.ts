@@ -1,24 +1,8 @@
-import { BUDGET_CATEGORIES, BUDGET_STATUS, BUDGET_TYPES, formatCep, type BudgetCategory } from '@verifco/shared';
+import { BUDGET_CATEGORIES, BUDGET_STATUS, BUDGET_TYPES, formatCep, htmlToText, type BudgetCategory } from '@verifco/shared';
 import type { Address } from '../../db/schema';
 
-/** Converte o HTML dos templates em texto simples (para PDF). */
-export function htmlToPlain(html: string): string {
-  return html
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/(p|li|h\d|div)>/gi, '\n\n')
-    .replace(/<li>/gi, '• ')
-    .replace(/<a [^>]*href="([^"]+)"[^>]*>(.*?)<\/a>/gi, '$2 ($1)')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&amp;/g, '&')
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
+/** Converte o HTML dos templates em texto corrido para PDF (parágrafos separados por linha em branco). */
+export const htmlToPlain = (html: string): string => htmlToText(html, { blankLines: true, linksInParens: true });
 
 export const categoryLabel = (c: string) => BUDGET_CATEGORIES[c as BudgetCategory] ?? c;
 export const budgetTypeLabel = (t: string) => BUDGET_TYPES[t as keyof typeof BUDGET_TYPES] ?? t;

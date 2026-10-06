@@ -1,7 +1,7 @@
 import { and, asc, count, eq, isNull, ne, sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { DECLARATION_SUBSTATUS, PERMISSION_CATEGORIES, isPermission, isValidCpfCnpj, isValidEmail, onlyDigits, type DeclarationSubstatus } from '@verifco/shared';
+import { DECLARATION_SUBSTATUS, PERMISSION_CATEGORIES, escapeHtml, isPermission, isValidCpfCnpj, isValidEmail, onlyDigits, type DeclarationSubstatus } from '@verifco/shared';
 import type { AuthUser } from '../../context';
 import { contracts, customerGroupMembers, customerGroups, customers, offices, passwordResets, roles, users } from '../../db/schema';
 import { randomToken, sha256 } from '../../lib/crypto';
@@ -413,8 +413,6 @@ export async function adminRoutes(app: FastifyInstance) {
 }
 
 const LOGO_MAX_BYTES = 2 * 1024 * 1024;
-
-const escapeHtml = (v: string) => v.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 
 const GROUP_ADMIN = ['customer_group.list', 'customer_group.create', 'customer_group.edit', 'customer_group.delete'];
 

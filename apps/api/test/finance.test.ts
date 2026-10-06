@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import ExcelJS from 'exceljs';
 import { addMonthsIso, todayIso } from '@verifco/shared';
-import { billings, budgets, declarations, importBatches, installments, jobs } from '../src/db/schema';
+import { billings, budgets, customers, declarations, importBatches, installments, jobs } from '../src/db/schema';
 import { signCustomerToken } from '../src/plugins/auth';
 import { buildWorkbook } from '../src/services/xlsx';
 import { VALID_CPFS, client, createEmployee, createTestEnv, registerOffice, type Api, type TestEnv } from './helpers';
@@ -473,8 +473,13 @@ describe('orçamentos em lote', () => {
     const mp = multipart({ year: '2026' }, { name: 'orcamentos.xlsx', data: sheet, type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     const res = await env.app.inject({ method: 'POST', url: '/api/finance/budget-import', payload: mp.payload, headers: { ...mp.headers, authorization: `Bearer ${token}` } });
     expect(res.statusCode).toBe(200);
-    const body = res.json();
-    expect(body).toMatchObject({ total: 5, succeeded: 2, failed: 3, skipped: 1 });
+    // a requisição só guarda a planilha e registra o lote; o job grava as linhas
+    const queued = res.json();
+    expect(queued).toMatchObject({ status: 'processing', total: 5, succeeded: 0, failed: 0, skipped: 1 });
+    expect((await api.get(`/api/finance/customers/${c2.body.id}/budgets?year=2026`)).body.data).toHaveLength(0);
+    await env.ctx.jobs.drain();
+    const body = (await api.get(`/api/finance/budget-import/batches/${queued.id}`)).body;
+    expect(body).toMatchObject({ status: 'done', total: 5, succeeded: 2, failed: 3 });
     expect(body.results.map((r: { ok: boolean }) => r.ok)).toEqual([true, true, false, false, false]);
     expect(body.results[2].message).toContain('não encontrado');
     expect(body.results[3].message).toContain('parcela');
@@ -489,8 +494,53 @@ describe('orçamentos em lote', () => {
     const batches = await env.ctx.db.select().from(importBatches).where(eq(importBatches.kind, 'budget'));
     expect(batches.some((b) => b.id === body.id && b.failed === 3)).toBe(true);
     expect((await api.get('/api/finance/budget-import/batches')).body[0].id).toBe(body.id);
+    // o resultado chega também pelo sino de quem importou
+    const notes = await env.ctx.db.query.notifications.findMany({ where: (t, { eq: e }) => e(t.officeId, queued.officeId) });
+    expect(notes.some((n) => n.title === 'Importação de orçamentos concluída' && n.body === '2 linha(s) gravada(s), 3 com erro.')).toBe(true);
+    // outro escritório não vê o lote
+    expect((await (await registerOffice(env)).api.get(`/api/finance/budget-import/batches/${body.id}`)).status).toBe(404);
+  });
+
+  it('importação grande roda no job, lê clientes e orçamentos de uma vez e atualiza a mesma linha repetida (DAD-5)', async () => {
+    const { api, token, officeId, userId } = await setup('Escritório Lote');
+    // 300 clientes cadastrados direto no banco, um orçamento por linha
+    const valid = Array.from({ length: 300 }, (_, i) => validCpf(String(123_456_000 + i)));
+    await env.ctx.db.insert(customers).values(valid.map((cpf, i) => ({ officeId, name: `Lote ${i}`, cpfCnpj: cpf, responsibleUserId: userId })));
+    const rows = valid.map((cpf) => ({ c0: cpf, c4: '100,00' }));
+    // a mesma pessoa duas vezes na planilha: a segunda linha atualiza o orçamento criado pela primeira
+    rows.push({ c0: valid[0], c4: '150,00' });
+    const sheet = await buildWorkbook([{ name: 'Orçamentos', columns: ['CPF/CNPJ', 'Cliente', 'Categoria', 'Descrição', 'Valor'].map((h, i) => ({ header: h, key: `c${i}` })), rows }]);
+    const mp = multipart({ year: '2026' }, { name: 'orcamentos.xlsx', data: sheet, type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const res = await env.app.inject({ method: 'POST', url: '/api/finance/budget-import', payload: mp.payload, headers: { ...mp.headers, authorization: `Bearer ${token}` } });
+    expect(res.json()).toMatchObject({ status: 'processing', total: 301 });
+    const before = await env.ctx.db.select({ id: budgets.id }).from(budgets).where(eq(budgets.officeId, officeId));
+    expect(before).toHaveLength(0);
+    const job = await env.ctx.db.query.jobs.findFirst({ where: (t, { and: a, eq: e }) => a(e(t.type, 'finance.budget_import'), e(t.idempotencyKey, res.json().id)) });
+    expect(job).toMatchObject({ status: 'queued', maxAttempts: 1 });
+
+    await env.ctx.jobs.drain();
+    const batch = (await api.get(`/api/finance/budget-import/batches/${res.json().id}`)).body;
+    expect(batch).toMatchObject({ status: 'done', total: 301, succeeded: 301, failed: 0 });
+    expect(batch.results.at(-1)).toMatchObject({ ok: true, message: 'Orçamento atualizado.' });
+    const after = await env.ctx.db.select().from(budgets).where(eq(budgets.officeId, officeId));
+    expect(after).toHaveLength(300);
+    const first = (await env.ctx.db.select().from(customers).where(and(eq(customers.officeId, officeId), eq(customers.cpfCnpj, valid[0]))))[0];
+    expect(after.find((b) => b.customerId === first.id)?.amountCents).toBe(15_000);
   });
 });
+
+/** CPF válido: os 9 dígitos informados mais os dígitos verificadores. */
+function validCpf(seed: string): string {
+  const base = seed.slice(0, 9).split('').map(Number);
+  const digit = (nums: number[]) => {
+    const sum = nums.reduce((acc, n, i) => acc + n * (nums.length + 1 - i), 0);
+    const r = (sum * 10) % 11;
+    return r === 10 ? 0 : r;
+  };
+  const d1 = digit(base);
+  const d2 = digit([...base, d1]);
+  return [...base, d1, d2].join('');
+}
 
 describe('permissões e isolamento', () => {
   it('bloqueia sem permissão (403) e esconde dados de outro escritório (404)', async () => {

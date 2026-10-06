@@ -1,43 +1,20 @@
 /**
  * Orçamentos em lote: modelo .xlsx pré-preenchido com os clientes e orçamentos do ano,
- * e importação que cria/atualiza orçamentos por CPF/CNPJ com resultado por linha.
+ * e importação que cria/atualiza orçamentos por CPF/CNPJ com resultado por linha. A importação
+ * roda na fila de tarefas (`budget-import.ts`); a requisição só confere e guarda a planilha.
  */
 import { and, asc, desc, eq, inArray } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import {
-  BUDGET_CATEGORIES,
-  BUDGET_STATUS,
-  formatCpfCnpj,
-  isValidCpfCnpj,
-  onlyDigits,
-  type BudgetCategory,
-  type BudgetStatus,
-} from '@verifco/shared';
+import { BUDGET_CATEGORIES, formatCpfCnpj } from '@verifco/shared';
 import { budgets, customers, importBatches, paymentMethods } from '../../db/schema';
-import { HttpError, badRequest } from '../../lib/errors';
-import { audit, can, guard, parse, requireUser, yearSchema } from '../../lib/http';
+import { badRequest, notFound } from '../../lib/errors';
+import { audit, guard, parse, requireUser, uuidParam, yearSchema } from '../../lib/http';
 import { customerScope } from '../../services/customers';
-import { getOrCreateDeclaration } from '../../services/declarations';
 import { SHEET_TYPES, readUploads } from '../../services/uploads';
-import { buildWorkbook, parseDate, readSheet, sheetMoneyToCents } from '../../services/xlsx';
-import { applyStatus, resolveBudgetValues, userName, type BudgetRow, type PaymentMethodRow } from './service';
+import { buildWorkbook, readSheet } from '../../services/xlsx';
+import { BUDGET_IMPORT_JOB, hasAmount, type BudgetImportPayload } from './budget-import';
 import { brDate, budgetStatusLabel, categoryLabel } from './text';
-
-const fold = (s: string) =>
-  s
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .trim()
-    .toLowerCase();
-
-const IMPORT_STATUSES: BudgetStatus[] = ['draft', 'approved', 'rejected', 'canceled'];
-
-function matchOption<T extends string>(value: string, options: Record<T, string>): T | null {
-  const v = fold(value);
-  for (const [k, label] of Object.entries(options) as [T, string][]) if (fold(k) === v || fold(label) === v) return k;
-  return null;
-}
 
 const COLUMNS = [
   { header: 'CPF/CNPJ', key: 'doc', width: 18 },
@@ -125,6 +102,19 @@ export async function importRoutes(app: FastifyInstance) {
       .limit(10);
   });
 
+  /** Um lote do escritório: a tela acompanha a importação até o resultado. */
+  app.get('/finance/budget-import/batches/:id', { preHandler: guard('worksheet.budget') }, async (req) => {
+    const user = requireUser(req);
+    const { id } = parse(uuidParam, req.params);
+    const batch = await db.query.importBatches.findFirst({ where: and(eq(importBatches.id, id), eq(importBatches.officeId, user.officeId), eq(importBatches.kind, 'budget')) });
+    if (!batch) throw notFound('Importação');
+    return batch;
+  });
+
+  /**
+   * Recebe a planilha: confere se ela abre, guarda o arquivo, registra o lote ("processing") e põe
+   * a importação na fila. As linhas são gravadas pelo job; a tela acompanha o lote até o resultado.
+   */
   app.post('/finance/budget-import', { preHandler: guard('worksheet.budget') }, async (req) => {
     const user = requireUser(req);
     // o tipo gravado sai da extensão conferida com o conteúdo, nunca do que o navegador informa
@@ -142,181 +132,17 @@ export async function importRoutes(app: FastifyInstance) {
       throw badRequest('Não foi possível ler a planilha. Use o modelo baixado do sistema.');
     }
     if (sheet.length > 5000) throw badRequest('A planilha tem linhas demais (máximo de 5.000).');
-
-    const scope = await customerScope(ctx, user);
-    const methods = await db.select().from(paymentMethods).where(eq(paymentMethods.officeId, user.officeId));
-    const defaultMethod = methods.find((m) => m.isDefault && m.active) ?? null;
-    const approver = await userName(ctx, user.userId);
-    const canApprove = can(user, 'budget.approve');
-    const results: { row: number; ok: boolean; message: string }[] = [];
-    let skipped = 0;
-
-    for (const line of sheet) {
-      const { rowNumber, values: v } = line;
-      const cell = (k: string) => (v[k] ?? '').trim();
-      const fail = (message: string) => results.push({ row: rowNumber, ok: false, message });
-      const amountText = cell('valor');
-      if (!amountText) {
-        skipped++;
-        continue;
-      }
-      const doc = onlyDigits(cell('cpf_cnpj'));
-      if (!doc || !isValidCpfCnpj(doc)) {
-        fail('CPF/CNPJ inválido.');
-        continue;
-      }
-      const customer = await db.query.customers.findFirst({ where: and(scope, eq(customers.cpfCnpj, doc)) });
-      if (!customer) {
-        fail(`Cliente ${formatCpfCnpj(doc)} não encontrado.`);
-        continue;
-      }
-      // célula numérica do .xlsx pelo número cru ("104.895" é R$ 104,90, não 104 mil); texto e CSV pelo parser de reais
-      const amountCents = sheetMoneyToCents(line, 'valor');
-      if (amountCents === null || amountCents <= 0) {
-        fail(`Valor "${amountText}" inválido. Use o formato 1.500,00 (ou 1500,00).`);
-        continue;
-      }
-      const category: BudgetCategory | null = cell('categoria') ? matchOption(cell('categoria'), BUDGET_CATEGORIES) : 'irpf';
-      if (!category) {
-        fail(`Categoria "${cell('categoria')}" não reconhecida.`);
-        continue;
-      }
-      const discountText = cell('desconto').replace('%', '').replace(',', '.');
-      const discount = discountText ? Number(discountText) : 0;
-      if (!Number.isFinite(discount) || discount < 0 || discount > 100) {
-        fail('Desconto deve estar entre 0 e 100.');
-        continue;
-      }
-      let method: PaymentMethodRow | null = defaultMethod;
-      if (cell('forma_de_pagamento')) {
-        const name = fold(cell('forma_de_pagamento'));
-        method = methods.find((m) => fold(m.name) === name) ?? methods.find((m) => fold(m.type) === name) ?? null;
-        if (!method) {
-          fail(`Forma de pagamento "${cell('forma_de_pagamento')}" não cadastrada.`);
-          continue;
-        }
-      }
-      const installmentsText = cell('parcelas');
-      const installments = installmentsText ? Number(installmentsText) : 1;
-      if (!Number.isInteger(installments) || installments < 1 || installments > 60) {
-        fail('Parcelas inválidas.');
-        continue;
-      }
-      const startText = cell('inicio_da_cobranca');
-      const start = startText ? parseDate(startText) : null;
-      if (startText && !start) {
-        fail(`Início da cobrança "${startText}" inválido: use uma data que exista, no formato DD/MM/AAAA.`);
-        continue;
-      }
-      const statusText = cell('status');
-      const status = statusText ? matchOption(statusText, BUDGET_STATUS) : null;
-      if (statusText && !status) {
-        fail(`Status "${statusText}" não reconhecido.`);
-        continue;
-      }
-
-      const candidates = await db
-        .select()
-        .from(budgets)
-        .where(and(eq(budgets.officeId, user.officeId), eq(budgets.customerId, customer.id), eq(budgets.exerciseYear, year), eq(budgets.category, category)))
-        .orderBy(desc(budgets.createdAt));
-      const current: BudgetRow | undefined = candidates.find((b) => b.status !== 'canceled') ?? candidates[0];
-      const target = (status ?? current?.status ?? 'draft') as BudgetStatus;
-      if (target === 'sent' && current?.status !== 'sent') {
-        fail('O status "Enviado" só é definido pelo envio ao cliente no sistema.');
-        continue;
-      }
-      if (!IMPORT_STATUSES.includes(target) && target !== 'sent') {
-        fail('Status inválido.');
-        continue;
-      }
-      if (target === 'approved' && current?.status !== 'approved' && !canApprove) {
-        fail('Você não tem permissão para aprovar orçamentos.');
-        continue;
-      }
-      const description = cell('descricao') || null;
-      const internalNote = cell('observacao_interna') || null;
-
-      try {
-        if (current?.status === 'approved') {
-          const changed =
-            current.amountCents !== amountCents ||
-            Number(current.discountPercent) !== discount ||
-            (current.paymentMethodId ?? null) !== (method?.id ?? null) ||
-            current.installments !== installments ||
-            (start !== null && current.billingStartDate !== start) ||
-            target !== 'approved';
-          if (changed) {
-            fail('Orçamento já aprovado: valores e status não podem ser alterados.');
-            continue;
-          }
-          if ((current.description ?? null) !== description || (current.internalNote ?? null) !== internalNote) {
-            await db.update(budgets).set({ description, internalNote, updatedAt: new Date() }).where(eq(budgets.id, current.id));
-            results.push({ row: rowNumber, ok: true, message: 'Orçamento aprovado: descrição e observação atualizadas.' });
-          } else {
-            results.push({ row: rowNumber, ok: true, message: 'Sem alterações.' });
-          }
-          continue;
-        }
-        const decl = await getOrCreateDeclaration(db, user.officeId, customer.id, year);
-        const values = await resolveBudgetValues(
-          ctx,
-          user.officeId,
-          decl,
-          {
-            type: current?.type === 'integration' ? 'integration' : 'fixed',
-            category,
-            description,
-            priceTableId: current?.priceTableId ?? null,
-            pricingInputs: current?.pricingInputs ?? {},
-            amountCents,
-            discountPercent: discount,
-            paymentMethodId: method?.id ?? null,
-            billingStartDate: start ?? current?.billingStartDate ?? null,
-            installments,
-            internalNote,
-          },
-          current,
-        );
-        let row: BudgetRow;
-        if (current) {
-          [row] = await db.update(budgets).set({ ...values, updatedAt: new Date() }).where(eq(budgets.id, current.id)).returning();
-        } else {
-          [row] = await db
-            .insert(budgets)
-            .values({ ...values, officeId: user.officeId, customerId: customer.id, declarationId: decl.id, exerciseYear: year, status: 'draft', createdByUserId: user.userId })
-            .returning();
-        }
-        if (target !== row.status) row = await applyStatus(ctx, row, target, approver);
-        const verb = current ? 'atualizado' : 'criado';
-        results.push({ row: rowNumber, ok: true, message: row.status === 'approved' && current?.status !== 'approved' ? `Orçamento ${verb} e aprovado (faturamento gerado).` : `Orçamento ${verb}.` });
-      } catch (err) {
-        // erros de regra (HttpError) já vêm em português; erro de banco não vai para o resultado
-        if (err instanceof HttpError) fail(err.message);
-        else {
-          req.log.error({ err, row: rowNumber }, 'Falha ao gravar linha da importação de orçamentos');
-          fail('Erro ao gravar a linha. Confira os valores e tente novamente.');
-        }
-      }
-    }
+    const total = sheet.filter(hasAmount).length;
 
     const saved = await ctx.files.save({ officeId: user.officeId, data: file.data, filename: file.filename, mimeType: file.mimeType, userId: user.userId });
-    const succeeded = results.filter((r) => r.ok).length;
     const [batch] = await db
       .insert(importBatches)
-      .values({
-        officeId: user.officeId,
-        kind: 'budget',
-        fileId: saved.id,
-        status: 'done',
-        total: results.length,
-        succeeded,
-        failed: results.length - succeeded,
-        results,
-        createdByUserId: user.userId,
-      })
+      .values({ officeId: user.officeId, kind: 'budget', fileId: saved.id, status: 'processing', total, createdByUserId: user.userId })
       .returning();
-    await audit(req, 'import', 'budget', batch.id, { year, total: results.length, succeeded });
-    return { ...batch, skipped, year };
+    const payload: BudgetImportPayload = { batchId: batch.id, officeId: user.officeId, userId: user.userId, year };
+    // uma tentativa só: a importação refeita do zero mudaria as mensagens das linhas já gravadas
+    await ctx.jobs.enqueue(BUDGET_IMPORT_JOB, payload, { officeId: user.officeId, idempotencyKey: batch.id, userId: user.userId, maxAttempts: 1 });
+    await audit(req, 'import', 'budget', batch.id, { year, total });
+    return { ...batch, skipped: sheet.length - total, year };
   });
 }

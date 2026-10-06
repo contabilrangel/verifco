@@ -1,10 +1,13 @@
-import { and, eq, sql } from 'drizzle-orm';
-import { getTemplateDef, renderTemplate, onlyDigits, type DeliveryChannel } from '@verifco/shared';
+import { and, eq, inArray, sql } from 'drizzle-orm';
+import { getTemplateDef, htmlToText, renderTemplate, onlyDigits, type DeliveryChannel } from '@verifco/shared';
 import type { AppContext } from '../context';
 import { customers, deliveries, emailTemplates, jobs, messages, offices, users } from '../db/schema';
 import { badRequest } from '../lib/errors';
 
 export type DeliveryRow = typeof deliveries.$inferSelect;
+type CustomerRow = typeof customers.$inferSelect;
+type OfficeRow = typeof offices.$inferSelect;
+type TemplateValues = Record<string, string | number | null | undefined>;
 
 /** Template efetivo do escritório: o personalizado ou o padrão do sistema. */
 export async function resolveTemplate(ctx: AppContext, officeId: string, key: string) {
@@ -16,16 +19,13 @@ export async function resolveTemplate(ctx: AppContext, officeId: string, key: st
   return { def, subject: custom?.subject ?? def.defaultSubject, body: custom?.body ?? def.defaultBody, customized: Boolean(custom) };
 }
 
-/** Valores comuns a todos os templates (cliente, escritório, contador, anos). */
-export async function baseTemplateValues(ctx: AppContext, officeId: string, customerId: string | null, exerciseYear?: number) {
-  const office = await ctx.db.query.offices.findFirst({ where: eq(offices.id, officeId) });
-  const customer = customerId ? await ctx.db.query.customers.findFirst({ where: eq(customers.id, customerId) }) : null;
-  const responsible = customer?.responsibleUserId ? await ctx.db.query.users.findFirst({ where: eq(users.id, customer.responsibleUserId) }) : null;
+/** Valores comuns a todos os templates a partir do escritório, do cliente e do nome do responsável já carregados. */
+function commonValues(office: OfficeRow | null | undefined, customer: CustomerRow | null | undefined, responsibleName: string | null | undefined, exerciseYear?: number) {
   const year = exerciseYear ?? new Date().getFullYear();
   return {
     CLIENTE: customer?.name ?? '',
     ESCRITORIO: office?.name ?? '',
-    CONTADOR: responsible?.name ?? office?.name ?? '',
+    CONTADOR: responsibleName ?? office?.name ?? '',
     ANO_EXERCICIO: year,
     ANO_CALENDARIO: year - 1,
     ANO_ANTERIOR: year - 1,
@@ -35,19 +35,26 @@ export async function baseTemplateValues(ctx: AppContext, officeId: string, cust
   } as Record<string, string | number>;
 }
 
-const htmlToText = (html: string) =>
-  html
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/(p|li|h\d)>/gi, '\n')
-    .replace(/<li>/gi, '• ')
-    .replace(/<a [^>]*href="([^"]+)"[^>]*>(.*?)<\/a>/gi, '$2: $1')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+/** Valores comuns a todos os templates (cliente, escritório, contador, anos). */
+export async function baseTemplateValues(ctx: AppContext, officeId: string, customerId: string | null, exerciseYear?: number) {
+  const office = await ctx.db.query.offices.findFirst({ where: eq(offices.id, officeId) });
+  const customer = customerId ? await ctx.db.query.customers.findFirst({ where: eq(customers.id, customerId) }) : null;
+  const responsible = customer?.responsibleUserId ? await ctx.db.query.users.findFirst({ where: eq(users.id, customer.responsibleUserId) }) : null;
+  return commonValues(office, customer, responsible?.name, exerciseYear);
+}
+
+/** Destino do cliente no canal: o e-mail ou o celular com o código do país, só dígitos. */
+function addressOf(customer: CustomerRow | null | undefined, channel: DeliveryChannel): string | null {
+  if (!customer) return null;
+  if (channel === 'email') return customer.email || null;
+  return customer.mobile ? `${onlyDigits(customer.mobileCountry ?? '55')}${onlyDigits(customer.mobile)}` : null;
+}
+
+/** Assunto e corpo do template com os valores (escapados para HTML); no WhatsApp, o corpo vai em texto simples. */
+function renderContent(tpl: { subject: string; body: string }, values: TemplateValues, channel: DeliveryChannel, rawHtml?: string[]) {
+  const body = renderTemplate(tpl.body, values, { rawHtml });
+  return { subject: renderTemplate(tpl.subject, values, { html: false }), body: channel === 'whatsapp' ? htmlToText(body) : body };
+}
 
 export interface QueueDeliveryInput {
   officeId: string;
@@ -83,6 +90,15 @@ export function redactSecrets(text: string, secrets: readonly string[]): string 
   return out;
 }
 
+/** O que fica gravado (segredos mascarados) e, havendo segredo, a versão real cifrada para o job de envio. */
+function protect(ctx: AppContext, content: { subject: string; body: string }, redact: string[] | undefined) {
+  const secrets = (redact ?? []).filter((v) => v.length >= 4);
+  const storedSubject = redactSecrets(content.subject, secrets);
+  const storedBody = redactSecrets(content.body, secrets);
+  const sealed = storedSubject !== content.subject || storedBody !== content.body ? ctx.secrets.encrypt(JSON.stringify(content)) : undefined;
+  return { storedSubject, storedBody, sealed };
+}
+
 const JOB_TYPE = 'delivery.send';
 
 /**
@@ -98,25 +114,18 @@ export async function queueDelivery(ctx: AppContext, input: QueueDeliveryInput):
     if (existing) return existing;
   }
   const customer = input.customerId ? await db.query.customers.findFirst({ where: eq(customers.id, input.customerId) }) : null;
-  let to = input.to ?? null;
-  if (!to && customer) {
-    to = input.channel === 'email' ? customer.email : customer.mobile ? `${onlyDigits(customer.mobileCountry ?? '55')}${onlyDigits(customer.mobile)}` : null;
-  }
+  const to = input.to || addressOf(customer, input.channel);
   if (!to) throw badRequest(input.channel === 'email' ? 'O cliente não tem e-mail cadastrado.' : 'O cliente não tem celular cadastrado.');
 
-  let subject = input.subject ?? '';
-  let body = input.body ?? '';
+  let content = { subject: input.subject ?? '', body: input.body ?? '' };
   if (input.templateKey) {
     const tpl = await resolveTemplate(ctx, input.officeId, input.templateKey);
     const values = { ...(await baseTemplateValues(ctx, input.officeId, input.customerId, input.exerciseYear)), ...(input.values ?? {}) };
-    subject = renderTemplate(tpl.subject, values, { html: false });
-    body = renderTemplate(tpl.body, values, { rawHtml: input.rawHtml });
+    content = renderContent(tpl, values, input.channel, input.rawHtml);
+  } else if (input.channel === 'whatsapp') {
+    content.body = htmlToText(content.body);
   }
-  if (input.channel === 'whatsapp') body = htmlToText(body);
-  const secrets = (input.redact ?? []).filter((v) => v.length >= 4);
-  const storedSubject = redactSecrets(subject, secrets);
-  const storedBody = redactSecrets(body, secrets);
-  const sealed = storedSubject !== subject || storedBody !== body ? ctx.secrets.encrypt(JSON.stringify({ subject, body })) : undefined;
+  const { storedSubject, storedBody, sealed } = protect(ctx, content, input.redact);
 
   const [row] = await db
     .insert(deliveries)
@@ -147,6 +156,103 @@ export async function queueDelivery(ctx: AppContext, input: QueueDeliveryInput):
   }
   await ctx.jobs.enqueue(JOB_TYPE, sealed ? { deliveryId: row.id, sealed } : { deliveryId: row.id }, { officeId: input.officeId, idempotencyKey: row.id });
   return row;
+}
+
+export interface BulkDeliveryItem {
+  customer: CustomerRow;
+  channel: DeliveryChannel;
+  /** Valores próprios deste envio, somados aos comuns (cliente, escritório, contador, anos). */
+  values?: TemplateValues;
+  /** Trechos secretos, como em {@link QueueDeliveryInput.redact}. */
+  redact?: string[];
+  idempotencyKey: string;
+}
+
+/**
+ * Envio em lote do mesmo template (mala direta): o template, o escritório e os responsáveis pelos
+ * clientes são carregados uma vez só, na criação. Cada `queue` grava um bloco de envios (algumas
+ * centenas), com as mensagens do WhatsApp e os jobs de envio, numa transação: o bloco nunca fica
+ * pela metade. Chaves de idempotência já usadas são ignoradas, então repetir a operação não
+ * duplica nada. Itens sem contato no canal não são gravados e voltam em `missing`.
+ */
+export async function createDeliveryBatch(
+  ctx: AppContext,
+  input: { officeId: string; templateKey: string; exerciseYear?: number; userId?: string | null; customers: CustomerRow[] },
+) {
+  const { db } = ctx;
+  const tpl = await resolveTemplate(ctx, input.officeId, input.templateKey);
+  const office = await db.query.offices.findFirst({ where: eq(offices.id, input.officeId) });
+  const responsibleIds = [...new Set(input.customers.flatMap((c) => (c.responsibleUserId ? [c.responsibleUserId] : [])))];
+  const responsibles = new Map<string, string>();
+  for (let i = 0; i < responsibleIds.length; i += 1000) {
+    const rows = await db.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, responsibleIds.slice(i, i + 1000)));
+    for (const u of rows) responsibles.set(u.id, u.name);
+  }
+
+  async function insertBlock(block: { item: BulkDeliveryItem; to: string; storedSubject: string; storedBody: string; sealed?: string }[]) {
+    return db.transaction(async (tx) => {
+      const rows = await tx
+        .insert(deliveries)
+        .values(
+          block.map((p) => ({
+            officeId: input.officeId,
+            customerId: p.item.customer.id,
+            channel: p.item.channel,
+            templateKey: input.templateKey,
+            subject: p.storedSubject,
+            toAddress: p.to,
+            toName: p.item.customer.name,
+            body: p.storedBody,
+            idempotencyKey: p.item.idempotencyKey,
+            createdByUserId: input.userId ?? null,
+          })),
+        )
+        .onConflictDoNothing({ target: [deliveries.officeId, deliveries.idempotencyKey] })
+        .returning({ id: deliveries.id, customerId: deliveries.customerId, channel: deliveries.channel, body: deliveries.body, idempotencyKey: deliveries.idempotencyKey });
+      const whatsapp = rows.filter((r) => r.channel === 'whatsapp' && r.customerId);
+      if (whatsapp.length) {
+        await tx.insert(messages).values(
+          whatsapp.map((r) => ({ officeId: input.officeId, customerId: r.customerId!, direction: 'out', channel: 'whatsapp', body: r.body, authorUserId: input.userId ?? null, deliveryId: r.id })),
+        );
+      }
+      if (rows.length) {
+        // os mesmos jobs que ctx.jobs.enqueue grava um a um (chave de idempotência = id do envio)
+        const sealedBy = new Map(block.map((p) => [p.item.idempotencyKey, p.sealed]));
+        await tx
+          .insert(jobs)
+          .values(
+            rows.map((r) => {
+              const sealed = sealedBy.get(r.idempotencyKey ?? '');
+              return { type: JOB_TYPE, payload: sealed ? { deliveryId: r.id, sealed } : { deliveryId: r.id }, officeId: input.officeId, idempotencyKey: r.id };
+            }),
+          )
+          .onConflictDoNothing({ target: [jobs.type, jobs.idempotencyKey] });
+      }
+      return rows.length;
+    });
+  }
+
+  return {
+    async queue(items: BulkDeliveryItem[]) {
+      const result = { queued: 0, existing: 0, missing: [] as BulkDeliveryItem[] };
+      const prepared = items.flatMap((item) => {
+        const to = addressOf(item.customer, item.channel);
+        if (!to) {
+          result.missing.push(item);
+          return [];
+        }
+        const responsible = item.customer.responsibleUserId ? responsibles.get(item.customer.responsibleUserId) : null;
+        const values = { ...commonValues(office, item.customer, responsible, input.exerciseYear), ...(item.values ?? {}) };
+        return [{ item, to, ...protect(ctx, renderContent(tpl, values, item.channel), item.redact) }];
+      });
+      if (prepared.length) {
+        const created = await insertBlock(prepared);
+        result.queued += created;
+        result.existing += prepared.length - created;
+      }
+      return result;
+    },
+  };
 }
 
 /** Conteúdo real (cifrado) guardado no job original do envio, se houver trechos secretos. */

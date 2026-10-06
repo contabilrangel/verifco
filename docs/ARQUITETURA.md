@@ -65,7 +65,7 @@ Não há registro central para editar: criar a pasta basta.
 | --- | --- |
 | `customers.ts` | `customerScope`, `getCustomerForUser`, `publicCustomer` |
 | `declarations.ts` | `getOrCreateDeclaration`, `setDeclarationSubstatus`, `advanceDeclaration`, `recomputeTotals`, `listItems`; regras únicas de status: `changeSubstatus` (troca manual, com a permissão de finalizar e a situação eCAC), `syncDeclarationStage` (transmissão e situação eCAC), `syncSubstatus` ("Documentos faltantes"); `refreshDeclaration` (totais e saldo de caixa depois de mudar linhas ou outros gastos). Aceitam o banco ou uma transação aberta (`DbOrTx`; `refreshDeclaration` recebe `{ db }`) |
-| `delivery.ts` | `queueDelivery` (e-mail/WhatsApp por template ou texto, com idempotência e anexos) |
+| `delivery.ts` | `queueDelivery` (e-mail/WhatsApp por template ou texto, com idempotência e anexos); `createDeliveryBatch` (mala direta: envios, mensagens e jobs gravados em lote). O texto do WhatsApp sai de `htmlToText` (`packages/shared`), o mesmo da prévia e dos PDFs; para montar HTML, use `escapeHtml` de lá |
 | `pdf.ts` | `PdfBuilder` + `loadBranding` (logo e cores do escritório) |
 | `xlsx.ts` | `buildWorkbook`, `readSheet`, `parseMoneyToCents`, `parseDate` |
 | `settings.ts` | `getOfficeSettings` com os padrões aplicados |

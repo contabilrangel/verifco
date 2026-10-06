@@ -1,4 +1,5 @@
 import { eq } from 'drizzle-orm';
+import { escapeHtml } from '@verifco/shared';
 import type { AppContext } from '../../context';
 import { jobs, offices, users } from '../../db/schema';
 
@@ -17,8 +18,6 @@ export interface EmailChangedPayload extends Record<string, unknown> {
   /** Quem fez a troca. */
   changedBy: string;
 }
-
-const escapeHtml = (v: string) => v.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 
 export function registerJobs(ctx: AppContext) {
   ctx.jobs.register(PASSWORD_RESET_JOB, async (job) => {

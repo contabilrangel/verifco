@@ -321,6 +321,9 @@ export async function issueApprovalLink(ctx: AppContext, budget: BudgetRow) {
 const valueText = (b: BudgetRow) =>
   b.installments > 1 ? `${formatMoney(b.totalCents)} (${b.installments}x de ${formatMoney(Math.ceil(b.totalCents / b.installments))})` : formatMoney(b.totalCents);
 
+/** Valores do template `budget_digital` (proposta com o link de aprovação); também usados pela mala direta. */
+export const budgetDigitalValues = (b: BudgetRow, link: string) => ({ CATEGORIA: categoryLabel(b.category), DESCRICAO: b.description ?? '', VALOR: valueText(b), LINK: link });
+
 /** Envia a proposta por e-mail e/ou WhatsApp com o link de aprovação (template `budget_digital`). */
 export async function sendBudget(ctx: AppContext, budget: BudgetRow, channels: Channel[], userId: string | null) {
   if (!channels.length) throw badRequest('Escolha ao menos um canal de envio.');
@@ -329,7 +332,7 @@ export async function sendBudget(ctx: AppContext, budget: BudgetRow, channels: C
   assertContacts(customer, channels);
   const issued = await issueApprovalLink(ctx, budget);
   const b = issued.budget;
-  const values = { CATEGORIA: categoryLabel(b.category), DESCRICAO: b.description ?? '', VALOR: valueText(b), LINK: issued.link };
+  const values = budgetDigitalValues(b, issued.link);
   const tokenKey = sha256(issued.token).slice(0, 16);
   for (const channel of channels) {
     await queueDelivery(ctx, {

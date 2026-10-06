@@ -2,7 +2,7 @@
 import { and, desc, eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { BUDGET_CATEGORIES, computeBudgetAmount, todayIso, type BudgetCategory } from '@verifco/shared';
+import { BUDGET_CATEGORIES, computeBudgetAmount, escapeHtml, todayIso, type BudgetCategory } from '@verifco/shared';
 import { budgets, declarations, installments, priceTables } from '../../db/schema';
 import { badRequest, conflict, forbidden, notFound } from '../../lib/errors';
 import { audit, can, centsSchema, dateStr, guard, optionalText, parse, requireUser, uuidParam, yearSchema } from '../../lib/http';
@@ -354,5 +354,3 @@ export async function budgetRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 }
-
-const escapeHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');

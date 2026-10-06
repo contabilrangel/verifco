@@ -5,6 +5,8 @@
  * `{{NOME}}`; cada template declara as que aceita, e `renderTemplate` só substitui
  * as conhecidas (o restante fica visível para o usuário perceber o erro).
  */
+import { escapeHtml } from './html';
+
 export interface TemplateVariable {
   name: string;
   description: string;
@@ -93,7 +95,7 @@ export const TEMPLATES: TemplateDef[] = [
   {
     key: 'budget',
     name: 'Orçamento',
-    description: 'Proposta de honorários enviada por e-mail.',
+    description: 'Proposta de honorários sem link de aprovação. Os envios do sistema (etapa Orçamento e mala direta) usam o “Orçamento (digital)”, com o link.',
     variables: [CLIENTE, ESCRITORIO, CONTADOR, ANO, v('CATEGORIA', 'Categoria do serviço'), v('DESCRICAO', 'Descrição do orçamento'), v('VALOR', 'Valor total')],
     defaultSubject: 'Proposta de serviço — {{CATEGORIA}} {{ANO_EXERCICIO}}',
     defaultBody: wrap('<p>Segue nossa proposta para <strong>{{CATEGORIA}}</strong> ({{ANO_EXERCICIO}}):</p><p>{{DESCRICAO}}</p><p>Valor: <strong>{{VALOR}}</strong></p>'),
@@ -156,9 +158,6 @@ export const TEMPLATE_KEYS = TEMPLATES.map((t) => t.key);
 export function getTemplateDef(key: string): TemplateDef | undefined {
   return TEMPLATES.find((t) => t.key === key);
 }
-
-const escapeHtml = (s: string) =>
-  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
 /**
  * Substitui `{{VAR}}` pelos valores informados. Valores são escapados para HTML,
