@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "Verifco",
+  "short_name": "Verifco",
+  "version": "0.1.0",
+  "description": "Abre os serviços do eCAC a partir do Verifco e envia ao escritório os dados das páginas do eCAC que você visitar.",
+  "minimum_chrome_version": "116",
+  "icons": { "16": "icons/icon-16.png", "32": "icons/icon-32.png", "48": "icons/icon-48.png", "128": "icons/icon-128.png" },
+  "action": {
+    "default_title": "Verifco",
+    "default_popup": "popup/popup.html",
+    "default_icon": { "16": "icons/icon-16.png", "32": "icons/icon-32.png" }
+  },
+  "background": { "service_worker": "service-worker.js" },
+  "permissions": ["storage", "scripting"],
+  "host_permissions": [
+    "https://cav.receita.fazenda.gov.br/*",
+    "https://www3.cav.receita.fazenda.gov.br/*",
+    "https://servicos.receitafederal.gov.br/*"
+  ],
+  "optional_host_permissions": ["https://*/*", "http://*/*"],
+  "content_scripts": [
+    {
+      "matches": ["http://localhost/*", "http://127.0.0.1/*", "https://*.verifco.com.br/*"],
+      "js": ["lib/config.js", "content/bridge.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://cav.receita.fazenda.gov.br/*",
+        "https://www3.cav.receita.fazenda.gov.br/*",
+        "https://servicos.receitafederal.gov.br/*"
+      ],
+      "js": ["lib/config.js", "content/capture-core.js", "content/parsers.js", "content/ecac.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

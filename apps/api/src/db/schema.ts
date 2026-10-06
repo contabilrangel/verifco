@@ -673,6 +673,30 @@ export const prefilledStatements = pgTable(
   (t) => [index('prefilled_office_year_idx').on(t.officeId, t.exerciseYear)],
 );
 
+/**
+ * Tokens de máquina usados pela extensão do navegador e pelo sincronizador local
+ * (`Authorization: Bearer vfk_...`). Só o hash SHA-256 é guardado; o token aparece uma única
+ * vez, na criação. Escopo: `extension` ou `sync`. Revogar preenche `revoked_at`.
+ */
+export const apiTokens = pgTable(
+  'api_tokens',
+  {
+    id: id(),
+    officeId: officeId(),
+    name: text('name').notNull(),
+    scope: text('scope').notNull(),
+    tokenHash: text('token_hash').notNull(),
+    /** Início do token (ex.: `vfk_AbC1`) para o usuário reconhecer qual é. */
+    prefix: text('prefix').notNull(),
+    createdByUserId: uuid('created_by_user_id'),
+    lastUsedAt: ts('last_used_at'),
+    lastUsedIp: text('last_used_ip'),
+    revokedAt: ts('revoked_at'),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex('api_tokens_hash_uq').on(t.tokenHash), index('api_tokens_office_idx').on(t.officeId)],
+);
+
 export const jobs = pgTable(
   'jobs',
   {
