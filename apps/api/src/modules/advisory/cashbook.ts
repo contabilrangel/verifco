@@ -16,8 +16,7 @@ import { badRequest, notFound } from '../../lib/errors';
 import { audit, guard, parse, requireUser, uuidParam } from '../../lib/http';
 import { getCustomerForUser } from '../../services/customers';
 import { fileTypes, readUploads } from '../../services/uploads';
-import { readCsv, readSheet, type SheetRow } from '../../services/xlsx';
-import { decodeText } from './ai-service';
+import { decodeCsvText, readCsv, readSheet, type SheetRow } from '../../services/xlsx';
 
 const calendarYear = z.coerce.number().int().min(2000).max(2100);
 
@@ -27,7 +26,7 @@ const CASHBOOK_TYPES = fileTypes('csv', 'txt', 'xlsx');
 /** Lê .csv (UTF-8 ou Windows-1252, ; ou ,) ou .xlsx e devolve cabeçalhos normalizados e linhas. */
 async function readUpload(data: Buffer, filename: string): Promise<{ headers: string[]; rows: SheetRow[] }> {
   if (/\.(csv|txt)$/i.test(filename)) {
-    const text = decodeText(data).replace(/^﻿/, '');
+    const text = decodeCsvText(data);
     const first = text.split(/\r?\n/).find((l) => l.trim()) ?? '';
     const sep = (first.match(/;/g)?.length ?? 0) >= (first.match(/,/g)?.length ?? 0) ? ';' : ',';
     return { headers: first.split(sep).map((h) => normalizeHeader(h.replace(/^"|"$/g, ''))), rows: readCsv(text) };

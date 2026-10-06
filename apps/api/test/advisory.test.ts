@@ -1,5 +1,6 @@
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { simulateHolding } from '@verifco/shared';
 import { declarationItems } from '../src/db/schema';
 import { VALID_CPFS, createEmployee, createTestEnv, registerOffice, type TestEnv } from './helpers';
 import { R, seedDeclaration } from './advisory-helpers';
@@ -120,6 +121,29 @@ describe('holding', () => {
 
     const pdf = await o.api.post(`/api/customers/${o.customerId}/holding/pdf`, { year: 2026 });
     expect(pdf.raw.rawPayload.subarray(0, 4).toString()).toBe('%PDF');
+  });
+
+  it('atividade rural entra pelo resultado tributável: a parcela isenta muda o IR do aluguel na PF (OBS-3)', async () => {
+    const o = await officeWithCustomer(VALID_CPFS[5]);
+    const { items } = await seedDeclaration(env, o.officeId, o.customerId, 2027, [
+      { kind: 'asset', groupCode: '01', code: '11', description: 'Casa alugada', valueCents: R(400_000), prevValueCents: R(400_000) },
+      { kind: 'rural_income', description: 'Venda de café', valueCents: R(100_000) },
+      { kind: 'rural_expense', description: 'Insumos', valueCents: R(20_000) },
+      // opção pelos 20% da receita: dos R$ 80.000 de resultado, R$ 60.000 vão para os isentos
+      { kind: 'income_exempt', description: 'Parcela isenta da atividade rural', valueCents: R(60_000), extra: { nature: 'rural' } },
+    ]);
+    const house = items.find((i) => i.kind === 'asset')!;
+    const res = await o.api.put(`/api/customers/${o.customerId}/holding`, { year: 2027, selectedItemIds: [house.id], properties: { [house.id]: { monthlyRentCents: R(2_000) } } });
+    expect(res.status).toBe(200);
+    expect(res.body.otherTaxableIncomeCents).toBe(R(20_000));
+
+    const properties = res.body.properties.filter((p: any) => p.selected);
+    const pfRentTax = (other: number) => simulateHolding({ calendarYear: 2026, properties, otherTaxableIncomeCents: other, params: res.body.params }).pfRentTaxCents;
+    // R$ 20.000 + R$ 24.000 de aluguel ficam na faixa da redução total do art. 11-A: o aluguel não aumenta o IR
+    expect(res.body.result.pfRentTaxCents).toBe(pfRentTax(R(20_000)));
+    expect(res.body.result.pfRentTaxCents).toBe(0);
+    // com a receita − despesa inteira (R$ 80.000), a redução some e o aluguel pagaria IR
+    expect(pfRentTax(R(80_000))).toBeGreaterThan(R(5_000));
   });
 
   it('exige holding.view e isola escritórios', async () => {

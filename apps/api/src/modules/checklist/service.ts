@@ -19,6 +19,7 @@ import { getOrCreateDeclaration, listItems } from '../../services/declarations';
 import { getOfficeSettings } from '../../services/settings';
 import { notify } from '../../services/notify';
 import { safeFilename, type UploadedFile } from '../../services/uploads';
+import { refreshElaborationStatus } from '../elaboration/service';
 
 export type ChecklistRow = typeof checklists.$inferSelect;
 export type SectionRow = typeof checklistSections.$inferSelect;
@@ -279,13 +280,19 @@ export async function attachFiles(
       .returning();
     created.push(doc.id);
   }
+  if (created.length) await refreshElaborationStatus(ctx.db, input.declarationId);
   return created;
 }
 
 /** Remove o documento e o arquivo; se o item ficou sem arquivos, volta a "pendente". */
-export async function removeDocument(ctx: AppContext, officeId: string, doc: { id: string; fileId: string; checklistItemId: string | null }) {
+export async function removeDocument(
+  ctx: AppContext,
+  officeId: string,
+  doc: { id: string; fileId: string; checklistItemId: string | null; declarationId?: string | null },
+) {
   await ctx.db.delete(documents).where(eq(documents.id, doc.id));
   await ctx.files.remove(officeId, doc.fileId);
+  if (doc.declarationId) await refreshElaborationStatus(ctx.db, doc.declarationId);
   if (doc.checklistItemId) {
     const left = await ctx.db.select({ id: documents.id }).from(documents).where(eq(documents.checklistItemId, doc.checklistItemId)).limit(1);
     if (!left.length) {

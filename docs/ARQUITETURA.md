@@ -71,7 +71,7 @@ Não há registro central para editar: criar a pasta basta.
 | `delivery.ts` | `queueDelivery` (e-mail/WhatsApp por template ou texto, com idempotência e anexos); `createDeliveryBatch` (mala direta: envios, mensagens e jobs gravados em lote). O texto do WhatsApp sai de `htmlToText` (`packages/shared`), o mesmo da prévia e dos PDFs; para montar HTML, use `escapeHtml` de lá |
 | `plan.ts` | contratos vigentes (`planStatus`, `activeContracts`), limite de declarações por exercício (aplicado em `getOrCreateDeclaration`) e modo só consulta com o contrato vencido (hook em `app.ts`) |
 | `pdf.ts` | `PdfBuilder` + `loadBranding` (logo e cores do escritório) |
-| `xlsx.ts` | `buildWorkbook`, `readSheet`, `parseMoneyToCents`, `parseDate` |
+| `xlsx.ts` | `buildWorkbook`, `readSheet` (.xlsx, .csv e .txt), `sheetMoneyToCents`, `parseMoneyToCents`, `parseDate`, `decodeCsvText` (CSV/TXT em UTF-8 ou Windows-1252). Valor em reais de planilha sai de `SheetRow.numbers`/`sheetMoneyToCents` (no .xlsx, o texto de célula numérica usa ponto decimal: "104.895" é R$ 104,90); `parseMoneyToCents` só para texto digitado |
 | `settings.ts` | `getOfficeSettings` com os padrões aplicados |
 | `notify.ts` | notificação no sino |
 | `uploads.ts` | `readUploads` (multipart: tipo pela extensão conferida com o conteúdo, limites por arquivo e pela soma do envio, mensagens em português; `firstFileOnly` descarta os demais arquivos sem ler), `sendStoredFile` (download com lista branca de tipos, `nosniff` e CSP `sandbox`; aceita stream, com `Content-Length` pelo `size`), `safeFilename`, `safeZipName`, `uploadedFromBase64`, listas de tipos (`DOCUMENT_TYPES`, `SHEET_TYPES`, `PDF_TYPES`...) |
@@ -87,6 +87,9 @@ anexos; o `readFile` recusa acima de 2 GiB). Um .zip montado na hora para downlo
 com teto `MAX_ZIP_DOWNLOAD_BYTES` (1 GB) conferido antes; um arquivo grande gerado no servidor
 (ex.: o backup) usa `ZipWriter` + `ctx.files.saveStream`, que grava em stream e calcula tamanho e
 sha256 no caminho. `files.size` é `bigint` (modo number).
+**Documentos de declaração**: quem grava, apaga ou muda a categoria de um documento com
+`declarationId` chama `refreshElaborationStatus(db, declarationId)` (`modules/elaboration/service.ts`):
+a central de elaboração lista a situação e os contadores gravados na declaração, sem ler os documentos.
 **Limites de tentativa**: use as funções de `rate-limit.ts` (nunca um contador em memória, que
 vale só para uma instância da API).
 

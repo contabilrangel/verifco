@@ -1,10 +1,14 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { and, asc, eq, ilike, isNull, or, type SQL } from 'drizzle-orm';
 import JSZip from 'jszip';
-import { declarationItems, declarations, files } from '../src/db/schema';
+import { ELABORATION_STATUS, onlyDigits } from '@verifco/shared';
+import { customers, declarationItems, declarations, documents, files } from '../src/db/schema';
+import { computeElaborationStatus, docCounts, loadDocStats } from '../src/modules/elaboration/service';
 import { getOrCreateDeclaration } from '../src/services/declarations';
 import { VALID_CPFS, createEmployee, createTestEnv, registerOffice, type TestEnv } from './helpers';
 import { fakePdf, multipart, send } from './robot-helpers';
+import { FAKE_PDF, upload as uploadFiles } from './upload-helpers';
+import { PDF, upload as uploadChecklist } from './portal-helpers';
 
 let env: TestEnv;
 beforeAll(async () => {
@@ -308,5 +312,238 @@ describe('elaboração', () => {
     expect((await other.api.post('/api/elaboration/download', { year: 2026, customerIds: [o.customerId] })).status).toBe(404);
     expect((await other.api.get(`/api/elaboration/customers/${o.customerId}?year=2026`)).status).toBe(404);
     expect((await o.api.post('/api/elaboration/download', { year: 2026, customerIds: [o.customerId] })).status).toBe(404);
+  });
+});
+
+/** CPF válido a partir de um número de 9 dígitos (calcula os verificadores). */
+function cpfOf(n: number) {
+  const base = String(n).padStart(9, '0').split('').map(Number);
+  const dv = (digits: number[]) => {
+    const r = (digits.reduce((acc, d, i) => acc + d * (digits.length + 1 - i), 0) * 10) % 11;
+    return r === 10 ? 0 : r;
+  };
+  const d1 = dv(base);
+  return [...base, d1, dv([...base, d1])].join('');
+}
+
+type ListParams = { search?: string; status?: string; page?: number; pageSize?: number };
+
+/** A listagem como era antes (DAD-6): lê a carteira e os documentos, calcula e pagina em memória. */
+async function listingBefore(officeId: string, year: number, p: ListParams) {
+  const db = env.ctx.db;
+  const conds: SQL[] = [eq(customers.officeId, officeId), isNull(customers.deletedAt), eq(customers.status, 'active')];
+  if (p.search) {
+    const digits = onlyDigits(p.search);
+    const byText: SQL[] = [ilike(customers.name, `%${p.search}%`)];
+    if (digits.length >= 3) byText.push(ilike(customers.cpfCnpj, `%${digits}%`));
+    conds.push(or(...byText)!);
+  }
+  const rows = await db
+    .select({ id: customers.id, name: customers.name, cpfCnpj: customers.cpfCnpj, decl: declarations, exportedAt: files.createdAt })
+    .from(customers)
+    .leftJoin(declarations, and(eq(declarations.customerId, customers.id), eq(declarations.exerciseYear, year)))
+    .leftJoin(files, eq(files.id, declarations.exportedFileId))
+    .where(and(...conds))
+    .orderBy(asc(customers.name));
+  const docs = await loadDocStats(db, rows.flatMap((r) => (r.decl ? [r.decl.id] : [])));
+  const all = rows.map((r) => {
+    const list = r.decl ? (docs.get(r.decl.id) ?? []) : [];
+    return {
+      customerId: r.id,
+      name: r.name,
+      cpfCnpj: r.cpfCnpj,
+      declarationId: r.decl?.id ?? null,
+      status: computeElaborationStatus(r.decl?.elaborationStatus ?? 'no_files', list),
+      counts: docCounts(list),
+      sourceFileId: r.decl?.sourceFileId ?? null,
+      exported: r.decl?.exportedFileId ? { fileId: r.decl.exportedFileId, at: r.exportedAt } : null,
+    };
+  });
+  const statusCounts = Object.fromEntries(Object.keys(ELABORATION_STATUS).map((s) => [s, all.filter((r) => r.status === s).length]));
+  const filtered = p.status ? all.filter((r) => r.status === p.status) : all;
+  const page = p.page ?? 1;
+  const pageSize = p.pageSize ?? 25;
+  const start = (page - 1) * pageSize;
+  const pages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  return JSON.parse(JSON.stringify({ data: filtered.slice(start, start + pageSize), total: filtered.length, page, pageSize, pages, statusCounts }));
+}
+
+const listUrl = (p: ListParams) => `/api/elaboration?${new URLSearchParams({ year: '2026', ...Object.fromEntries(Object.entries(p).map(([k, v]) => [k, String(v)])) })}`;
+
+describe('central de elaboração com situação e contadores gravados (DAD-6)', () => {
+  it('pagina, filtra e pesquisa no banco com a mesma resposta do cálculo em memória, sem ler os documentos', async () => {
+    const o = await registerOffice(env);
+    const tok = (await o.api.post('/api/robot/tokens', { name: 'Sync', scope: 'sync' })).body.token as string;
+    const names = ['Ana Lima', 'Bruno Costa', 'Carla Dias', 'Diego Alves', 'Elisa Rocha', 'Fábio Nunes', 'Gabriela Pinto', 'Hugo Prado'];
+    const ids: Record<string, string> = {};
+    const cpfs: Record<string, string> = {};
+    for (const [i, name] of names.entries()) {
+      cpfs[name] = cpfOf(318_402_115 + i * 1_013);
+      const c = await o.api.post('/api/customers', { name, cpfCnpj: cpfs[name] });
+      expect(c.status).toBe(201);
+      ids[name] = c.body.id;
+    }
+    const sync = (name: string, file: string, content: Buffer, type = 'application/pdf') =>
+      send(env, tok, 'POST', '/api/sync/files', { multipart: multipart({ cpf: cpfs[name], ano: '2026' }, { name: file, content, type }) });
+    const declOf = (name: string) => getOrCreateDeclaration(env.ctx.db, o.officeId, ids[name], 2026);
+
+    // Ana: sem declaração; Bruno: declaração sem documento (contadores ainda vazios)
+    await declOf('Bruno Costa');
+    // Carla: PDF não processado; Diego e Elisa: processados (Elisa já tinha a linha com outro valor)
+    await env.ctx.db.insert(declarationItems).values({
+      officeId: o.officeId,
+      declarationId: (await declOf('Elisa Rocha')).id,
+      kind: 'income_pj',
+      counterpartyDoc: '11222333000181',
+      counterpartyName: 'Empresa Exemplo',
+      valueCents: 4_000_000,
+      withheldCents: 300_000,
+    });
+    for (const name of ['Carla Dias', 'Diego Alves', 'Elisa Rocha', 'Gabriela Pinto']) expect((await sync(name, `informe-${name}.pdf`, fakePdf(name))).status).toBe(201);
+    env.providers.aiReplies.push(informe(5_000_000, 400_000), informe(5_000_000, 400_000));
+    await o.api.post('/api/elaboration/process', { year: 2026, customerIds: [ids['Diego Alves'], ids['Elisa Rocha']] });
+    await env.ctx.jobs.drain();
+    // Fábio e Hugo: documentos gravados direto no banco, sem atualizar a declaração (como os de antes dos contadores)
+    const line = (decision: string | null) => ({ item: { kind: 'payment', valueCents: 100 }, match: 'new', existingItemId: null, existing: null, decision, appliedAt: null });
+    const saveFile = (name: string, mimeType: string) => env.ctx.files.save({ officeId: o.officeId, data: Buffer.from(name), filename: name, mimeType });
+    const fabio = await declOf('Fábio Nunes');
+    const hugo = await declOf('Hugo Prado');
+    const exportedZip = await saveFile('conferencia.zip', 'application/zip');
+    await env.ctx.db.update(declarations).set({ elaborationStatus: 'exported', exportedFileId: exportedZip.id }).where(eq(declarations.id, hugo.id));
+    await env.ctx.db.insert(documents).values([
+      {
+        officeId: o.officeId,
+        customerId: ids['Fábio Nunes'],
+        declarationId: fabio.id,
+        fileId: (await saveFile('recibo.pdf', 'application/pdf')).id,
+        category: 'health',
+        processingStatus: 'processed',
+        extracted: { elaboration: { version: 1, processedAt: '2026-03-01T00:00:00Z', lines: [line('reject'), line(null)], notes: null, discarded: 0, error: null } },
+      },
+      { officeId: o.officeId, customerId: ids['Fábio Nunes'], declarationId: fabio.id, fileId: (await saveFile('fabio.DEC', 'application/octet-stream')).id, category: 'irpf_declaration', processingStatus: 'not_applicable' },
+      { officeId: o.officeId, customerId: ids['Hugo Prado'], declarationId: hugo.id, fileId: (await saveFile('hugo.DEC', 'application/octet-stream')).id, category: 'irpf_declaration', processingStatus: 'not_applicable' },
+    ]);
+    // Gabriela: inativa, fica fora da central
+    await env.ctx.db.update(customers).set({ status: 'inactive' }).where(eq(customers.id, ids['Gabriela Pinto']));
+
+    // a primeira listagem calcula os contadores que faltavam
+    const first = await o.api.get(listUrl({}));
+    expect(first.body.statusCounts).toEqual({ no_files: 2, not_processed: 1, conflict: 1, awaiting_validation: 2, ok: 0, exported: 1 });
+    expect(first.body.data.find((r: any) => r.name === 'Fábio Nunes')).toMatchObject({
+      status: 'awaiting_validation',
+      counts: { total: 2, eligible: 1, processed: 1, errors: 0, programFiles: 1, lines: 2, conflicts: 0, pendingLines: 1 },
+    });
+    const stored = await env.ctx.db.select({ counts: declarations.elaborationCounts }).from(declarations).where(eq(declarations.officeId, o.officeId));
+    expect(stored.every((d) => d.counts !== null)).toBe(true);
+
+    const queries: ListParams[] = [
+      {},
+      { pageSize: 3 },
+      { pageSize: 3, page: 2 },
+      { pageSize: 3, page: 3 },
+      { pageSize: 3, page: 9 },
+      ...Object.keys(ELABORATION_STATUS).map((status) => ({ status })),
+      { status: 'no_files', pageSize: 1, page: 2 },
+      { search: 'a' },
+      { search: 'ROCHA' },
+      { search: cpfs['Diego Alves'].slice(2, 8) },
+      { search: 'zz' },
+      { search: 'a', status: 'awaiting_validation' },
+    ];
+    for (const q of queries) {
+      const res = await o.api.get(listUrl(q));
+      expect(res.status).toBe(200);
+      expect(res.body, JSON.stringify(q)).toEqual(await listingBefore(o.officeId, 2026, q));
+    }
+
+    // a página sai do banco com LIMIT, sem ler os documentos nem o JSON extraído pela IA
+    const client = (env.ctx.db as unknown as { $client: { query: (...args: unknown[]) => unknown } }).$client;
+    const spy = vi.spyOn(client, 'query');
+    let sqls: string[] = [];
+    try {
+      expect((await o.api.get(listUrl({ status: 'awaiting_validation', pageSize: 1 }))).body.total).toBe(2);
+      expect((await o.api.get(listUrl({ search: 'rocha' }))).body.data[0].status).toBe('conflict');
+      sqls = spy.mock.calls.map((c) => String(c[0]));
+    } finally {
+      spy.mockRestore();
+    }
+    expect(sqls.some((s) => s.includes('"declarations"') && /\blimit\b/i.test(s))).toBe(true);
+    expect(sqls.filter((s) => s.includes('"documents"') || s.includes('extracted'))).toEqual([]);
+  });
+
+  it('grava situação e contadores ao processar, decidir e validar', async () => {
+    const o = await setup(5);
+    const decl = await getOrCreateDeclaration(env.ctx.db, o.officeId, o.customerId, 2026);
+    await env.ctx.db.insert(declarationItems).values({
+      officeId: o.officeId,
+      declarationId: decl.id,
+      kind: 'income_pj',
+      counterpartyDoc: '11222333000181',
+      counterpartyName: 'Empresa Exemplo',
+      valueCents: 4_000_000,
+      withheldCents: 300_000,
+    });
+    const stored = async () => {
+      const d = await env.ctx.db.query.declarations.findFirst({ where: eq(declarations.id, decl.id) });
+      const live = (await loadDocStats(env.ctx.db, [decl.id])).get(decl.id) ?? [];
+      // o gravado é sempre igual ao calculado a partir dos documentos
+      expect(d!.elaborationCounts).toEqual(docCounts(live));
+      expect(d!.elaborationStatus).toBe(computeElaborationStatus(d!.elaborationStatus, live));
+      return { status: d!.elaborationStatus, counts: d!.elaborationCounts };
+    };
+
+    await o.upload('informe.pdf', fakePdf('informe'));
+    expect(await stored()).toMatchObject({ status: 'not_processed', counts: { total: 1, eligible: 1, processed: 0 } });
+
+    env.providers.aiReplies.push(informe(5_000_000, 400_000));
+    await o.api.post('/api/elaboration/process', { year: 2026, customerIds: [o.customerId] });
+    await env.ctx.jobs.drain();
+    expect(await stored()).toMatchObject({ status: 'conflict', counts: { processed: 1, lines: 1, conflicts: 1, pendingLines: 1 } });
+
+    const doc = (await o.api.get(`/api/elaboration/customers/${o.customerId}?year=2026`)).body.documents[0];
+    await o.api.put(`/api/elaboration/documents/${doc.id}/lines/0`, { decision: 'accept' });
+    expect(await stored()).toMatchObject({ status: 'awaiting_validation', counts: { conflicts: 0, pendingLines: 1 } });
+
+    await o.api.post('/api/elaboration/validate', { year: 2026, customerIds: [o.customerId] });
+    const done = await stored();
+    expect(done).toMatchObject({ status: 'ok', counts: { conflicts: 0, pendingLines: 0 } });
+    expect((await o.api.get(listUrl({}))).body.data[0]).toMatchObject({ status: 'ok', counts: done.counts });
+  });
+
+  it('envio, categoria e exclusão de documentos (documentação e checklist) atualizam a central', async () => {
+    const o = await setup(6);
+    const row = async () => (await o.api.get(listUrl({}))).body.data[0];
+    // declaração com os contadores já gravados (zerados): daqui em diante só as atualizações os mudam
+    await getOrCreateDeclaration(env.ctx.db, o.officeId, o.customerId, 2026);
+    expect(await row()).toMatchObject({ status: 'no_files', counts: { total: 0 } });
+
+    const up = await uploadFiles(env, o.token, `/api/customers/${o.customerId}/documents?year=2026`, [{ name: 'informe.pdf', content: FAKE_PDF, type: 'application/pdf' }]);
+    expect(up.status).toBe(201);
+    expect(await row()).toMatchObject({ status: 'not_processed', counts: { total: 1, eligible: 1 } });
+    expect((await o.api.del(`/api/documents/${up.body[0].id}`)).status).toBe(200);
+    expect(await row()).toMatchObject({ status: 'no_files', counts: { total: 0, eligible: 0 } });
+
+    // arquivo do programa IRPF que muda de categoria deixa de contar como tal
+    const dec = await o.upload('declaracao.DEC', Buffer.from('conteudo-dec'), 'application/octet-stream');
+    expect(await row()).toMatchObject({ status: 'ok', counts: { total: 1, programFiles: 1 } });
+    expect((await o.api.patch(`/api/documents/${dec.body.documentId}`, { category: 'previous_declaration' })).status).toBe(200);
+    expect((await row()).counts).toMatchObject({ total: 1, programFiles: 0 });
+    await o.api.del(`/api/documents/${dec.body.documentId}`);
+
+    const checklist = (await o.api.post(`/api/customers/${o.customerId}/checklist`, { year: 2026 })).body;
+    const item = checklist.sections.flatMap((s: any) => s.items)[0];
+    expect((await uploadChecklist(env, o.token, `/api/checklists/${checklist.id}/items/${item.id}/files`, [{ name: 'rg.pdf', data: PDF }])).status).toBe(201);
+    expect(await row()).toMatchObject({ status: 'not_processed', counts: { total: 1 } });
+    const sent = await env.ctx.db.query.documents.findFirst({ where: eq(documents.checklistItemId, item.id) });
+    expect((await o.api.del(`/api/checklists/${checklist.id}/files/${sent!.id}`)).status).toBe(200);
+    expect(await row()).toMatchObject({ status: 'no_files', counts: { total: 0 } });
+  });
+
+  it('arquivos enviados ao mesmo tempo terminam com a contagem certa', async () => {
+    const o = await setup(7);
+    const sent = await Promise.all(Array.from({ length: 5 }, (_, i) => o.upload(`informe-${i}.pdf`, fakePdf(`informe ${i}`))));
+    expect(sent.map((r) => r.status)).toEqual([201, 201, 201, 201, 201]);
+    const d = await env.ctx.db.query.declarations.findFirst({ where: eq(declarations.customerId, o.customerId) });
+    expect(d).toMatchObject({ elaborationStatus: 'not_processed', elaborationCounts: { total: 5, eligible: 5 } });
   });
 });

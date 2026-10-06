@@ -10,6 +10,7 @@ import { customerScope, getCustomerForUser } from '../../services/customers';
 import { getOrCreateDeclaration } from '../../services/declarations';
 import { DOCUMENT_TYPES, readUploads, sendStoredFile } from '../../services/uploads';
 import { MAX_ZIP_DOWNLOAD_BYTES, zipStoredFiles, type StoredZipEntry } from '../../storage/zip';
+import { refreshElaborationStatus } from '../elaboration/service';
 
 const categoryEnum = z.enum(DOCUMENT_CATEGORY_LIST as [DocumentCategory, ...DocumentCategory[]]);
 
@@ -88,6 +89,7 @@ export async function documentRoutes(app: FastifyInstance) {
         .returning();
       created.push({ ...doc, filename: saved.filename, mimeType: saved.mimeType, size: saved.size, exerciseYear: year });
     }
+    await refreshElaborationStatus(db, declaration.id);
     await audit(req, 'upload', 'document', customer.id, { count: created.length, year });
     reply.status(201);
     return created;
@@ -100,6 +102,8 @@ export async function documentRoutes(app: FastifyInstance) {
     const doc = await getDocumentForUser(app.ctx, user, id);
     const [row] = await db.update(documents).set({ category }).where(eq(documents.id, doc.id)).returning();
     await audit(req, 'update', 'document', doc.id, { category, from: doc.category });
+    // a categoria conta nos arquivos do programa IRPF da elaboração
+    if (doc.declarationId) await refreshElaborationStatus(db, doc.declarationId);
     return row;
   });
 
@@ -110,6 +114,7 @@ export async function documentRoutes(app: FastifyInstance) {
     // o documento é apagado em cascata com o arquivo
     await app.ctx.files.remove(user.officeId, doc.fileId);
     await db.delete(documents).where(eq(documents.id, doc.id));
+    if (doc.declarationId) await refreshElaborationStatus(db, doc.declarationId);
     await audit(req, 'delete', 'document', doc.id);
     return { ok: true };
   });

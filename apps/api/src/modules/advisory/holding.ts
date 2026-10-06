@@ -5,6 +5,7 @@ import {
   DEFAULT_HOLDING_PARAMS,
   formatCpfCnpj,
   formatMoney,
+  ruralResult,
   simulateHolding,
   type DeclarationItem,
   type HoldingProperty,
@@ -40,15 +41,15 @@ function toSimParams(p: StoredParams): HoldingSimulationParams {
 /** Imóveis da declaração: bens do grupo 01. */
 const realEstate = (items: DeclarationItem[]) => items.filter((i) => i.kind === 'asset' && i.groupCode === '01' && i.id);
 
-/** Demais rendimentos tributáveis (sem aluguéis, que entram pela simulação). */
+/**
+ * Demais rendimentos tributáveis (sem aluguéis, que entram pela simulação). A atividade rural entra
+ * pelo resultado tributável (`ruralResult`, o mesmo do comparativo, do caixa e do IRPFM): receita −
+ * despesa menos a parcela isenta lançada nos isentos.
+ */
 const otherTaxable = (items: DeclarationItem[]) =>
   items
     .filter((i) => (i.kind === 'income_pj' || i.kind === 'income_pf') && i.extra?.nature !== 'rent')
-    .reduce((a, i) => a + (i.valueCents ?? 0), 0) +
-  Math.max(
-    0,
-    items.reduce((a, i) => a + (i.kind === 'rural_income' ? (i.valueCents ?? 0) : i.kind === 'rural_expense' ? -(i.valueCents ?? 0) : 0), 0),
-  );
+    .reduce((a, i) => a + (i.valueCents ?? 0), 0) + ruralResult(items).taxableCents;
 
 const pct = z.coerce.number().min(0).max(100);
 const saveSchema = z.object({

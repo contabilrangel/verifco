@@ -404,16 +404,16 @@ function FieldInput({
   certificates?: Certificate[];
   onChange: (v: string | number | boolean) => void;
 }) {
-  const style = f.wide || f.type === 'boolean' ? { gridColumn: '1 / -1' } : undefined;
+  const span = f.wide ? ('full' as const) : undefined;
   if (f.type === 'boolean') {
     return (
-      <div style={style}>
+      <div className="vf-span-full">
         <Checkbox label={f.label} checked={Boolean(value)} onChange={(e) => onChange(e.target.checked)} />
       </div>
     );
   }
   if (f.type === 'select') {
-    return <Select label={f.label} required={f.required} help={f.help} error={error} options={f.options ?? []} value={String(value ?? '')} onChange={(e) => onChange(e.target.value)} style={style} />;
+    return <Select label={f.label} required={f.required} help={f.help} error={error} options={f.options ?? []} value={String(value ?? '')} onChange={(e) => onChange(e.target.value)} span={span} />;
   }
   if (f.type === 'textarea') {
     return (
@@ -453,7 +453,7 @@ function FieldInput({
             f.help
           )
         }
-        style={style}
+        span={span}
       />
     );
   }
@@ -470,7 +470,7 @@ function FieldInput({
         help={configured ? `Configurado${secret?.last4 ? `, termina em ${secret.last4}` : ''}. Deixe em branco para manter.` : f.help}
         value={String(value ?? '')}
         onChange={(e) => onChange(e.target.value)}
-        style={style}
+        span={span}
       />
     );
   }
@@ -484,7 +484,7 @@ function FieldInput({
       error={error}
       value={value === undefined || value === null ? '' : String(value)}
       onChange={(e) => onChange(f.type === 'number' && e.target.value !== '' ? Number(e.target.value) : e.target.value)}
-      style={style}
+      span={span}
     />
   );
 }

@@ -5,11 +5,10 @@
  * alteração são ignoradas e não entram no total do lote.
  */
 import { and, eq, isNull } from 'drizzle-orm';
-import { formatCpfCnpj, isValidCpf, isValidCpfCnpj, isValidEmail, todayIso, utcDateIso, type ImportKind, type ImportRowResult } from '@verifco/shared';
+import { formatCpfCnpj, isValidCpf, isValidCpfCnpj, isValidEmail, todayIso, parseBrDate, type ImportKind, type ImportRowResult } from '@verifco/shared';
 import type { AppContext, AuthUser } from '../../context';
 import { customerGroupMembers, customerGroups, customers, procurators, users } from '../../db/schema';
 import { customerScope } from '../../services/customers';
-import { parseDate } from '../../services/xlsx';
 import { COLUMNS, normalizeDoc, normalizePhone, pick, rowSignature, type SheetRow } from './sheet';
 
 export interface ProcessOutput {
@@ -69,12 +68,6 @@ async function runRows(rows: SheetRow[], runner: Runner, log: (err: unknown) => 
 }
 
 const fail = (errors: string[]): RowOutcome => ({ ok: false, message: errors.join(' ') });
-
-/** AAAA-MM-DD que existe no calendário (31/02 não passa). */
-const isRealDate = (iso: string) => {
-  const d = new Date(`${iso}T12:00:00Z`);
-  return !Number.isNaN(d.getTime()) && utcDateIso(d) === iso;
-};
 
 /** CPF do cliente na linha: obrigatório e válido (aceita CNPJ quando `allowCnpj`). */
 function readCustomerDoc(values: Record<string, string>, errors: string[], allowCnpj: boolean): string | null {
@@ -167,8 +160,9 @@ async function newCustomers(ctx: AppContext, user: AuthUser, rows: SheetRow[], l
         const contacts = readContacts(values, errors);
 
         const birthRaw = pick(values, COLUMNS.birthDate);
-        const birthDate = birthRaw ? parseDate(birthRaw) : null;
-        if (birthRaw && (!birthDate || !isRealDate(birthDate) || birthDate < '1900-01-01' || birthDate > today)) {
+        // parseBrDate já recusa datas que não existem (31/02)
+        const birthDate = birthRaw ? parseBrDate(birthRaw) : null;
+        if (birthRaw && (!birthDate || birthDate < '1900-01-01' || birthDate > today)) {
           errors.push(`Data de nascimento ${birthRaw} inválida (use DD/MM/AAAA).`);
         }
 

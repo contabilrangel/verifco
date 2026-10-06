@@ -161,6 +161,32 @@ describe('relatórios individuais', () => {
     expect(pdf.status).toBe(200);
   });
 
+  it('acha o cônjuge pelo CPF gravado só com dígitos, sem regexp_replace por linha (DAD-7)', async () => {
+    const { api, officeId } = await registerOffice(env);
+    const holder = await newCustomer(api, 6, 'Rui Moura');
+    const spouse = await newCustomer(api, 7, 'Sara Moura');
+    // dependente lançado na ficha com o CPF formatado: a API grava só os dígitos
+    const d = (await api.put(`/api/customers/${holder}/declarations/2026`, {})).body;
+    const masked = VALID_CPFS[7].replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4');
+    const dep = await api.post(`/api/declarations/${d.id}/items`, { kind: 'dependent', ownerName: 'Sara Moura', ownerCpf: masked, extra: { relationship: 'spouse' } });
+    expect(dep.status).toBe(201);
+    expect(dep.body.item.ownerCpf).toBe(VALID_CPFS[7]);
+    const sd = await declaration(officeId, spouse, 2026, {}, yearItems(2));
+
+    const client = (env.ctx.db as unknown as { $client: { query: (...args: unknown[]) => unknown } }).$client;
+    const spy = vi.spyOn(client, 'query');
+    let sqls: string[] = [];
+    try {
+      // a partir da declaração da cônjuge, a busca é pelas linhas de dependente das outras declarações do exercício
+      expect((await api.get(`/api/declarations/${sd.id}/reports`)).body.spouse).toMatchObject({ available: true, name: 'Rui Moura' });
+      sqls = spy.mock.calls.map((c) => String(c[0]));
+    } finally {
+      spy.mockRestore();
+    }
+    expect(sqls.some((s) => s.includes('"declaration_items"') && s.includes('"owner_cpf" = '))).toBe(true);
+    expect(sqls.filter((s) => /regexp_replace/i.test(s))).toEqual([]);
+  });
+
   it('envia os relatórios por e-mail com anexo, sem duplicar', async () => {
     const { api, officeId } = await registerOffice(env);
     const cid = await newCustomer(api, 4, 'Quésia Lopes');

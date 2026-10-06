@@ -1,23 +1,14 @@
 /**
  * Utilitários de leitura das planilhas de importação: colunas com apelidos,
- * normalização de CPF/CNPJ e telefone, detecção de codificação do CSV.
+ * normalização de CPF/CNPJ e telefone.
  */
 import { onlyDigits } from '@verifco/shared';
 import { readSheet } from '../../services/xlsx';
 
 export type SheetRow = { rowNumber: number; values: Record<string, string> };
 
-/** Lê .xlsx ou .csv; CSV salvo pelo Excel em Windows-1252 é convertido para UTF-8. */
+/** Lê .xlsx ou .csv pelo leitor único (`readSheet`: CSV em UTF-8 ou Windows-1252, detectado). */
 export async function readImportFile(data: Buffer, filename: string): Promise<SheetRow[]> {
-  if (/\.csv$/i.test(filename)) {
-    let text: string;
-    try {
-      text = new TextDecoder('utf-8', { fatal: true }).decode(data);
-    } catch {
-      text = new TextDecoder('windows-1252').decode(data);
-    }
-    return readSheet(Buffer.from(text, 'utf8'), filename);
-  }
   return readSheet(data, filename);
 }
 

@@ -184,7 +184,7 @@ export function CustomerDashboardTab() {
                 <dt>Dependentes</dt>
                 <dd>{d.dependents.length}</dd>
                 {d.dependents.map((dep) => (
-                  <dt key={dep.id} className="vf-text-xs vf-muted" style={{ gridColumn: '1 / -1', paddingLeft: 12 }}>
+                  <dt key={dep.id} className="vf-text-xs vf-muted vf-span-full" style={{ paddingLeft: 12 }}>
                     {dep.name}
                     {dep.relationship ? ` · ${DEPENDENT_RELATIONSHIPS[dep.relationship as keyof typeof DEPENDENT_RELATIONSHIPS] ?? dep.relationship}` : ''}
                   </dt>

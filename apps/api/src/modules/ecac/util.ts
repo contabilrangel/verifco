@@ -1,4 +1,5 @@
 import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { parseBrDate } from '@verifco/shared';
 import type { Db } from '../../db/client';
 import { jobs } from '../../db/schema';
 import { activeJob } from '../../jobs/queue';
@@ -79,18 +80,10 @@ export function fanoutJobView(job: JobRow | null | undefined) {
   };
 }
 
-const DATE = /^\d{4}-\d{2}-\d{2}$/;
-
 /** Normaliza datas vindas de fontes externas (AAAA-MM-DD, AAAAMMDD ou DD/MM/AAAA). */
 export function normalizeDate(v: unknown): string | null {
   if (typeof v !== 'string' && typeof v !== 'number') return null;
   const s = String(v).trim();
-  if (DATE.test(s)) return s;
-  let m = /^(\d{4})(\d{2})(\d{2})$/.exec(s);
-  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
-  m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(s);
-  if (m) return `${m[3]}-${m[2]}-${m[1]}`;
-  m = /^(\d{4}-\d{2}-\d{2})T/.exec(s);
-  if (m) return m[1];
-  return null;
+  const compact = /^(\d{4})(\d{2})(\d{2})$/.exec(s);
+  return parseBrDate(compact ? `${compact[1]}-${compact[2]}-${compact[3]}` : s);
 }

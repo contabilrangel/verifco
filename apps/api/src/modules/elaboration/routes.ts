@@ -1,7 +1,7 @@
-import { and, asc, desc, eq, ilike, inArray, isNull, or, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { ELABORATION_STATUS, ITEM_KINDS, onlyDigits, type DeclarationItem, type ElaborationStatus } from '@verifco/shared';
+import { ELABORATION_STATUS, ITEM_KINDS, type DeclarationItem, type ElaborationStatus } from '@verifco/shared';
 import type { DbOrTx } from '../../db/client';
 import { customers, declarationItems, declarations, documents, files, jobs } from '../../db/schema';
 import { badRequest, notFound } from '../../lib/errors';
@@ -14,8 +14,10 @@ import { MAX_ZIP_DOWNLOAD_BYTES, zipStoredFiles } from '../../storage/zip';
 import {
   computeElaborationStatus,
   docCounts,
+  fillElaborationCounts,
   getExtraction,
   isExtractable,
+  listElaboration,
   loadDocStats,
   refreshElaborationStatus,
   saveExtraction,
@@ -45,60 +47,16 @@ const selectionSchema = z.object({
 export async function elaborationRoutes(app: FastifyInstance) {
   const { db } = app.ctx;
 
-  /** Clientes do escopo com a declaração do ano (pode não existir) e a situação calculada. */
-  async function loadRows(req: Parameters<typeof requireUser>[0], year: number, extra: SQL[] = []) {
-    const user = requireUser(req);
-    const conds: SQL[] = [await customerScope(app.ctx, user), eq(customers.status, 'active'), ...extra];
-    const rows = await db
-      .select({
-        id: customers.id,
-        name: customers.name,
-        cpfCnpj: customers.cpfCnpj,
-        decl: declarations,
-        exportedAt: files.createdAt,
-      })
-      .from(customers)
-      .leftJoin(declarations, and(eq(declarations.customerId, customers.id), eq(declarations.exerciseYear, year)))
-      .leftJoin(files, eq(files.id, declarations.exportedFileId))
-      .where(and(...conds))
-      .orderBy(asc(customers.name));
-    const docs = await loadDocStats(db, rows.flatMap((r) => (r.decl ? [r.decl.id] : [])));
-    return rows.map((r) => {
-      const list = r.decl ? (docs.get(r.decl.id) ?? []) : [];
-      return {
-        customerId: r.id,
-        name: r.name,
-        cpfCnpj: r.cpfCnpj,
-        declarationId: r.decl?.id ?? null,
-        status: computeElaborationStatus(r.decl?.elaborationStatus ?? 'no_files', list),
-        counts: docCounts(list),
-        sourceFileId: r.decl?.sourceFileId ?? null,
-        exported: r.decl?.exportedFileId ? { fileId: r.decl.exportedFileId, at: r.exportedAt } : null,
-      };
-    });
-  }
-
+  /**
+   * Clientes do escopo com a declaração do ano, situação e contadores gravados na declaração
+   * (ver `listElaboration`); a página não lê os documentos.
+   */
   app.get('/elaboration', { preHandler: guard(...LIST_PERMS) }, async (req) => {
     const q = parse(listQuery, req.query);
-    const extra: SQL[] = [];
-    if (q.search) {
-      const digits = onlyDigits(q.search);
-      const or1: SQL[] = [ilike(customers.name, `%${q.search}%`)];
-      if (digits.length >= 3) or1.push(ilike(customers.cpfCnpj, `%${digits}%`));
-      extra.push(or(...or1)!);
-    }
-    const all = await loadRows(req, q.year, extra);
-    const statusCounts = Object.fromEntries(STATUS_KEYS.map((s) => [s, all.filter((r) => r.status === s).length]));
-    const filtered = q.status ? all.filter((r) => r.status === q.status) : all;
-    const start = (q.page - 1) * q.pageSize;
-    return {
-      data: filtered.slice(start, start + q.pageSize),
-      total: filtered.length,
-      page: q.page,
-      pageSize: q.pageSize,
-      pages: Math.max(1, Math.ceil(filtered.length / q.pageSize)),
-      statusCounts,
-    };
+    const user = requireUser(req);
+    // contadores ainda vazios (declarações anteriores aos contadores ou sem documento) são calculados uma vez
+    await fillElaborationCounts(db, user.officeId, q.year);
+    return listElaboration(db, await customerScope(app.ctx, user), q);
   });
 
   /** Documentos e linhas extraídas de uma declaração (para conferir e resolver conflitos). */

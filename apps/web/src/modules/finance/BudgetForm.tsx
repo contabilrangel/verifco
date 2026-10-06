@@ -272,7 +272,7 @@ export function BudgetFormModal({
               onChange={(e) => setF({ ...f, priceTableId: e.target.value, hours: '', items: {} })}
               options={tables.map((t) => ({ value: t.id, label: `${t.name} — ${describeTable(t)}` }))}
               help={tables.length === 0 ? 'Nenhuma tabela vigente. Cadastre em Financeiro › Tabelas de cobrança.' : undefined}
-              style={table?.type === 'hourly' ? undefined : { gridColumn: '1 / -1' }}
+              span={table?.type === 'hourly' ? undefined : 'full'}
             />
             {table?.type === 'hourly' && (
               <Input label="Horas de trabalho" inputMode="decimal" value={f.hours} onChange={(e) => set('hours', e.target.value)} placeholder="Ex.: 3,5" />

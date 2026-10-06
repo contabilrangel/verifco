@@ -114,8 +114,33 @@ describe('CSS da web', () => {
     expect(misuse).toEqual([]);
   });
 
-  it('grades não usam grid-column "span N" em linha (no celular a grade tem uma coluna e o span cria colunas extras)', () => {
-    const inline = Object.entries(SOURCES).filter(([, src]) => /gridColumn:\s*[`'"][^`'"]*span/.test(src)).map(([p]) => p);
+  it('nenhuma tela usa gridColumn em linha: vf-span-2, vf-span-3, vf-span-full ou a prop span', () => {
+    // "span N" em linha cria colunas extras na grade de uma coluna do celular; "1 / -1" tem a classe vf-span-full
+    const inline = Object.entries(SOURCES)
+      .filter(([, src]) => /\bgridColumn(Start|End)?\s*:/.test(src))
+      .map(([p]) => p);
     expect(inline).toEqual([]);
+    expect(/\bgridColumn\s*:/.test("style={{ gridColumn: '1 / -1' }}")).toBe(true);
+  });
+
+  it('design system: grade aninhada, vf-span-full e ícone da área de envio', () => {
+    const ds = postcss.parse(CSS['./ds/ds.css']);
+    // --grid-template registrado sem herança: uma .vf-grid dentro de outra não herda as proporções
+    const registered: Record<string, string> = {};
+    ds.walkAtRules('property', (at) => {
+      if (at.params.trim() !== '--grid-template') return;
+      at.walkDecls((d) => {
+        registered[d.prop] = d.value;
+      });
+    });
+    expect(registered).toMatchObject({ inherits: 'false' });
+    // vf-span-full (1 / -1) não volta a "auto" no celular: vale também em grades de duas colunas fixas
+    const resets: string[] = [];
+    ds.walkAtRules('media', (at) => at.walkRules((r) => r.selectors.forEach((s) => s.includes('vf-span-full') && resets.push(s))));
+    expect(resets).toEqual([]);
+    // o ícone grande da área de envio não pinta o ícone do botão "Selecionar"
+    const selectors = sheets.find((s) => s.path === './ds/ds.css')!.rules.flatMap((r) => r.selectors);
+    expect(selectors).toContain('.vf-dropfile > svg');
+    expect(selectors.filter((s) => /\.vf-dropfile\s+svg/.test(s))).toEqual([]);
   });
 });

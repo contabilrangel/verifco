@@ -48,6 +48,44 @@ describe('migrações (SEG-4)', () => {
     }
   });
 
+  it('criam os índices dos filtros frequentes e dos tokens das rotas públicas (DAD-7)', async () => {
+    const migrated = await openDatabase('pglite:memory', { sync: 'migrate' });
+    try {
+      const { db } = migrated;
+      const rows = (await db.execute(sql`select indexname, indexdef from pg_indexes where schemaname = 'public'`)).rows as { indexname: string; indexdef: string }[];
+      const def = (name: string) => rows.find((r) => r.indexname === name)?.indexdef ?? '';
+      const expected: Record<string, string> = {
+        documents_declaration_idx: 'documents USING btree (declaration_id)',
+        documents_checklist_item_idx: 'documents USING btree (checklist_item_id)',
+        darfs_declaration_idx: 'darfs USING btree (declaration_id)',
+        deliveries_customer_idx: 'deliveries USING btree (customer_id, created_at)',
+        installments_office_receipt_idx: 'installments USING btree (office_id, receipt_number)',
+        ai_messages_conversation_idx: 'ai_messages USING btree (conversation_id, created_at)',
+        password_resets_token_idx: 'password_resets USING btree (token_hash)',
+        budgets_approval_token_uq: 'budgets USING btree (approval_token_hash)',
+        checklists_access_token_uq: 'checklists USING btree (access_token_hash)',
+        integrations_webhook_token_uq: 'integrations USING btree (webhook_token)',
+      };
+      for (const [name, body] of Object.entries(expected)) expect(def(name), name).toContain(`ON public.${body}`);
+      for (const name of ['budgets_approval_token_uq', 'checklists_access_token_uq', 'integrations_webhook_token_uq']) expect(def(name)).toMatch(/^CREATE UNIQUE INDEX/);
+
+      // os tokens repetidos são recusados; orçamentos ainda não enviados (sem token) continuam permitidos
+      const [office] = await db.insert(schema.offices).values({ name: 'Escritório' }).returning();
+      const [customer] = await db.insert(schema.customers).values({ officeId: office.id, name: 'Cliente', cpfCnpj: '52998224725' }).returning();
+      const budget = { officeId: office.id, customerId: customer.id, exerciseYear: 2026, amountCents: 100, totalCents: 100 };
+      await db.insert(schema.budgets).values([budget, budget]);
+      await db.insert(schema.budgets).values({ ...budget, approvalTokenHash: 'hash-do-token' });
+      await expect(db.insert(schema.budgets).values({ ...budget, approvalTokenHash: 'hash-do-token' })).rejects.toThrow();
+      const [d1, d2] = await db.insert(schema.declarations).values([2025, 2026].map((exerciseYear) => ({ officeId: office.id, customerId: customer.id, exerciseYear }))).returning();
+      await db.insert(schema.checklists).values({ officeId: office.id, declarationId: d1.id, accessTokenHash: 'mesmo', accessCodeHash: 'a' });
+      await expect(db.insert(schema.checklists).values({ officeId: office.id, declarationId: d2.id, accessTokenHash: 'mesmo', accessCodeHash: 'b' })).rejects.toThrow();
+      // contadores da elaboração: vazios até serem calculados
+      expect(d1.elaborationCounts).toBeNull();
+    } finally {
+      await migrated.close();
+    }
+  });
+
   it('as migrações geradas não têm SQL à mão; o preenchimento dos links fica na migração própria', () => {
     const tags = readJournal(MIGRATIONS).entries.map((e) => e.tag);
     expect(tags).toContain(CUSTOM);
@@ -69,16 +107,22 @@ describe('migrações (SEG-4)', () => {
       cpSync(MIGRATIONS, dir, { recursive: true });
       const journal = readJournal(MIGRATIONS);
       const journalPath = join(dir, 'meta/_journal.json');
-      // corta antes da própria (não só a remove): o migrator pula migração mais antiga que a última aplicada
-      writeFileSync(journalPath, JSON.stringify({ ...journal, entries: journal.entries.slice(0, journal.entries.findIndex((e) => e.tag === CUSTOM)) }));
+      // só as migrações anteriores à própria (o migrador não volta a uma migração mais antiga que a última aplicada)
+      const before = journal.entries.slice(0, journal.entries.findIndex((e) => e.tag === CUSTOM));
+      writeFileSync(journalPath, JSON.stringify({ ...journal, entries: before }));
       const db = drizzle(client, { schema });
       await migrate(db, { migrationsFolder: dir });
 
-      const [office] = await db.insert(schema.offices).values({ name: 'Escritório' }).returning();
-      const [customer] = await db.insert(schema.customers).values({ officeId: office.id, name: 'Cliente', cpfCnpj: '52998224725' }).returning();
-      const [declaration] = await db.insert(schema.declarations).values({ officeId: office.id, customerId: customer.id, exerciseYear: 2026 }).returning();
-      const [old] = await db.insert(schema.checklists).values({ officeId: office.id, declarationId: declaration.id, accessTokenHash: 'a', accessCodeHash: 'b' }).returning();
-      expect(old.accessExpiresAt).toBeNull();
+      // linhas gravadas em SQL: o schema.ts atual tem colunas de migrações posteriores
+      const one = async (query: string, params: unknown[]) => (await client.query<{ id: string; access_expires_at: Date | null }>(query, params)).rows[0];
+      const office = await one(`insert into offices (name) values ($1) returning id`, ['Escritório']);
+      const customer = await one(`insert into customers (office_id, name, cpf_cnpj) values ($1, $2, $3) returning id`, [office.id, 'Cliente', '52998224725']);
+      const declaration = await one(`insert into declarations (office_id, customer_id, exercise_year) values ($1, $2, 2026) returning id`, [office.id, customer.id]);
+      const old = await one(`insert into checklists (office_id, declaration_id, access_token_hash, access_code_hash) values ($1, $2, 'a', 'b') returning id, access_expires_at`, [
+        office.id,
+        declaration.id,
+      ]);
+      expect(old.access_expires_at).toBeNull();
 
       writeFileSync(journalPath, JSON.stringify(journal));
       await migrate(db, { migrationsFolder: dir });

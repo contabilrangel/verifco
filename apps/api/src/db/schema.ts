@@ -41,6 +41,18 @@ export type Address = {
   zip?: string;
 };
 
+/** Contadores da central de elaboração guardados na declaração (ver `refreshElaborationStatus`). */
+export type ElaborationCounts = {
+  total: number;
+  eligible: number;
+  processed: number;
+  errors: number;
+  programFiles: number;
+  lines: number;
+  conflicts: number;
+  pendingLines: number;
+};
+
 export type OfficeSettings = {
   restrictCustomersToResponsible?: boolean;
   autoSendDarfEmail?: boolean;
@@ -113,14 +125,19 @@ export const users = pgTable(
   (t) => [uniqueIndex('users_email_uq').on(sql`lower(${t.email})`)],
 );
 
-export const passwordResets = pgTable('password_resets', {
-  id: id(),
-  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
-  tokenHash: text('token_hash').notNull(),
-  expiresAt: ts('expires_at').notNull(),
-  usedAt: ts('used_at'),
-  createdAt: createdAt(),
-});
+export const passwordResets = pgTable(
+  'password_resets',
+  {
+    id: id(),
+    userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+    tokenHash: text('token_hash').notNull(),
+    expiresAt: ts('expires_at').notNull(),
+    usedAt: ts('used_at'),
+    createdAt: createdAt(),
+  },
+  // busca pelo token na rota pública de redefinição de senha
+  (t) => [index('password_resets_token_idx').on(t.tokenHash)],
+);
 
 export const userFavorites = pgTable(
   'user_favorites',
@@ -290,6 +307,8 @@ export const declarations = pgTable(
     debtsPrevTotalCents: money('debts_prev_total_cents').notNull().default(0),
     cashBalanceCents: money('cash_balance_cents'),
     elaborationStatus: text('elaboration_status').notNull().default('no_files'),
+    /** Contadores dos documentos na elaboração; vazio = ainda não calculados (a listagem calcula). */
+    elaborationCounts: jsonb('elaboration_counts').$type<ElaborationCounts>(),
     exportedFileId: uuid('exported_file_id'),
     sourceFileId: uuid('source_file_id'),
     checklistLocked: boolean('checklist_locked').notNull().default(false),
@@ -369,7 +388,7 @@ export const darfs = pgTable(
     source: text('source').notNull().default('manual'),
     createdAt: createdAt(),
   },
-  (t) => [index('darfs_customer_idx').on(t.customerId)],
+  (t) => [index('darfs_customer_idx').on(t.customerId), index('darfs_declaration_idx').on(t.declarationId)],
 );
 
 // ---------------------------------------------------------------------------
@@ -390,7 +409,8 @@ export const checklists = pgTable(
     finishedAt: ts('finished_at'),
     createdAt: createdAt(),
   },
-  (t) => [uniqueIndex('checklists_decl_uq').on(t.declarationId)],
+  // o token é o hash de um valor aleatório: único, e buscado pela rota pública do checklist
+  (t) => [uniqueIndex('checklists_decl_uq').on(t.declarationId), uniqueIndex('checklists_access_token_uq').on(t.accessTokenHash)],
 );
 
 export const checklistSections = pgTable(
@@ -441,7 +461,11 @@ export const documents = pgTable(
     extracted: jsonb('extracted').$type<Record<string, unknown>>(),
     createdAt: createdAt(),
   },
-  (t) => [index('documents_customer_idx').on(t.customerId)],
+  (t) => [
+    index('documents_customer_idx').on(t.customerId),
+    index('documents_declaration_idx').on(t.declarationId),
+    index('documents_checklist_item_idx').on(t.checklistItemId),
+  ],
 );
 
 // ---------------------------------------------------------------------------
@@ -512,7 +536,8 @@ export const budgets = pgTable(
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [index('budgets_customer_idx').on(t.customerId, t.exerciseYear)],
+  // o token de aprovação é o hash de um valor aleatório (vazio até o envio): único e buscado pela rota pública
+  (t) => [index('budgets_customer_idx').on(t.customerId, t.exerciseYear), uniqueIndex('budgets_approval_token_uq').on(t.approvalTokenHash)],
 );
 
 export const billings = pgTable(
@@ -549,7 +574,12 @@ export const installments = pgTable(
     externalUrl: text('external_url'),
     createdAt: createdAt(),
   },
-  (t) => [uniqueIndex('installments_billing_number_uq').on(t.billingId, t.number), index('installments_external_idx').on(t.externalId)],
+  (t) => [
+    uniqueIndex('installments_billing_number_uq').on(t.billingId, t.number),
+    index('installments_external_idx').on(t.externalId),
+    // maior número de recibo do escritório (assignReceiptNumber)
+    index('installments_office_receipt_idx').on(t.officeId, t.receiptNumber),
+  ],
 );
 
 // ---------------------------------------------------------------------------
@@ -592,6 +622,7 @@ export const deliveries = pgTable(
   (t) => [
     index('deliveries_office_idx').on(t.officeId, t.createdAt),
     uniqueIndex('deliveries_idempotency_uq').on(t.officeId, t.idempotencyKey),
+    index('deliveries_customer_idx').on(t.customerId, t.createdAt),
   ],
 );
 
@@ -671,7 +702,8 @@ export const integrations = pgTable(
     webhookToken: text('webhook_token'),
     updatedAt: updatedAt(),
   },
-  (t) => [uniqueIndex('integrations_office_provider_uq').on(t.officeId, t.provider)],
+  // o token do webhook é aleatório: único, e buscado pela rota pública do webhook
+  (t) => [uniqueIndex('integrations_office_provider_uq').on(t.officeId, t.provider), uniqueIndex('integrations_webhook_token_uq').on(t.webhookToken)],
 );
 
 export const ecacRecords = pgTable(
@@ -837,17 +869,21 @@ export const aiConversations = pgTable(
   (t) => [index('ai_conversations_customer_idx').on(t.customerId, t.assistant)],
 );
 
-export const aiMessages = pgTable('ai_messages', {
-  id: id(),
-  conversationId: uuid('conversation_id').notNull().references(() => aiConversations.id, { onDelete: 'cascade' }),
-  role: text('role').notNull(),
-  content: text('content').notNull(),
-  attachments: jsonb('attachments').$type<{ fileId: string; filename: string }[]>().notNull().default([]),
-  inputTokens: integer('input_tokens'),
-  outputTokens: integer('output_tokens'),
-  rating: integer('rating'),
-  createdAt: createdAt(),
-});
+export const aiMessages = pgTable(
+  'ai_messages',
+  {
+    id: id(),
+    conversationId: uuid('conversation_id').notNull().references(() => aiConversations.id, { onDelete: 'cascade' }),
+    role: text('role').notNull(),
+    content: text('content').notNull(),
+    attachments: jsonb('attachments').$type<{ fileId: string; filename: string }[]>().notNull().default([]),
+    inputTokens: integer('input_tokens'),
+    outputTokens: integer('output_tokens'),
+    rating: integer('rating'),
+    createdAt: createdAt(),
+  },
+  (t) => [index('ai_messages_conversation_idx').on(t.conversationId, t.createdAt)],
+);
 
 /** Arquivos enviados como anexo na conversa com a IA, vinculados ao cliente da conversa. */
 export const aiAttachments = pgTable(

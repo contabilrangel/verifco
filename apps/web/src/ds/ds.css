@@ -78,14 +78,17 @@ textarea {
 .vf-end { justify-content: flex-end; }
 /* Grade: --cols colunas iguais, ou --grid-template para proporções próprias. Abaixo de 900px vira uma coluna. */
 .vf-grid { display: grid; gap: var(--size-spacing-04); grid-template-columns: var(--grid-template, repeat(var(--cols, 2), minmax(0, 1fr))); }
-/* Itens que ocupam mais de uma coluna (use estas classes, nunca grid-column em linha: no celular a grade tem uma coluna só). */
+/* --grid-template não passa para uma .vf-grid aninhada (ela usa o próprio valor ou o --cols). */
+@property --grid-template { syntax: '*'; inherits: false; }
+/* Itens que ocupam mais de uma coluna (use estas classes, nunca grid-column em linha: no celular a grade tem uma coluna só).
+   vf-span-full (1 / -1) nunca cria coluna e vale em qualquer grade e largura; span 2 e 3 voltam a uma coluna no celular. */
 .vf-span-2 { grid-column: span 2; min-width: 0; }
 .vf-span-3 { grid-column: span 3; min-width: 0; }
 .vf-span-full { grid-column: 1 / -1; min-width: 0; }
 .vf-grow { flex: 1 1 auto; min-width: 0; }
 @media (max-width: 900px) {
   .vf-grid { grid-template-columns: minmax(0, 1fr); }
-  .vf-span-2, .vf-span-3, .vf-span-full { grid-column: auto; }
+  .vf-span-2, .vf-span-3 { grid-column: auto; }
 }
 
 /* ---------- Button ---------- */
@@ -352,7 +355,8 @@ textarea {
   background: var(--color-primary-10); text-align: center; color: var(--color-text-medium); transition: background var(--motion-duration-fast);
 }
 .vf-dropfile--over { background: var(--color-primary-20); border-color: var(--color-interactive); }
-.vf-dropfile svg { width: 40px; height: 40px; color: var(--color-interactive); }
+/* só o ícone grande da área (o do botão "Selecionar" segue o estilo do botão) */
+.vf-dropfile > svg { width: 40px; height: 40px; color: var(--color-interactive); }
 
 /* ---------- Steps ---------- */
 .vf-steps { display: flex; gap: var(--size-spacing-02); flex-wrap: wrap; }
