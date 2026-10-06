@@ -421,7 +421,7 @@ export function carneLeaoLine(e: Pick<CashbookEntryData, 'kind' | 'entryDate' | 
 
 /** Arquivos CSV para importação (até 1.000 linhas cada), em ordem de data. */
 export function carneLeaoFiles(entries: Parameters<typeof carneLeaoLine>[0][], baseName: string): { filename: string; content: string }[] {
-  const sorted = [...entries].sort((a, b) => a.entryDate.localeCompare(b.entryDate) || a.kind.localeCompare(b.kind));
+  const sorted = [...entries].sort((a, b) => a.entryDate.localeCompare(b.entryDate) || a.kind.localeCompare(b.kind) || a.code.localeCompare(b.code));
   const files: { filename: string; content: string }[] = [];
   for (let i = 0; i < sorted.length; i += CASHBOOK_MAX_ROWS) {
     const part = sorted.slice(i, i + CASHBOOK_MAX_ROWS);
