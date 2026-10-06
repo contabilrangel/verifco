@@ -12,11 +12,15 @@ import {
   fineMeshCheck,
   irpfmFromItems,
   legalDeductions,
+  PAYMENT_HEADERS,
+  normalizeHeader,
   parseBrDate,
   parseBrMoney,
+  parseCashbookRow,
   planDarfQuotas,
   ruralResult,
   simulateHolding,
+  toCents,
   type DeclarationItem,
   type IrpfmIncomeLine,
 } from '../src';
@@ -329,6 +333,36 @@ describe('leitura de valores em reais (parser único)', () => {
     expect(parseBrMoney('')).toBeNull();
     expect(parseBrMoney('abc')).toBeNull();
     expect(parseBrMoney('1e3')).toBeNull();
+  });
+
+  it('reais → centavos arredonda como a planilha mostra (ponto flutuante e meio centavo)', () => {
+    // 104,895 × 100 = 10489,4999… em ponto flutuante: o Excel mostra R$ 104,90
+    expect(toCents(104.895)).toBe(10_490);
+    expect(toCents(99.9 * 1.05)).toBe(10_490);
+    expect(toCents(0.125)).toBe(13);
+    expect(toCents(1.005)).toBe(101);
+    expect(toCents(1500.5)).toBe(150_050);
+    expect(toCents(0.1 + 0.2)).toBe(30);
+    expect(toCents(-0.125)).toBe(-13);
+    expect(Object.is(toCents(-0.001), 0)).toBe(true);
+    expect(parseBrMoney('1234,565')).toBe(123_457);
+    expect(parseBrMoney('1,005')).toBeNull(); // ambíguo continua recusado
+  });
+
+  it('livro caixa: célula numérica do .xlsx usa o número cru, não o texto "104.895"', () => {
+    const keys = PAYMENT_HEADERS.map(normalizeHeader);
+    const values = Object.fromEntries(keys.map((k, i) => [k, ['20/01/2025', 'P20.01.00001', '104.895', 'INSS', '0.125', '', '01/2025'][i]]));
+    // só o texto: "104.895" é milhar (R$ 104.895,00)
+    const asText = parseCashbookRow('payment', values, 2025);
+    expect(asText.ok && asText.entry.valueCents).toBe(10_489_500);
+    // com o número da célula: R$ 104,90 e multa de R$ 0,13
+    const asNumber = parseCashbookRow('payment', values, 2025, { valor_pago: 104.895, valor_da_multa: 0.125 });
+    expect(asNumber.ok).toBe(true);
+    if (asNumber.ok) expect(asNumber.entry).toMatchObject({ valueCents: 10_490, extra: { fineCents: 13 } });
+    // número cru negativo continua recusado como multa
+    const negative = parseCashbookRow('payment', values, 2025, { valor_da_multa: -1 });
+    expect(negative.ok).toBe(false);
+    if (!negative.ok) expect(negative.errors.join(' ')).toMatch(/Valor da multa inválido/);
   });
 
   it('datas que não existem são recusadas', () => {

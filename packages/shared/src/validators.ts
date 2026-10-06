@@ -52,8 +52,17 @@ export function formatCep(value: string | null | undefined): string {
 
 export const isValidEmail = (v: string) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v.trim());
 
-/** Valores monetários trafegam em centavos (inteiro) para evitar erro de arredondamento. */
-export const toCents = (reais: number) => Math.round(reais * 100);
+/**
+ * Valores monetários trafegam em centavos (inteiro) para evitar erro de arredondamento.
+ * Reais → centavos como a planilha mostra: o produto é lido com 15 algarismos significativos
+ * (104,895 × 100 dá 10489,4999… em ponto flutuante e vira 10489,5) e o meio centavo arredonda
+ * para longe do zero: 104,895 → 10490, 1,005 → 101, 0,125 → 13, −0,125 → −13.
+ */
+export const toCents = (reais: number) => {
+  const x = Number((reais * 100).toPrecision(15));
+  const c = Math.round(Math.abs(x));
+  return x < 0 ? -c || 0 : c;
+};
 export const fromCents = (cents: number) => cents / 100;
 
 const brl = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' });

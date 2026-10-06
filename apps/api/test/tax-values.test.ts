@@ -1,10 +1,12 @@
 /**
  * Regressões do lote "cálculos tributários e leitura de valores": DARF (mínimo, 31/12, juros das
  * quotas), IR estimado do IRPFM com deduções legais, resultado rural e importação de orçamentos
- * por CSV do Excel (Windows-1252, "R$ 1.500", data inexistente).
+ * por CSV do Excel (Windows-1252, "R$ 1.500", data inexistente) e por .xlsx com células numéricas
+ * e fórmulas (o texto "104.895" de uma célula numérica é R$ 104,90, não R$ 104.895,00).
  */
+import ExcelJS from 'exceljs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { compareTaxation, type DeclarationItem } from '@verifco/shared';
+import { PAYMENT_HEADERS, compareTaxation, type DeclarationItem } from '@verifco/shared';
 import { VALID_CPFS, createTestEnv, registerOffice, type Api, type TestEnv } from './helpers';
 import { FAKE_PDF, upload } from './upload-helpers';
 
@@ -136,5 +138,62 @@ describe('orçamentos em lote por CSV do Excel', () => {
     const list = (await api.get(`/api/finance/customers/${maria.body.id}/budgets?year=2026`)).body.data;
     expect(list).toHaveLength(1);
     expect(list[0]).toMatchObject({ amountCents: 150_000, description: 'Declaração completa', internalNote: 'Cliente antigo', billingStartDate: '2026-11-10', category: 'irpf' });
+  });
+});
+
+describe('importações por .xlsx com células numéricas', () => {
+  const MONEY = '"R$" #,##0.00';
+
+  it('orçamentos: valor numérico ou de fórmula pelo número da célula, texto pelo parser de reais', async () => {
+    const { api, token } = await registerOffice(env);
+    const ids: string[] = [];
+    for (const [i, cpf] of [VALID_CPFS[0], VALID_CPFS[1], VALID_CPFS[2], VALID_CPFS[4], VALID_CPFS[5]].entries()) {
+      ids.push((await api.post('/api/customers', { name: `Cliente ${i + 1}`, cpfCnpj: cpf })).body.id);
+    }
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Orçamentos 2026');
+    ws.addRow(['CPF/CNPJ', 'Cliente', 'Categoria', 'Valor', 'Status']);
+    ws.addRow([VALID_CPFS[0], 'Cliente 1', 'Declaração IRPF', 1500]);
+    // CPF digitado como número continua sendo lido pelo texto da célula
+    ws.addRow([Number(VALID_CPFS[1]), 'Cliente 2', 'Declaração IRPF', 1500.5]);
+    // =99,9*1,05 → o Excel mostra R$ 104,90; o texto da célula é "104.895"
+    ws.addRow([VALID_CPFS[2], 'Cliente 3', 'Declaração IRPF', { formula: '99.9*1.05', result: 104.895 }, 'Aprovado']);
+    ws.addRow([VALID_CPFS[4], 'Cliente 4', 'Declaração IRPF', 0.125]);
+    // valor digitado como texto: milhar brasileiro
+    ws.addRow([VALID_CPFS[5], 'Cliente 5', 'Declaração IRPF', '1.500']);
+    ws.getColumn(4).numFmt = MONEY;
+    const xlsx = Buffer.from(await wb.xlsx.writeBuffer());
+    const res = await upload(env, token, '/api/finance/budget-import', [{ name: 'orcamentos.xlsx', content: xlsx }], { year: '2026' });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ total: 5, succeeded: 5, failed: 0 });
+    const amounts: number[] = [];
+    for (const id of ids) {
+      const list = (await api.get(`/api/finance/customers/${id}/budgets?year=2026`)).body.data;
+      expect(list).toHaveLength(1);
+      amounts.push(list[0].amountCents);
+    }
+    expect(amounts).toEqual([150_000, 150_050, 10_490, 13, 150_000]);
+    // aprovado: o faturamento sai com o valor que o Excel mostra
+    const approved = (await api.get(`/api/finance/customers/${ids[2]}/budgets?year=2026`)).body.data[0];
+    expect(approved).toMatchObject({ status: 'approved', amountCents: 10_490, totalCents: 10_490, billing: { totalCents: 10_490 } });
+    expect(approved.billing.installments.map((i: any) => i.amountCents)).toEqual([10_490]);
+  });
+
+  it('livro caixa: valor e multa numéricos pelo número da célula', async () => {
+    const { api, token } = await registerOffice(env);
+    const c = await api.post('/api/customers', { name: 'Ana Caixa', cpfCnpj: VALID_CPFS[6] });
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Pagamentos');
+    ws.addRow(PAYMENT_HEADERS);
+    ws.addRow(['20/01/2025', 'P10.01.00002', { formula: '99.9*1.05', result: 104.895 }, 'Aluguel do consultório']);
+    ws.addRow(['20/02/2025', 'P20.01.00001', 500.125, 'INSS', 0.125, '', '01/2025']);
+    ws.getColumn(3).numFmt = MONEY;
+    const xlsx = Buffer.from(await wb.xlsx.writeBuffer());
+    const res = await upload(env, token, `/api/customers/${c.body.id}/cashbook/import?year=2025`, [{ name: 'pagamentos.xlsx', content: xlsx }]);
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ total: 2, succeeded: 2, failed: 0 });
+    const entries = (await api.get(`/api/customers/${c.body.id}/cashbook?year=2025`)).body.entries;
+    expect(entries.map((e: any) => e.valueCents)).toEqual([10_490, 50_013]);
+    expect(entries[1].extra).toMatchObject({ fineCents: 13 });
   });
 });

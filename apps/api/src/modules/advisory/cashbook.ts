@@ -15,15 +15,13 @@ import { cashbookEntries, importBatches } from '../../db/schema';
 import { badRequest, notFound } from '../../lib/errors';
 import { audit, guard, parse, requireUser, uuidParam } from '../../lib/http';
 import { getCustomerForUser } from '../../services/customers';
-import { readCsv, readSheet } from '../../services/xlsx';
+import { readCsv, readSheet, type SheetRow } from '../../services/xlsx';
 import { decodeText } from './ai-service';
 
 const calendarYear = z.coerce.number().int().min(2000).max(2100);
 
-type Row = { rowNumber: number; values: Record<string, string> };
-
 /** Lê .csv (UTF-8 ou Windows-1252, ; ou ,) ou .xlsx e devolve cabeçalhos normalizados e linhas. */
-async function readUpload(data: Buffer, filename: string): Promise<{ headers: string[]; rows: Row[] }> {
+async function readUpload(data: Buffer, filename: string): Promise<{ headers: string[]; rows: SheetRow[] }> {
   if (/\.(csv|txt)$/i.test(filename)) {
     const text = decodeText(data).replace(/^﻿/, '');
     const first = text.split(/\r?\n/).find((l) => l.trim()) ?? '';
@@ -102,7 +100,7 @@ export async function cashbookRoutes(app: FastifyInstance) {
     const valid: { file: string; row: number; entry: CashbookEntryData }[] = [];
     for (const f of parsed) {
       for (const r of f.rows) {
-        const res = parseCashbookRow(f.kind, r.values, year);
+        const res = parseCashbookRow(f.kind, r.values, year, r.numbers);
         if (res.ok) valid.push({ file: f.filename, row: r.rowNumber, entry: res.entry });
         else results.push({ file: f.filename, row: r.rowNumber, ok: false, message: res.errors.join(' ') });
       }
