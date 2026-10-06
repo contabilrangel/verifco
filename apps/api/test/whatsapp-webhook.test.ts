@@ -3,7 +3,7 @@
  * envio de modelo aprovado fora da janela de 24 h.
  */
 import { createHmac } from 'node:crypto';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { customers, deliveries, jobs, messages } from '../src/db/schema';
 import { createProviders } from '../src/integrations';
@@ -327,5 +327,140 @@ describe('modelo aprovado fora da janela de 24 h (Meta)', () => {
     expect(sent).toMatchObject({ templateKey: 'darf', values: expect.objectContaining({ CLIENTE: 'Helena', VALOR: 'R$ 99,00', VENCIMENTO: '30/09/2026' }) });
     const after = await env.ctx.db.query.jobs.findFirst({ where: eq(jobs.id, job!.id) });
     expect(after!.payload).not.toHaveProperty('sealed');
+  });
+});
+
+describe('teste da integração (botão Testar) com a janela de 24 h', () => {
+  const TEST_TEXT = 'Mensagem de teste do Verifco: a integração com o WhatsApp está funcionando.';
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    env.providers.fetch = realFetch;
+  });
+
+  /** Graph API simulada: dados do número, upload de mídia e envio; `refuse` recusa o envio com HTTP 400. */
+  function metaGraph(refuse?: unknown) {
+    const m = mockFetch((c) => {
+      if (c.url.includes('?fields=')) return { display_phone_number: '+55 11 3333-0000', verified_name: 'Escritório Teste' };
+      if (refuse && c.url.endsWith('/messages')) return refuse;
+      return metaReply(c);
+    });
+    if (!refuse) return m;
+    const fn = (async (input: string | URL | Request, init?: RequestInit) => {
+      const res = await m.fn(input, init);
+      return String(input).endsWith('/messages') ? new Response(await res.text(), { status: 400, headers: res.headers }) : res;
+    }) as typeof fetch;
+    return { fn, calls: m.calls };
+  }
+  const testNow = (office: Awaited<ReturnType<typeof officeWithWhatsApp>>, sendTo?: string) => office.api.post('/api/integrations/whatsapp/test', sendTo ? { sendTo } : {});
+  const sends = (calls: Call[]) => calls.filter((c) => c.url.endsWith('/messages'));
+  const templates = 'mensagem = nova_mensagem | pt_BR | nome=CLIENTE, texto=MENSAGEM\ndarf = aviso_darf | pt_BR | CLIENTE | documento';
+
+  it('fora da janela, a mensagem de teste vai pelo modelo aprovado de mensagens avulsas', async () => {
+    const office = await officeWithWhatsApp({ mode: 'meta', phoneNumberId: '1098765432', templates }, { accessToken: 'EAAG-token-secreto' });
+    const m = metaGraph();
+    env.providers.fetch = m.fn;
+
+    // número que não é de cliente: não há como saber da janela, vai o modelo (entregue dentro e fora dela)
+    const r = await testNow(office, '55 11 98888-3210');
+    expect(r.body.ok).toBe(true);
+    expect(r.body.message).toBe(
+      'Número +55 11 3333-0000 (Escritório Teste) conectado. Mensagem de teste enviada para o número terminado em 3210 pelo modelo aprovado “nova_mensagem”, porque esse número não escreveu ao escritório nas últimas 24 h (janela de atendimento da Meta).',
+    );
+    const [sent] = sends(m.calls);
+    expect(sent.body).toEqual({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: '5511988883210',
+      type: 'template',
+      template: {
+        name: 'nova_mensagem',
+        language: { code: 'pt_BR' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', parameter_name: 'nome', text: 'Cliente' },
+              { type: 'text', parameter_name: 'texto', text: TEST_TEXT },
+            ],
+          },
+        ],
+      },
+    });
+    // nem o token nem o número inteiro aparecem no resultado ou na integração gravada
+    const saved = await office.api.get('/api/integrations/whatsapp');
+    for (const text of [JSON.stringify(r.body), JSON.stringify(saved.body)]) {
+      expect(text).not.toContain('EAAG-token-secreto');
+      expect(text).not.toContain('988883210');
+    }
+
+    // cliente conhecido, com resposta antiga: modelo com o nome dele
+    const customerId = await office.addCustomer('Irene Lima', VALID_CPFS[3], '11977773210');
+    await env.ctx.db.insert(messages).values({ officeId: office.officeId, customerId, direction: 'in', channel: 'whatsapp', body: 'antiga', createdAt: new Date(Date.now() - 25 * 3600_000) });
+    m.calls.length = 0;
+    expect((await testNow(office, '5511977773210')).body.message).toContain('pelo modelo aprovado “nova_mensagem”');
+    expect(sends(m.calls)[0].body.template.components[0].parameters[0]).toEqual({ type: 'text', parameter_name: 'nome', text: 'Irene Lima' });
+
+    // a resposta recente de um cliente de outro escritório com o mesmo celular não abre a janela
+    const other = await officeWithWhatsApp({ mode: 'meta', phoneNumberId: '1', templates }, { accessToken: 'EAAG-outro' });
+    const otherCustomer = await other.addCustomer('Irene (outro escritório)', VALID_CPFS[4], '11977773210');
+    await env.ctx.db.insert(messages).values({ officeId: other.officeId, customerId: otherCustomer, direction: 'in', channel: 'whatsapp', body: 'oi', createdAt: new Date(Date.now() - 3600_000) });
+    m.calls.length = 0;
+    await testNow(office, '5511977773210');
+    expect(sends(m.calls)[0].body.type).toBe('template');
+
+    // o cliente escreveu há pouco (o número informado sem o nono dígito também vale): texto livre
+    await env.ctx.db.insert(messages).values({ officeId: office.officeId, customerId, direction: 'in', channel: 'whatsapp', body: 'recente', createdAt: new Date(Date.now() - 3600_000) });
+    m.calls.length = 0;
+    const inside = await testNow(office, '551177773210');
+    expect(inside.body).toMatchObject({ ok: true });
+    expect(inside.body.message).toContain('Mensagem de teste enviada para o número terminado em 3210 como texto livre (esse número escreveu nas últimas 24 h).');
+    expect(sends(m.calls)[0].body).toMatchObject({ type: 'text', text: { body: TEST_TEXT } });
+  });
+
+  it('sem modelo avulso, envia o texto livre e avisa que a Meta não o entrega fora da janela', async () => {
+    const office = await officeWithWhatsApp({ mode: 'meta', phoneNumberId: '1098765432' }, { accessToken: 'EAAG-token' });
+    const m = metaGraph();
+    env.providers.fetch = m.fn;
+    const r = await testNow(office, '5511966661234');
+    expect(r.body.ok).toBe(true);
+    expect(r.body.message).toContain('como texto livre. Atenção: esse número não escreveu ao escritório nas últimas 24 h e não há modelo aprovado para “mensagem” nem “padrao”');
+    expect(sends(m.calls)[0].body.type).toBe('text');
+  });
+
+  it('explica quando o modelo leva PDF, quando a Meta recusa o modelo e quando o número é inválido', async () => {
+    const office = await officeWithWhatsApp({ mode: 'meta', phoneNumberId: '1098765432', templates: 'padrao = aviso_geral | pt_BR | CLIENTE | documento' }, { accessToken: 'EAAG-token-secreto' });
+    const m = metaGraph();
+    env.providers.fetch = m.fn;
+    const withPdf = await testNow(office, '5511955554321');
+    expect(withPdf.body.ok).toBe(false);
+    expect(withPdf.body.message).toContain('o modelo “aviso_geral” leva um PDF no cabeçalho, que o teste não envia');
+    expect(sends(m.calls)).toHaveLength(0);
+    expect(withPdf.body.integration.status).toBe('error');
+
+    await office.api.put('/api/integrations/whatsapp', { config: { mode: 'meta', phoneNumberId: '1098765432', templates: 'padrao = aviso_geral | pt_BR | CLIENTE' } });
+    const refused = metaGraph({ error: { message: '(#132001) Template name does not exist in the translation', code: 132001 } });
+    env.providers.fetch = refused.fn;
+    const r = await testNow(office, '5511955554321');
+    expect(r.body.ok).toBe(false);
+    expect(r.body.message).toContain('A Meta recusou o modelo aprovado “aviso_geral” na mensagem de teste:');
+    expect(r.body.message).toContain('Template name does not exist');
+    const saved = await office.api.get('/api/integrations/whatsapp');
+    for (const text of [JSON.stringify(r.body), JSON.stringify(saved.body)]) {
+      expect(text).not.toContain('EAAG-token-secreto');
+      expect(text).not.toContain('955554321');
+    }
+
+    const invalid = await testNow(office, '12345');
+    expect(invalid.body).toMatchObject({ ok: false });
+    expect(invalid.body.message).toContain('O número para a mensagem de teste é inválido');
+  });
+
+  it('na Evolution API, a mensagem de teste é sempre texto livre', async () => {
+    const office = await officeWithWhatsApp(evolution, { apiKey: 'evo-key-secreta' });
+    const m = mockFetch((c) => (c.url.includes('/instance/connectionState/') ? { instance: { state: 'open' } } : { key: { id: 'EVO1' } }));
+    env.providers.fetch = m.fn;
+    const r = await testNow(office, '5511944449876');
+    expect(r.body).toMatchObject({ ok: true, message: 'Instância "escritorio" conectada. Mensagem de teste enviada para o número terminado em 9876.' });
+    expect(m.calls.at(-1)!.body).toEqual({ number: '5511944449876', text: TEST_TEXT });
   });
 });

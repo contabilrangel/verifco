@@ -12,6 +12,7 @@ import {
   Users,
   Wand2,
 } from 'lucide-react';
+import { ELABORATION_LIST_PERMISSIONS } from '@verifco/shared';
 import { ADMIN_TABS, type SubTab } from './modules';
 
 export interface NavLink {
@@ -86,7 +87,7 @@ export const NAV: NavGroup[] = [
   },
   { id: 'relatorios', label: 'Relatórios', icon: BarChart3, to: '/relatorios', perms: ['report.billing', 'report.results', 'report.backlogs', 'report.refund'] },
   // as mesmas permissões que abrem a listagem da elaboração na API (LIST_PERMS em elaboration/routes.ts)
-  { id: 'elaboracao', label: 'Elaboração', icon: Wand2, to: '/elaboracao', perms: ['elaboration.export', 'elaboration.process', 'pre_declaration.view'] },
+  { id: 'elaboracao', label: 'Elaboração', icon: Wand2, to: '/elaboracao', perms: ELABORATION_LIST_PERMISSIONS },
   { id: 'pre-preenchidas', label: 'Pré-preenchidas', icon: FileStack, to: '/pre-preenchidas', perms: ['prefilled.download'] },
   {
     id: 'admin',

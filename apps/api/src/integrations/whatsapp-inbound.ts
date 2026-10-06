@@ -180,20 +180,25 @@ export function normalizeMeta(payload: unknown, phoneNumberId?: string): { messa
   return out;
 }
 
+/** Clientes do escritório com este celular (com e sem 55 e nono dígito), por nome. */
+export async function customersByPhone(ctx: AppContext, officeId: string, phone: string) {
+  const variants = brazilPhoneVariants(phone);
+  if (!variants.length) return [];
+  const national = sql`regexp_replace(coalesce(${customers.mobile}, ''), '[^0-9]', '', 'g')`;
+  const full = sql`regexp_replace(coalesce(${customers.mobileCountry}, '') || coalesce(${customers.mobile}, ''), '[^0-9]', '', 'g')`;
+  return ctx.db
+    .select({ id: customers.id, name: customers.name, responsibleUserId: customers.responsibleUserId })
+    .from(customers)
+    .where(and(eq(customers.officeId, officeId), isNull(customers.deletedAt), or(inArray(national, variants), inArray(full, variants))))
+    .orderBy(asc(customers.name));
+}
+
 /**
  * Cliente do escritório com este celular (com e sem 55 e nono dígito). Com mais de um cliente no
  * mesmo número, fica o que recebeu a última mensagem pelo WhatsApp.
  */
 export async function findCustomerByPhone(ctx: AppContext, officeId: string, phone: string) {
-  const variants = brazilPhoneVariants(phone);
-  if (!variants.length) return null;
-  const national = sql`regexp_replace(coalesce(${customers.mobile}, ''), '[^0-9]', '', 'g')`;
-  const full = sql`regexp_replace(coalesce(${customers.mobileCountry}, '') || coalesce(${customers.mobile}, ''), '[^0-9]', '', 'g')`;
-  const rows = await ctx.db
-    .select({ id: customers.id, name: customers.name, responsibleUserId: customers.responsibleUserId })
-    .from(customers)
-    .where(and(eq(customers.officeId, officeId), isNull(customers.deletedAt), or(inArray(national, variants), inArray(full, variants))))
-    .orderBy(asc(customers.name));
+  const rows = await customersByPhone(ctx, officeId, phone);
   if (rows.length <= 1) return rows[0] ?? null;
   const [last] = await ctx.db
     .select({ customerId: messages.customerId })

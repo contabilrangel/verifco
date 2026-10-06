@@ -17,8 +17,10 @@
  * (developers.facebook.com/documentation/business-messaging/whatsapp/templates/utility-templates).
  * O recebimento das respostas (webhook) fica em `whatsapp-inbound.ts`.
  */
-import { and, eq, gt } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray } from 'drizzle-orm';
 import {
+  WHATSAPP_DEFAULT_TYPE,
+  WHATSAPP_FREE_TEXT_TYPE,
   WHATSAPP_MESSAGE_VARIABLE,
   WHATSAPP_SERVICE_WINDOW_MS,
   onlyDigits,
@@ -34,6 +36,7 @@ import { IntegrationError, ensureOk, httpRequest } from './http';
 import { assertSafeBaseUrl } from './ssrf';
 import type { OutgoingWhatsApp, WhatsAppSender } from './providers';
 import { loadIntegration, type LoadedIntegration } from './store';
+import { customersByPhone } from './whatsapp-inbound';
 
 export interface WhatsAppConfig {
   mode: 'evolution' | 'meta';
@@ -290,8 +293,49 @@ export function createWhatsAppSender(ctx: AppContext, getFetch: () => typeof fet
   };
 }
 
-/** Teste: confere a conexão; com `sendTo`, envia uma mensagem de teste. */
-export async function testWhatsApp(fetchImpl: typeof fetch, loaded: LoadedWhatsApp, opts: { sendTo?: string } = {}, userFetch: typeof fetch = fetchImpl) {
+const TEST_TEXT = 'Mensagem de teste do Verifco: a integração com o WhatsApp está funcionando.';
+
+/**
+ * Janela de 24 h de um celular (para o teste, que tem só o número): aberta se um cliente com esse
+ * celular escreveu pelo WhatsApp nas últimas 24 h. As respostas de números que não são de clientes
+ * não ficam gravadas, então um número desconhecido conta como fora da janela (o modelo aprovado é
+ * entregue dentro e fora dela). Devolve também o cliente, para as variáveis do modelo.
+ */
+export async function phoneServiceWindow(ctx: AppContext, officeId: string, phone: string, now = new Date()) {
+  const list = await customersByPhone(ctx, officeId, phone);
+  if (!list.length) return { open: false, customerId: null };
+  const [last] = await ctx.db
+    .select({ customerId: messages.customerId })
+    .from(messages)
+    .where(
+      and(
+        eq(messages.officeId, officeId),
+        eq(messages.channel, 'whatsapp'),
+        eq(messages.direction, 'in'),
+        inArray(messages.customerId, list.map((c) => c.id)),
+        gt(messages.createdAt, new Date(now.getTime() - WHATSAPP_SERVICE_WINDOW_MS)),
+      ),
+    )
+    .orderBy(desc(messages.createdAt))
+    .limit(1);
+  return { open: Boolean(last), customerId: last?.customerId ?? list[0].id };
+}
+
+/**
+ * Teste: confere a conexão; com `sendTo`, envia uma mensagem de teste. Na Cloud API da Meta, se o
+ * número não escreveu nas últimas 24 h, a mensagem vai pelo modelo aprovado de mensagens avulsas
+ * (`mensagem`, ou `padrao`), como num envio de verdade; sem modelo, vai o texto livre com o aviso
+ * de que a Meta não o entrega fora da janela. O resultado fica gravado (último erro) e por isso
+ * mostra só o final do número.
+ */
+export async function testWhatsApp(
+  ctx: AppContext,
+  officeId: string,
+  loaded: LoadedWhatsApp,
+  opts: { sendTo?: string } = {},
+  fetchImpl: typeof fetch = ctx.providers.fetch,
+  userFetch: typeof fetch = ctx.providers.userUrlFetch ?? fetchImpl,
+) {
   const c = clientFor(fetchImpl, loaded, userFetch);
   let message: string;
   if (c.mode === 'evolution') {
@@ -304,9 +348,47 @@ export async function testWhatsApp(fetchImpl: typeof fetch, loaded: LoadedWhatsA
     const info = await c.client.phoneInfo();
     message = `Número ${info.display_phone_number ?? loaded.config.phoneNumberId}${info.verified_name ? ` (${info.verified_name})` : ''} conectado.`;
   }
-  if (opts.sendTo) {
-    await deliver(fetchImpl, loaded, { to: opts.sendTo, text: 'Mensagem de teste do Verifco: a integração com o WhatsApp está funcionando.' }, userFetch);
-    message += ` Mensagem de teste enviada para ${opts.sendTo}.`;
+  if (!opts.sendTo) return message;
+
+  const to = onlyDigits(opts.sendTo);
+  if (to.length < 10 || to.length > 15) {
+    throw new IntegrationError('whatsapp', `${message} O número para a mensagem de teste é inválido: informe DDI, DDD e número, como 55 11 98765-4321.`);
   }
-  return message;
+  const dest = `o número terminado em ${to.slice(-4)}`;
+  if (c.mode === 'evolution') {
+    await deliver(fetchImpl, loaded, { to, text: TEST_TEXT }, userFetch);
+    return `${message} Mensagem de teste enviada para ${dest}.`;
+  }
+
+  const service = await phoneServiceWindow(ctx, officeId, to);
+  if (service.open) {
+    await deliver(fetchImpl, loaded, { to, text: TEST_TEXT }, userFetch);
+    return `${message} Mensagem de teste enviada para ${dest} como texto livre (esse número escreveu nas últimas 24 h).`;
+  }
+  const template = whatsappTemplateFor(parseWhatsAppTemplates(loaded.config.templates).templates, null);
+  if (!template) {
+    await deliver(fetchImpl, loaded, { to, text: TEST_TEXT }, userFetch);
+    return (
+      `${message} Mensagem de teste enviada para ${dest} como texto livre. Atenção: esse número não escreveu ao escritório nas últimas 24 h ` +
+      `e não há modelo aprovado para “${WHATSAPP_FREE_TEXT_TYPE}” nem “${WHATSAPP_DEFAULT_TYPE}”; fora da janela, a Meta aceita o envio mas não entrega ` +
+      'a mensagem. Cadastre um modelo em Modelos aprovados ou peça para esse número escrever antes de testar.'
+    );
+  }
+  if (template.document) {
+    throw new IntegrationError(
+      'whatsapp',
+      `${message} Esse número não escreveu ao escritório nas últimas 24 h e o modelo “${template.name}” leva um PDF no cabeçalho, ` +
+        `que o teste não envia. Para testar fora da janela, cadastre um modelo sem documento para “${WHATSAPP_FREE_TEXT_TYPE}” ou peça para esse número escrever antes.`,
+    );
+  }
+  const base = await baseTemplateValues(ctx, officeId, service.customerId);
+  try {
+    await deliverTemplate(ctx, fetchImpl, loaded, officeId, { to, text: TEST_TEXT, customerId: service.customerId, values: { ...base, CLIENTE: base.CLIENTE || 'Cliente' } }, template);
+  } catch (err) {
+    if (err instanceof IntegrationError) {
+      throw new IntegrationError(err.provider, `${message} A Meta recusou o modelo aprovado “${template.name}” na mensagem de teste: ${err.message}`, err.status);
+    }
+    throw err;
+  }
+  return `${message} Mensagem de teste enviada para ${dest} pelo modelo aprovado “${template.name}”, porque esse número não escreveu ao escritório nas últimas 24 h (janela de atendimento da Meta).`;
 }

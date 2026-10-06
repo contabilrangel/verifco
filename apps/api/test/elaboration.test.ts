@@ -302,8 +302,22 @@ describe('elaboração', () => {
     expect((await viewer.api.get('/api/elaboration?year=2026')).status).toBe(200);
     expect((await viewer.api.post('/api/elaboration/process', { year: 2026, customerIds: [o.customerId] })).status).toBe(403);
     expect((await viewer.api.post('/api/elaboration/validate', { year: 2026, customerIds: [o.customerId] })).status).toBe(403);
+    // quem só cria ou só edita a pré-declaração (sem visualizar) também abre a lista, o detalhe e os jobs,
+    // como no menu; continua sem as ações das outras permissões
+    const creatorOnly = await createEmployee(env, o.api, ['customer.list', 'pre_declaration.create']);
+    const editorOnly = await createEmployee(env, o.api, ['customer.list', 'pre_declaration.edit']);
+    for (const u of [creatorOnly, editorOnly]) {
+      expect((await u.api.get('/api/elaboration?year=2026')).status).toBe(200);
+      expect((await u.api.get(`/api/elaboration/customers/${o.customerId}?year=2026`)).status).toBe(200);
+      expect((await u.api.get('/api/elaboration/jobs')).status).toBe(200);
+      expect((await u.api.post('/api/elaboration/export', { year: 2026, customerIds: [o.customerId] })).status).toBe(403);
+    }
+    expect((await editorOnly.api.post('/api/elaboration/process', { year: 2026, customerIds: [o.customerId] })).status).toBe(403);
+    expect((await editorOnly.api.post('/api/elaboration/validate', { year: 2026, customerIds: [o.customerId] })).status).toBe(403);
     const nobody = await createEmployee(env, o.api, ['customer.list']);
     expect((await nobody.api.get('/api/elaboration?year=2026')).status).toBe(403);
+    expect((await nobody.api.get(`/api/elaboration/customers/${o.customerId}?year=2026`)).status).toBe(403);
+    expect((await nobody.api.get('/api/elaboration/jobs')).status).toBe(403);
     expect((await nobody.api.post('/api/elaboration/export', { year: 2026, customerIds: [o.customerId] })).status).toBe(403);
 
     const other = await registerOffice(env);

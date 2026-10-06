@@ -75,7 +75,7 @@ describe('Preferências do robô (COB-6, INT-16)', () => {
 
   it('não oferece CND automática nem consulta sem procurador e explica o que o robô faz', async () => {
     renderAt('/admin/preferencias', <PreferencesTab />);
-    expect(await screen.findByText(/o robô consulta todo dia os clientes ativos com procurador/)).toBeTruthy();
+    expect(await screen.findByText(/o robô consulta os clientes ativos com procurador quando você pede e na sincronização automática/)).toBeTruthy();
     expect(screen.getByText(/Não estão disponíveis: emissão automática da CND de pessoa física/)).toBeTruthy();
     expect(screen.queryByText('Emitir a certidão negativa (CND) automaticamente')).toBeNull();
     expect(screen.queryByText('Pedir consulta simplificada para clientes sem procurador')).toBeNull();

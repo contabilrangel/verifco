@@ -68,7 +68,7 @@ export function PreferencesTab() {
 
           <Section title="Robô (eCAC)" description="Consultas feitas pelo robô em nome do escritório.">
             <p className="vf-text-sm">
-              Com o SERPRO Integra Contador ativo (Administração › Integrações), o robô consulta todo dia os clientes ativos com procurador: procuração eletrônica,
+              Com o SERPRO Integra Contador ativo (Administração › Integrações), o robô consulta os clientes ativos com procurador quando você pede e na sincronização automática, se ligada (diária ou semanal, também em Integrações): procuração eletrônica,
               mensagens da caixa postal, relatório de situação fiscal (a cada 30 dias) e pagamento das quotas do DARF perto do vencimento.
             </p>
             <p className="vf-text-xs vf-muted">
