@@ -4,6 +4,7 @@ import {
   brazilToday,
   copilotLimit,
   currentExerciseYear,
+  daysBetweenIso,
   formatDate,
   formatDateTimeBr,
   sampleTemplateValues,
@@ -41,6 +42,13 @@ describe('hoje em Brasília (CON-7, DAD-13)', () => {
     expect(addDaysIso('2026-12-31', 1)).toBe('2027-01-01');
     expect(addDaysIso('2028-03-01', -1)).toBe('2028-02-29');
     expect(addDaysIso('2026-10-06', 0)).toBe('2026-10-06');
+  });
+
+  it('conta dias corridos entre duas datas, virando mês e em ano bissexto', () => {
+    expect(daysBetweenIso('2026-10-06', '2026-11-05')).toBe(30);
+    expect(daysBetweenIso('2026-10-06', '2026-10-06')).toBe(0);
+    expect(daysBetweenIso('2026-10-06', '2026-10-05')).toBe(-1);
+    expect(daysBetweenIso('2028-02-28', '2028-03-01')).toBe(2);
   });
 
   it('formata datas e horas no horário de Brasília', () => {

@@ -12,10 +12,11 @@
  *   (segurança). As rotas sem usuário da equipe (portal e checklist do cliente, link de orçamento,
  *   webhooks e robô) não passam pelo bloqueio.
  * - Escritório sem nenhum contrato cadastrado não tem restrição.
+ * - O escritório vê o próprio uso (`contractUsage`, aba Contratos) calculado por estas funções.
  */
 import { and, count, eq, isNull } from 'drizzle-orm';
 import type { FastifyRequest } from 'fastify';
-import { todayIso } from '@verifco/shared';
+import { daysBetweenIso, todayIso, type ContractUsage, type ContractUsageExercise } from '@verifco/shared';
 import type { AppContext } from '../context';
 import type { DbOrTx } from '../db/client';
 import { contracts, customers, declarations, users } from '../db/schema';
@@ -30,6 +31,8 @@ export const isContractActive = (c: Pick<ContractRow, 'status' | 'startsAt' | 'e
 export interface PlanStatus {
   /** O escritório tem algum contrato cadastrado. */
   hasContracts: boolean;
+  /** Todos os contratos cadastrados. */
+  all: ContractRow[];
   /** Contratos vigentes hoje. */
   active: ContractRow[];
   /** Tem contrato, mas nenhum vigente: só consulta. */
@@ -39,7 +42,7 @@ export interface PlanStatus {
 export async function planStatus(db: DbOrTx, officeId: string, today = todayIso()): Promise<PlanStatus> {
   const rows = await db.select().from(contracts).where(eq(contracts.officeId, officeId));
   const active = rows.filter((c) => isContractActive(c, today));
-  return { hasContracts: rows.length > 0, active, expired: rows.length > 0 && active.length === 0 };
+  return { hasContracts: rows.length > 0, all: rows, active, expired: rows.length > 0 && active.length === 0 };
 }
 
 /** Contratos vigentes do escritório. */
@@ -61,14 +64,69 @@ export function declarationLimit(active: Pick<ContractRow, 'year' | 'declaration
 export async function assertDeclarationQuota(db: DbOrTx, officeId: string, exerciseYear: number, incoming = 1) {
   const limit = declarationLimit(await activeContracts(db, officeId), exerciseYear);
   if (limit === null) return;
+  const n = await countExerciseDeclarations(db, officeId, exerciseYear);
+  if (n + incoming > limit) {
+    throw conflict(`Limite de declarações do contrato atingido: ${limit} no exercício ${exerciseYear}. Para ampliar o limite, fale com o suporte do Verifco.`);
+  }
+}
+
+/** Declarações do exercício que contam no limite: as de clientes não excluídos. */
+export async function countExerciseDeclarations(db: DbOrTx, officeId: string, exerciseYear: number): Promise<number> {
   const [{ n }] = await db
     .select({ n: count() })
     .from(declarations)
     .innerJoin(customers, eq(customers.id, declarations.customerId))
     .where(and(eq(declarations.officeId, officeId), eq(declarations.exerciseYear, exerciseYear), isNull(customers.deletedAt)));
-  if (n + incoming > limit) {
-    throw conflict(`Limite de declarações do contrato atingido: ${limit} no exercício ${exerciseYear}. Para ampliar o limite, fale com o suporte do Verifco.`);
+  return n;
+}
+
+/**
+ * Uso do contrato para o próprio escritório (aba Contratos): pacotes vigentes com a validade, o
+ * modo só consulta e, para o exercício corrente e os exercícios dos pacotes vigentes, as
+ * declarações usadas no limite. Usa as mesmas funções que aplicam as regras (`planStatus`,
+ * `declarationLimit`, `countExerciseDeclarations`), então os números batem com o bloqueio.
+ */
+export async function contractUsage(db: DbOrTx, officeId: string, today = todayIso()): Promise<ContractUsage> {
+  const plan = await planStatus(db, officeId, today);
+  const active = plan.active
+    .map((c) => ({
+      id: c.id,
+      name: c.name,
+      plan: c.plan,
+      year: c.year,
+      declarationLimit: c.declarationLimit,
+      startsAt: String(c.startsAt),
+      expiresAt: String(c.expiresAt),
+      daysLeft: daysBetweenIso(today, String(c.expiresAt)),
+    }))
+    .sort((a, b) => a.expiresAt.localeCompare(b.expiresAt) || a.name.localeCompare(b.name));
+  const validUntil = active.length ? active[active.length - 1].expiresAt : null;
+  const past = plan.all.filter((c) => c.status !== 'canceled' && String(c.expiresAt) < today).map((c) => String(c.expiresAt)).sort();
+  const upcoming = plan.all.filter((c) => c.status === 'active' && String(c.startsAt) > today).map((c) => String(c.startsAt)).sort();
+  const years = [...new Set([Number(today.slice(0, 4)), ...plan.active.map((c) => c.year)])].sort((a, b) => b - a);
+  const exercises: ContractUsageExercise[] = [];
+  for (const year of years) {
+    const limit = declarationLimit(plan.active, year);
+    const used = await countExerciseDeclarations(db, officeId, year);
+    exercises.push({
+      year,
+      limit,
+      used,
+      remaining: limit === null ? null : Math.max(0, limit - used),
+      percent: limit === null ? null : limit === 0 ? 100 : Math.min(100, Math.round((used / limit) * 100)),
+    });
   }
+  return {
+    today,
+    hasContracts: plan.hasContracts,
+    readOnly: plan.expired,
+    active,
+    validUntil,
+    daysLeft: validUntil === null ? null : daysBetweenIso(today, validUntil),
+    lastExpiredAt: past.at(-1) ?? null,
+    nextStartsAt: upcoming[0] ?? null,
+    exercises,
+  };
 }
 
 export const PLAN_EXPIRED_MESSAGE =

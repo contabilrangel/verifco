@@ -27,6 +27,15 @@ export function addDaysIso(iso: string, days: number): string {
   return `${String(dt.getUTCFullYear()).padStart(4, '0')}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`;
 }
 
+/** Dias corridos de `from` até `to` (AAAA-MM-DD), sem passar por fuso horário; negativo se `to` vem antes. */
+export function daysBetweenIso(from: string, to: string): number {
+  const utc = (iso: string) => {
+    const [y, m, d] = iso.split('-').map(Number);
+    return Date.UTC(y, m - 1, d);
+  };
+  return Math.round((utc(to) - utc(from)) / 86_400_000);
+}
+
 /**
  * Data AAAA-MM-DD de um instante em UTC. Só para datas que já vêm sem fuso, como as células de
  * data do Excel (meia-noite UTC); para "hoje" ou para a data de um registro, use `todayIso`.

@@ -8,6 +8,7 @@ import { randomToken, sha256 } from '../../lib/crypto';
 import { badRequest, conflict, forbidden, notFound } from '../../lib/errors';
 import { exposeDevSecrets } from '../../config';
 import { audit, can, guard, optionalText, parse, requirePermission, requireUser, uuidParam } from '../../lib/http';
+import { contractUsage } from '../../services/plan';
 import { DEFAULT_SETTINGS, getOfficeSettings } from '../../services/settings';
 import { LOGO_TYPES, readUploads } from '../../services/uploads';
 import { EMAIL_CHANGED_JOB, type EmailChangedPayload } from '../auth/jobs';
@@ -121,6 +122,12 @@ export async function adminRoutes(app: FastifyInstance) {
   app.get('/office/contracts', { preHandler: guard('contracts.view') }, async (req) => {
     const user = requireUser(req);
     return db.select().from(contracts).where(eq(contracts.officeId, user.officeId)).orderBy(sql`${contracts.startsAt} desc`);
+  });
+
+  /** Uso do contrato do próprio escritório: validade, modo só consulta e declarações usadas no limite. */
+  app.get('/office/contracts/status', { preHandler: guard('contracts.view') }, async (req) => {
+    const user = requireUser(req);
+    return contractUsage(db, user.officeId);
   });
 
   // ---------------------------------------------------------------- funções
