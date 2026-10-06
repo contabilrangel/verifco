@@ -77,6 +77,12 @@ Cadastre os três domínios para o serviço `web`, porta `80`:
 `painel.verifco.com.br` redireciona a raiz para `/sistema`. A separação de contas e
 permissões é aplicada pela API, independentemente do domínio de acesso.
 
+A web (Nginx) envia em todas as respostas, inclusive as da API, os cabeçalhos de
+segurança de `deploy/nginx-security-headers.conf`: HSTS de um ano (sem
+`includeSubDomains`), `nosniff`, `X-Frame-Options: SAMEORIGIN`, `Referrer-Policy` e
+`Permissions-Policy`. As páginas recebem também uma CSP que impede a abertura do
+sistema dentro de frames de outros sites. Mudanças nesses cabeçalhos exigem **Deploy**.
+
 ## Ambiente da alternativa com bancos no Compose
 
 Preencha no Dokploy as variáveis de `deploy/dokploy.env.example`:
@@ -187,6 +193,6 @@ não precisam de serviços extras no servidor.
 
 O CI valida as duas variantes: bancos dentro do Compose e bancos independentes na
 rede externa `dokploy-network`. Constrói as imagens e usa valores exclusivos de
-teste, confere a web, a navegação `/sistema` e o encaminhamento autenticado da
-API, verifica que as tabelas operacionais e administrativas estão em bancos
+teste, confere a web, a navegação `/sistema`, os cabeçalhos de segurança e o
+encaminhamento autenticado da API, verifica que as tabelas operacionais e administrativas estão em bancos
 diferentes e encerra os containers. A implantação real ainda depende de DNS e ambiente.
