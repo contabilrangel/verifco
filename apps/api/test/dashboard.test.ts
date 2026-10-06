@@ -1,7 +1,8 @@
+import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { IRPFM_THRESHOLD_CENTS } from '@verifco/shared';
-import { budgets, customers } from '../src/db/schema';
+import { IRPFM_THRESHOLD_CENTS, addDaysIso, todayIso } from '@verifco/shared';
+import { budgets, customers, integrations, procurators } from '../src/db/schema';
 import { VALID_CPFS, createEmployee, createTestEnv, registerOffice, type TestEnv } from './helpers';
 
 let env: TestEnv;
@@ -83,6 +84,118 @@ describe('dashboard do escritório', () => {
     const empty = (await other.api.get(`/api/dashboard?year=${YEAR}`)).body;
     expect(empty.indicators).toMatchObject({ activeCustomers: 0, declarations: 0, taxDueCents: 0 });
     expect(empty.alerts.every((a: any) => a.count === 0)).toBe(true);
+  });
+
+  // INT-15 detalhado: situação do acesso de cada procurador pelo certificado e pelo último login no SERPRO
+  describe('acesso dos procuradores', () => {
+    const day = (offset: number) => addDaysIso(todayIso(), offset);
+    type Office = Awaited<ReturnType<typeof registerOffice>>;
+    const proc = async (o: Office, name: string, cpf: string, body: Record<string, unknown>) => {
+      const res = await o.api.post('/api/procurators', { name, cpfCnpj: cpf, ...body });
+      expect(res.status).toBe(201);
+      return res.body.id as string;
+    };
+    const withCertificate = (id: string, extra: Partial<typeof procurators.$inferInsert> = {}) =>
+      env.ctx.db.update(procurators).set({ certificateFileId: randomUUID(), certificatePasswordEnc: 'senha-cifrada', ...extra }).where(eq(procurators.id, id));
+    const dashboard = async (o: { api: Office['api'] }) => {
+      const res = await o.api.get(`/api/dashboard?year=${YEAR}`);
+      expect(res.status).toBe(200);
+      return res.body;
+    };
+    const byName = (body: any) => Object.fromEntries(body.procuratorAccess.items.map((i: any) => [i.name, i]));
+
+    it('classifica cada procurador e agrupa por gravidade, sem documento nem segredo', async () => {
+      const o = await registerOffice(env);
+      const ids = {
+        gov: await proc(o, 'Gov Br', VALID_CPFS[0], { authType: 'govbr' }),
+        missing: await proc(o, 'Nuvem sem arquivo', VALID_CPFS[1], { authType: 'certificate_cloud', certificateExpiresAt: day(200) }),
+        expired: await proc(o, 'Vencido', VALID_CPFS[2], { authType: 'certificate_local', certificateExpiresAt: day(-1) }),
+        expiring: await proc(o, 'Vencendo', VALID_CPFS[3], { authType: 'certificate_local', certificateExpiresAt: day(30) }),
+        valid: await proc(o, 'No prazo', VALID_CPFS[4], { authType: 'certificate_local', certificateExpiresAt: day(31) }),
+        serproOk: await proc(o, 'SERPRO ok', VALID_CPFS[5], { authType: 'certificate_cloud', certificateExpiresAt: day(300) }),
+        serproError: await proc(o, 'SERPRO falhou', VALID_CPFS[6], { authType: 'certificate_cloud', certificateExpiresAt: day(300) }),
+        noExpiry: await proc(o, 'Sem validade', VALID_CPFS[7], { authType: 'certificate_local' }),
+      };
+      const usedAt = new Date(Date.now() - 3600_000);
+      await withCertificate(ids.serproOk, { loginStatus: 'ok', lastValidatedAt: usedAt });
+      await withCertificate(ids.serproError, { loginStatus: 'error', lastValidatedAt: usedAt });
+      await env.ctx.db.insert(integrations).values({ officeId: o.officeId, provider: 'serpro', enabled: true, status: 'connected', publicConfig: { procuratorId: ids.serproError } });
+      // clientes ativos atendidos (o inativo não conta)
+      for (const [i, cpf] of VALID_CPFS.slice(0, 3).entries()) {
+        const c = (await o.api.post('/api/customers', { name: `Cliente ${i}`, cpfCnpj: cpf })).body.id;
+        await env.ctx.db.update(customers).set({ procuratorId: ids.expired, status: i === 2 ? 'inactive' : 'active' }).where(eq(customers.id, c));
+      }
+
+      const body = await dashboard(o);
+      const items = byName(body);
+      expect(Object.keys(items)).toEqual(['Nuvem sem arquivo', 'SERPRO falhou', 'Vencido', 'Vencendo', 'Gov Br', 'Sem validade']);
+      expect(items['Vencido']).toMatchObject({ access: 'certificate_expired', severity: 'danger', label: 'Certificado vencido', certificateExpiresAt: day(-1), daysLeft: -1, customers: 2 });
+      expect(items['Nuvem sem arquivo']).toMatchObject({ access: 'certificate_missing', severity: 'danger', label: 'Certificado não enviado' });
+      expect(items['Vencendo']).toMatchObject({ access: 'certificate_expiring', severity: 'warning', label: 'Certificado vence em até 30 dias', daysLeft: 30 });
+      expect(items['SERPRO falhou']).toMatchObject({
+        access: 'serpro_error',
+        severity: 'danger',
+        serpro: { status: 'error', at: usedAt.toISOString(), usesThisCertificate: true },
+      });
+      expect(items['Gov Br']).toMatchObject({ access: 'govbr_unverified', severity: 'info', label: 'Login gov.br sem verificação', certificateExpiresAt: null, serpro: { status: null, at: null } });
+      expect(items['Sem validade']).toMatchObject({ access: 'expiry_unknown', severity: 'info' });
+      expect(body.procuratorAccess).toMatchObject({ warningDays: 30, total: 8, count: 6, counts: { danger: 3, warning: 1, info: 2, ok: 2 } });
+
+      const slice = (k: string) => body.charts.procuratorLogin.byAccess.find((s: any) => s.key === k).count;
+      expect([slice('serpro_ok'), slice('valid'), slice('certificate_expired')]).toEqual([1, 1, 1]);
+      expect(body.charts.procuratorLogin.total).toBe(8);
+
+      // o login bem-sucedido aparece como último uso do SERPRO, e o procurador fica fora dos alertas
+      expect(items['SERPRO ok']).toBeUndefined();
+      // nada de CPF/CNPJ, arquivo ou senha do certificado no payload
+      const raw = JSON.stringify(body.procuratorAccess) + JSON.stringify(body.charts.procuratorLogin);
+      for (const cpf of VALID_CPFS) expect(raw).not.toContain(cpf);
+      expect(raw).not.toMatch(/cpfCnpj|certificateFileId|certificatePassword|senha-cifrada|userId/);
+
+      // outro escritório não enxerga os procuradores
+      const other = await dashboard(await registerOffice(env));
+      expect(other.procuratorAccess).toMatchObject({ total: 0, count: 0, items: [] });
+      expect(other.charts.procuratorLogin.total).toBe(0);
+    });
+
+    it('contador restrito aos próprios clientes vê só os procuradores que o afetam', async () => {
+      const o = await registerOffice(env);
+      const emp = await createEmployee(env, o.api, ['declaration.view']);
+      const mineCustomer = (await o.api.post('/api/customers', { name: 'Cliente do contador', cpfCnpj: VALID_CPFS[0] })).body.id;
+      const otherCustomer = (await o.api.post('/api/customers', { name: 'Cliente de outro', cpfCnpj: VALID_CPFS[1] })).body.id;
+      const ofMine = await proc(o, 'Dos meus clientes', VALID_CPFS[2], { authType: 'certificate_local', certificateExpiresAt: day(-5) });
+      const ofOther = await proc(o, 'De outro contador', VALID_CPFS[3], { authType: 'certificate_local', certificateExpiresAt: day(-5) });
+      const serpro = await proc(o, 'Certificado do SERPRO', VALID_CPFS[4], { authType: 'certificate_cloud', certificateExpiresAt: day(10) });
+      await proc(o, 'Eu mesmo', VALID_CPFS[5], { authType: 'govbr', userId: emp.userId });
+      await withCertificate(serpro);
+      await env.ctx.db.insert(integrations).values({ officeId: o.officeId, provider: 'serpro', enabled: true, status: 'connected', publicConfig: { procuratorId: serpro } });
+      await env.ctx.db.update(customers).set({ procuratorId: ofMine, responsibleUserId: emp.userId }).where(eq(customers.id, mineCustomer));
+      await env.ctx.db.update(customers).set({ procuratorId: ofOther }).where(eq(customers.id, otherCustomer));
+
+      // sem restrição, o colaborador vê todos
+      expect(Object.keys(byName(await dashboard(emp)))).toHaveLength(4);
+
+      await o.api.put('/api/office/settings', { restrictCustomersToResponsible: true });
+      const body = await dashboard(emp);
+      const items = byName(body);
+      expect(Object.keys(items).sort()).toEqual(['Certificado do SERPRO', 'Dos meus clientes', 'Eu mesmo']);
+      expect(items['Dos meus clientes']).toMatchObject({ customers: 1, mine: false });
+      expect(items['Eu mesmo']).toMatchObject({ mine: true, customers: 0 });
+      expect(items['Certificado do SERPRO']).toMatchObject({ access: 'certificate_expiring', serpro: { usesThisCertificate: true } });
+      expect(body.procuratorAccess.total).toBe(3);
+      // o dono continua vendo todos, com os clientes de todos
+      const owner = byName(await dashboard(o));
+      expect(Object.keys(owner)).toHaveLength(4);
+      expect(owner['De outro contador'].customers).toBe(1);
+
+      // integração SERPRO desativada: o certificado dela deixa de afetar o contador
+      await env.ctx.db.update(integrations).set({ enabled: false }).where(eq(integrations.officeId, o.officeId));
+      expect(Object.keys(byName(await dashboard(emp))).sort()).toEqual(['Dos meus clientes', 'Eu mesmo']);
+
+      // sem as permissões do dashboard, nada
+      const noPerm = await createEmployee(env, o.api, ['procuration.list']);
+      expect((await noPerm.api.get(`/api/dashboard?year=${YEAR}`)).status).toBe(403);
+    });
   });
 
   it('exige permissão', async () => {

@@ -13,11 +13,15 @@ export type CustomerRow = typeof customers.$inferSelect;
  */
 export async function customerScope(ctx: AppContext, user: AuthUser): Promise<SQL> {
   const conds = [eq(customers.officeId, user.officeId), isNull(customers.deletedAt)];
-  if (!user.isOwner) {
-    const settings = await getOfficeSettings(ctx.db, user.officeId);
-    if (settings.restrictCustomersToResponsible) conds.push(eq(customers.responsibleUserId, user.userId));
-  }
+  if (await isCustomerScopeRestricted(ctx, user)) conds.push(eq(customers.responsibleUserId, user.userId));
   return and(...conds)!;
+}
+
+/** O usuário vê só os clientes de que é responsável (escritório restringe e ele não é o dono). */
+export async function isCustomerScopeRestricted(ctx: AppContext, user: AuthUser): Promise<boolean> {
+  if (user.isOwner) return false;
+  const settings = await getOfficeSettings(ctx.db, user.officeId);
+  return settings.restrictCustomersToResponsible;
 }
 
 /** Carrega o cliente respeitando o escopo do usuário; 404 se não puder ver. */
