@@ -1,7 +1,34 @@
 import type { AppContext } from '../context';
-import { MemoryProviders, type Providers } from './providers';
+import { createAiProvider } from './ai';
+import { createEmailSender, defaultTransportFactory, type TransportFactory } from './email';
+import type { Providers } from './providers';
+import type { MtlsRequest } from './serpro';
+import { createWhatsAppSender } from './whatsapp';
 
-/** Monta os provedores reais a partir da configuração de cada escritório. */
-export function createProviders(_ctx: AppContext): Providers {
-  return new MemoryProviders();
+export interface ProviderDeps {
+  /** `fetch` usado por todos os clientes HTTP (injetável nos testes). */
+  fetch?: typeof fetch;
+  /** Fábrica do transporte SMTP (injetável nos testes). */
+  createTransport?: TransportFactory;
+  /** Requisição mTLS da autenticação do SERPRO (injetável nos testes). */
+  mtlsRequest?: MtlsRequest;
+}
+
+/**
+ * Monta os provedores reais. Cada envio lê a configuração do escritório na hora
+ * (Administração › Integrações), então mudanças valem sem reiniciar a API:
+ * - e-mail: SMTP do escritório ou `SMTP_URL` da plataforma;
+ * - WhatsApp: Evolution API ou WhatsApp Cloud API (Meta), conforme o modo;
+ * - IA: Anthropic com a chave do escritório ou `ANTHROPIC_API_KEY`.
+ */
+export function createProviders(ctx: AppContext, deps: ProviderDeps = {}): Providers {
+  const providers: Providers = {
+    fetch: deps.fetch ?? ((input, init) => globalThis.fetch(input, init)),
+    email: createEmailSender(ctx, deps.createTransport ?? defaultTransportFactory),
+    whatsapp: createWhatsAppSender(ctx, () => providers.fetch),
+    ai: createAiProvider(ctx, () => providers.fetch),
+    smtpTransport: deps.createTransport,
+    mtlsRequest: deps.mtlsRequest,
+  };
+  return providers;
 }
