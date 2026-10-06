@@ -1,6 +1,8 @@
 /**
  * Catálogos da comunicação (mala direta) e dos relatórios individuais da declaração.
  */
+import { todayIso } from './dates';
+import { formatDate } from './validators';
 
 export type MailingTypeKey = 'checklist_digital' | 'checklist_pdf' | 'planning' | 'marketing' | 'monthly' | 'budget' | 'kit';
 
@@ -151,7 +153,7 @@ export function sampleTemplateValues(year: number): Record<string, string | numb
     VALOR: 'R$ 450,00',
     VALOR_EXTENSO: 'quatrocentos e cinquenta reais',
     VENCIMENTO: `30/05/${year}`,
-    DATA: new Date().toLocaleDateString('pt-BR'),
+    DATA: formatDate(todayIso()),
     CATEGORIA: 'Declaração IRPF',
     DESCRICAO: 'Elaboração e transmissão da declaração de ajuste anual.',
     PENDENCIAS: '<ul><li>Informe de rendimentos do banco (até 15/04)</li><li>Recibos de despesas médicas</li></ul>',

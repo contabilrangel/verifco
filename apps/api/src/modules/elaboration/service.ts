@@ -5,6 +5,7 @@ import {
   ITEM_KINDS,
   ITEM_KIND_LIST,
   formatCpfCnpj,
+  formatDateTimeBr,
   onlyDigits,
   type DeclarationItem,
   type ElaborationStatus,
@@ -342,7 +343,7 @@ export function itemsToCsv(items: DeclarationItem[]): string {
 const README = (customer: CustomerRow, year: number) => `PACOTE DE CONFERÊNCIA — VERIFCO
 Cliente: ${customer.name} (CPF ${formatCpfCnpj(customer.cpfCnpj)})
 Exercício ${year} · ano-calendário ${year - 1}
-Gerado em ${new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}
+Gerado em ${formatDateTimeBr()}
 
 Este pacote serve para CONFERIR e DIGITAR a declaração. Ele NÃO é um arquivo para restaurar
 no programa IRPF: o formato das cópias de segurança (.DBK) do programa não é público.

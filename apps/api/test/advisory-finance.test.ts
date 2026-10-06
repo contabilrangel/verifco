@@ -4,7 +4,7 @@ import JSZip from 'jszip';
 import ExcelJS from 'exceljs';
 import { eq, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { INCOME_HEADERS, PAYMENT_HEADERS } from '@verifco/shared';
+import { INCOME_HEADERS, PAYMENT_HEADERS, todayIso } from '@verifco/shared';
 import { contracts, customerGroupMembers, customerGroups, customers, files, procurators } from '../src/db/schema';
 import { sha256 } from '../src/lib/crypto';
 import { runBackupJob } from '../src/modules/advisory/backup';
@@ -152,7 +152,7 @@ describe('copiloto financeiro', () => {
     expect((await o.api.post('/api/copilot/enrollments', { customerId: ids[5] })).status).toBe(201);
 
     // contrato "pro" vigente amplia o limite
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayIso();
     await env.ctx.db.insert(contracts).values({ officeId: o.officeId, name: 'Pacote Pro', plan: 'pro', year: 2026, startsAt: '2020-01-01', expiresAt: '2099-12-31' });
     expect((await o.api.get('/api/copilot/enrollments')).body.limit).toBe(25);
     expect(today).toBeTruthy();

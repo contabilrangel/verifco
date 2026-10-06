@@ -178,6 +178,7 @@ export async function cashbookRoutes(app: FastifyInstance) {
     if (!row) throw notFound('Lançamento');
     await getCustomerForUser(app.ctx, user, row.customerId);
     await db.delete(cashbookEntries).where(eq(cashbookEntries.id, id));
+    await audit(req, 'delete_entry', 'cashbook', row.customerId, { entryId: id, kind: row.kind, entryDate: row.entryDate });
     return { ok: true };
   });
 

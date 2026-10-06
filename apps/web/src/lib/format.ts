@@ -5,6 +5,7 @@ import {
   PROCURATION_STATUS,
   formatCpfCnpj,
   formatDate,
+  formatDateTimeBr,
   formatMoney,
   formatPhone,
   type DeclarationStage,
@@ -14,7 +15,8 @@ import type { Tone } from '../ds';
 
 export { formatCpfCnpj, formatDate, formatMoney, formatPhone };
 
-export const formatDateTime = (v: string | null | undefined) => (v ? new Date(v).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : '');
+/** Data e hora no horário de Brasília, como as datas (formatDate) e os textos gerados no servidor. */
+export const formatDateTime = (v: string | null | undefined) => (v ? formatDateTimeBr(v) : '');
 
 export const stageLabel = (s: string) => DECLARATION_STAGES[s as DeclarationStage] ?? s;
 export const substatusLabel = (s: string) => DECLARATION_SUBSTATUS[s as DeclarationSubstatus] ?? s;

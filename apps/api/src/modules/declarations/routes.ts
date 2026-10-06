@@ -124,12 +124,18 @@ export async function declarationRoutes(app: FastifyInstance) {
   const { db } = app.ctx;
 
   // ------------------------------------------------------------ declaração por cliente e ano
-  app.get('/customers/:id/declarations/:year', { preHandler: guard('declaration.view') }, async (req) => {
+  /**
+   * Declaração do cliente no exercício. Quem tem só `darf.view` (etapa DARF) recebe apenas o que a
+   * etapa usa e a lista de quotas já mostra: id, exercício e imposto a pagar.
+   */
+  app.get('/customers/:id/declarations/:year', { preHandler: guard('declaration.view', 'darf.view') }, async (req) => {
     const user = requireUser(req);
     const { id, year } = parse(customerYearParams, req.params);
     const customer = await getCustomerForUser(app.ctx, user, id);
     const d = await db.query.declarations.findFirst({ where: and(eq(declarations.customerId, customer.id), eq(declarations.exerciseYear, year)) });
-    return d ? presentDeclaration(d) : emptyDeclaration(customer.id, year);
+    const full = d ? presentDeclaration(d) : emptyDeclaration(customer.id, year);
+    if (can(user, 'declaration.view')) return full;
+    return { id: full.id, exists: full.exists, customerId: full.customerId, exerciseYear: full.exerciseYear, taxDueCents: full.taxDueCents };
   });
 
   /**
@@ -230,9 +236,10 @@ export async function declarationRoutes(app: FastifyInstance) {
     const user = requireUser(req);
     const { id, itemId } = parse(itemParams, req.params);
     const { declaration } = await getDeclarationForUser(app.ctx, user, id);
-    await loadItem(declaration.id, itemId);
+    const item = await loadItem(declaration.id, itemId);
     await db.delete(declarationItems).where(eq(declarationItems.id, itemId));
     const updated = await refreshDeclaration(app.ctx, declaration.id);
+    await audit(req, 'delete_item', 'declaration', declaration.id, { itemId, kind: item.kind });
     return { ok: true, declaration: presentDeclaration(updated) };
   });
 

@@ -132,6 +132,26 @@ describe('DARF', () => {
     expect(up.body.autoSend).toBe('no_email');
   });
 
+  it('a etapa DARF funciona só com darf.view, sem abrir o resto da declaração (INT-17)', async () => {
+    const office = await registerOffice(env);
+    const { customerId, declarationId } = await setup(office.api);
+    await office.api.post(`/api/declarations/${declarationId}/darfs`, { valueCents: 150_000, dueDate: '2099-05-29' });
+    const darfOnly = await createEmployee(env, office.api, ['customer.list', 'darf.view']);
+    // a etapa carrega a declaração do exercício (useDeclaration) e depois as quotas
+    const decl = await darfOnly.api.get(`/api/customers/${customerId}/declarations/${YEAR}`);
+    expect(decl.status).toBe(200);
+    expect(decl.body).toEqual({ id: declarationId, exists: true, customerId, exerciseYear: YEAR, taxDueCents: 300_001 });
+    const list = await darfOnly.api.get(`/api/declarations/${decl.body.id}/darfs`);
+    expect(list.status).toBe(200);
+    expect(list.body.darfs).toHaveLength(1);
+    // o restante da declaração continua exigindo declaration.view
+    expect((await darfOnly.api.get(`/api/declarations/${declarationId}/items`)).status).toBe(403);
+    const full = await office.api.get(`/api/customers/${customerId}/declarations/${YEAR}`);
+    expect(full.body).toMatchObject({ id: declarationId, taxDueCents: 300_001, substatus: expect.any(String), totalIncomeCents: 0 });
+    const neither = await createEmployee(env, office.api, ['customer.list']);
+    expect((await neither.api.get(`/api/customers/${customerId}/declarations/${YEAR}`)).status).toBe(403);
+  });
+
   it('permissões e isolamento', async () => {
     const office = await registerOffice(env);
     const { declarationId } = await setup(office.api);

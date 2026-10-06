@@ -1,5 +1,5 @@
 import ExcelJS from 'exceljs';
-import { parseBrDate, parseBrMoney, toCents } from '@verifco/shared';
+import { parseBrDate, parseBrMoney, toCents, utcDateIso } from '@verifco/shared';
 
 export interface SheetColumn {
   header: string;
@@ -106,7 +106,8 @@ export async function readSheet(data: Buffer, filename: string): Promise<SheetRo
       const key = headers[col];
       if (!key) return;
       const v = cell.value;
-      values[key] = v instanceof Date ? v.toISOString().slice(0, 10) : String(cell.text ?? '').trim();
+      // célula de data do Excel: dia sem fuso (meia-noite UTC)
+      values[key] = v instanceof Date ? utcDateIso(v) : String(cell.text ?? '').trim();
       const n = cellNumber(cell);
       if (n !== undefined) numbers[key] = n;
     });

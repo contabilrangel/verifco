@@ -115,6 +115,22 @@ describe('Shell', () => {
     expect(calls.post).toEqual([]);
   });
 
+  it('menu: Elaboração para quem só processa e Administração para quem abre ao menos uma aba (INT-17)', () => {
+    const sidebarLink = (name: string) => within(screen.getByRole('navigation', { name: 'Menu principal' })).queryByRole('link', { name });
+    auth.perms = ['elaboration.process'];
+    renderShell();
+    expect(sidebarLink('Elaboração')?.getAttribute('href')).toBe('/elaboracao');
+    expect(sidebarLink('Administração')).toBeNull();
+    // cada permissão que abre só uma aba (Robô, Grupos, Preferências) basta para ver Administração
+    for (const perm of ['ecac.robot', 'ecac.sync', 'customer_group.create', 'settings.edit', 'copilot.manage']) {
+      cleanup();
+      auth.perms = [perm];
+      renderShell();
+      expect(sidebarLink('Administração')?.getAttribute('href'), perm).toBe('/admin');
+      expect(sidebarLink('Elaboração'), perm).toBeNull();
+    }
+  });
+
   it('mostra os favoritos no menu lateral e remove pelo X', async () => {
     auth.favorites = [
       { path: '/admin/colaboradores', label: 'Administração › Colaboradores' },

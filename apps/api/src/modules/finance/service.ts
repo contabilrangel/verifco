@@ -129,11 +129,21 @@ export async function serializeBudgets(ctx: AppContext, rows: BudgetRow[]) {
     ? await db.select().from(installments).where(inArray(installments.billingId, bills.map((b) => b.id))).orderBy(asc(installments.number))
     : [];
   const today = todayIso();
+  // índices montados uma vez: o relatório geral passa todos os orçamentos do ano
+  const methodById = new Map(methods.map((x) => [x.id, x]));
+  const tableById = new Map(tables.map((x) => [x.id, x]));
+  const billByBudget = new Map(bills.map((x) => [x.budgetId, x]));
+  const instsByBilling = new Map<string, InstallmentRow[]>();
+  for (const i of insts) {
+    const list = instsByBilling.get(i.billingId);
+    if (list) list.push(i);
+    else instsByBilling.set(i.billingId, [i]);
+  }
   return rows.map((b) => {
-    const m = methods.find((x) => x.id === b.paymentMethodId);
-    const t = tables.find((x) => x.id === b.priceTableId);
-    const bill = bills.find((x) => x.budgetId === b.id);
-    const list = bill ? insts.filter((i) => i.billingId === bill.id).map((i) => serializeInstallment(i, today)) : null;
+    const m = b.paymentMethodId ? methodById.get(b.paymentMethodId) : undefined;
+    const t = b.priceTableId ? tableById.get(b.priceTableId) : undefined;
+    const bill = billByBudget.get(b.id);
+    const list = bill ? (instsByBilling.get(bill.id) ?? []).map((i) => serializeInstallment(i, today)) : null;
     return {
       id: b.id,
       customerId: b.customerId,

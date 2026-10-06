@@ -1,4 +1,5 @@
 import { ExternalLink, FileText } from 'lucide-react';
+import { todayIso } from '@verifco/shared';
 import { Alert, Card, EmptyState, Loading, Tag, type Tone } from '../../ds';
 import { useApi } from '../../lib/hooks';
 import { formatDate } from '../../lib/format';
@@ -19,7 +20,7 @@ interface ContractRow {
 const PLANS: Record<string, string> = { trial: 'Avaliação', basic: 'Básico', pro: 'Profissional', enterprise: 'Empresarial' };
 
 function situation(c: ContractRow): { tone: Tone; label: string } {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayIso();
   if (c.status === 'canceled') return { tone: 'neutral', label: 'Cancelado' };
   if (c.status === 'suspended') return { tone: 'warning', label: 'Suspenso' };
   if (c.expiresAt < today) return { tone: 'danger', label: 'Expirado' };
@@ -30,8 +31,15 @@ function situation(c: ContractRow): { tone: Tone; label: string } {
 /** Aba Contratos: pacotes e licenças contratados pelo escritório (somente consulta). */
 export function ContractsTab() {
   const list = useApi<ContractRow[]>(['contracts'], '/office/contracts');
+  // com contratos e nenhum vigente, o servidor só aceita consultas (services/plan.ts)
+  const readOnly = Boolean(list.data?.length) && !list.data!.some((c) => situation(c).label === 'Ativo');
   return (
     <div className="vf-stack" style={{ '--gap': '16px' } as React.CSSProperties}>
+      {readOnly && (
+        <Alert tone="warning" title="Nenhum contrato vigente">
+          O escritório está só em consulta: as alterações ficam bloqueadas até a renovação. Para renovar, fale com o suporte do Verifco.
+        </Alert>
+      )}
       <Card flush title="Pacotes e licenças">
         {list.isLoading ? (
           <Loading />

@@ -9,6 +9,7 @@ import {
   ITEM_KINDS,
   formatCpfCnpj,
   getIndividualReport,
+  todayIso,
   type DeclarationSubstatus,
   type IndividualReportKey,
 } from '@verifco/shared';
@@ -28,7 +29,8 @@ import { buildKitPdf, slug } from './kit';
 
 const INDIVIDUAL_PERMS = INDIVIDUAL_REPORTS.map((r) => r.permission);
 const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-const today = () => new Date().toISOString().slice(0, 10);
+/** Hoje em Brasília: o mesmo dia do dashboard e da aba de pendências (backlogs.ts). */
+const today = () => todayIso();
 const bool = z.preprocess((v) => (v === 'true' || v === '1' || v === true ? true : v === 'false' || v === '0' || v === false ? false : undefined), z.boolean().optional());
 
 const generateSchema = z.object({
@@ -313,7 +315,7 @@ export async function reportRoutes(app: FastifyInstance) {
             email: r.email,
             year: r.year,
             description: r.b.description,
-            created: r.b.createdAt.toISOString().slice(0, 10),
+            created: todayIso(r.b.createdAt),
             due: r.b.dueDate,
             late: days(r.b.dueDate) || '',
           })),

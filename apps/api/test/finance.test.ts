@@ -441,6 +441,42 @@ describe('relatório de faturamento', () => {
   });
 });
 
+describe('serialização com índices (DAD-12)', () => {
+  it('cada orçamento recebe o próprio faturamento e as próprias parcelas, em ordem, com vários por cliente', async () => {
+    const { api, customerId, boleto, pix } = await setup();
+    const other = await api.post('/api/customers', { name: 'Olga Outra', cpfCnpj: VALID_CPFS[5] });
+    const a = await createBudget(api, customerId, { amountCents: 90_000, paymentMethodId: boleto.id, installments: 3, status: 'approved' });
+    const b = await createBudget(api, customerId, { category: 'capital_gain', amountCents: 20_000, paymentMethodId: pix.id, status: 'approved' });
+    const c = await createBudget(api, other.body.id, { amountCents: 40_000, paymentMethodId: boleto.id, installments: 2, status: 'approved' });
+    await createBudget(api, other.body.id, { amountCents: 10_000 });
+    const report = await api.get('/api/finance/reports/billing?year=2026');
+    const byId = new Map(report.body.data.map((r: any) => [r.budgetId, r]));
+    expect(report.body.data).toHaveLength(4);
+    const list = (await api.get(`/api/finance/customers/${customerId}/budgets?year=2026`)).body.data as any[];
+    const own = new Map(list.map((x) => [x.id, x]));
+    expect(own.get(a.body.id).paymentMethodName).toBe(boleto.name);
+    expect(own.get(a.body.id).billing.installments.map((i: any) => [i.number, i.amountCents])).toEqual([
+      [1, 30_000],
+      [2, 30_000],
+      [3, 30_000],
+    ]);
+    expect(own.get(b.body.id).paymentMethodName).toBe(pix.name);
+    expect(own.get(b.body.id).billing.installments.map((i: any) => i.number)).toEqual([1]);
+    expect(byId.has(c.body.id)).toBe(true);
+    const tpl = await api.get('/api/finance/budget-import/template?year=2026');
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(tpl.raw.rawPayload as unknown as ArrayBuffer);
+    const rows: string[][] = [];
+    wb.worksheets[0].eachRow((row, n) => n > 1 && rows.push([String(row.getCell(2).value), String(row.getCell(5).value), String(row.getCell(7).value ?? '')]));
+    expect(rows).toEqual([
+      ['Maria Cliente', '900', boleto.name],
+      ['Maria Cliente', '200', pix.name],
+      ['Olga Outra', '400', boleto.name],
+      ['Olga Outra', '100', ''],
+    ]);
+  });
+});
+
 describe('orçamentos em lote', () => {
   it('baixa modelo pré-preenchido e importa criando e atualizando por CPF', async () => {
     const { api, customerId, token } = await setup();

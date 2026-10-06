@@ -1,4 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { eq } from 'drizzle-orm';
+import { addDaysIso, currentExerciseYear, todayIso } from '@verifco/shared';
+import { contracts } from '../src/db/schema';
 import { VALID_CPFS, client, createEmployee, createTestEnv, registerOffice, type TestEnv } from './helpers';
 
 let env: TestEnv;
@@ -87,6 +90,81 @@ describe('escritório', () => {
     expect(list.body[0]).toMatchObject({ name: 'Avaliação gratuita', status: 'active' });
     const emp = await createEmployee(env, office.api, []);
     expect((await emp.api.get('/api/office/contracts')).status).toBe(403);
+  });
+});
+
+describe('plano: limite e validade dos contratos (COB-12)', () => {
+  const YEAR = currentExerciseYear();
+  const newCustomer = async (api: ReturnType<typeof client>, i: number) => (await api.post('/api/customers', { name: `Cliente ${i}`, cpfCnpj: VALID_CPFS[i] })).body.id as string;
+
+  it('o cadastro cria a avaliação de 30 dias contados no dia de Brasília', async () => {
+    const office = await registerOffice(env);
+    const [trial] = await env.ctx.db.select().from(contracts).where(eq(contracts.officeId, office.officeId));
+    const today = todayIso();
+    expect(trial).toMatchObject({ plan: 'trial', declarationLimit: 30, year: YEAR, startsAt: today, expiresAt: addDaysIso(today, 30), status: 'active' });
+  });
+
+  it('limita as declarações do exercício do contrato, com mensagem em português', async () => {
+    const office = await registerOffice(env);
+    await env.ctx.db.update(contracts).set({ declarationLimit: 2 }).where(eq(contracts.officeId, office.officeId));
+    const ids = [await newCustomer(office.api, 0), await newCustomer(office.api, 1), await newCustomer(office.api, 2)];
+    expect((await office.api.put(`/api/customers/${ids[0]}/declarations/${YEAR}`, { taxDueCents: 100 })).status).toBe(200);
+    expect((await office.api.put(`/api/customers/${ids[1]}/declarations/${YEAR}`, {})).status).toBe(200);
+    const over = await office.api.put(`/api/customers/${ids[2]}/declarations/${YEAR}`, {});
+    expect(over.status).toBe(409);
+    expect(over.body.error).toBe(`Limite de declarações do contrato atingido: 2 no exercício ${YEAR}. Para ampliar o limite, fale com o suporte do Verifco.`);
+    // outros caminhos que criam a declaração respeitam o mesmo limite
+    expect((await office.api.post('/api/customers/bulk', { ids: [ids[2]], action: 'substatus', value: 'started', year: YEAR })).status).toBe(409);
+    // a declaração que já existe continua editável, e exercício sem contrato vigente não tem limite
+    expect((await office.api.put(`/api/customers/${ids[0]}/declarations/${YEAR}`, { taxDueCents: 200 })).status).toBe(200);
+    expect((await office.api.put(`/api/customers/${ids[2]}/declarations/${YEAR - 1}`, {})).status).toBe(200);
+    // cliente excluído deixa de contar
+    expect((await office.api.del(`/api/customers/${ids[1]}`)).status).toBe(200);
+    expect((await office.api.put(`/api/customers/${ids[2]}/declarations/${YEAR}`, {})).status).toBe(200);
+    // contrato ilimitado vigente no exercício libera
+    await env.ctx.db.insert(contracts).values({ officeId: office.officeId, name: 'Pacote ilimitado', plan: 'pro', declarationLimit: null, year: YEAR, startsAt: '2020-01-01', expiresAt: '2099-12-31' });
+    const extra = await newCustomer(office.api, 3);
+    expect((await office.api.put(`/api/customers/${extra}/declarations/${YEAR}`, {})).status).toBe(200);
+  });
+
+  it('com o contrato vencido, só consulta: GET, conta e exportações liberados; o resto pede renovação', async () => {
+    const office = await registerOffice(env);
+    const customerId = (await office.api.post('/api/customers', { name: 'Cliente 4', cpfCnpj: VALID_CPFS[4], email: 'cliente4@ex.com' })).body.id as string;
+    const access = await office.api.post(`/api/customers/${customerId}/portal-access`, {});
+    expect(access.status).toBe(200);
+    const formerEmployee = await createEmployee(env, office.api, ['customer.list']);
+    const yesterday = addDaysIso(todayIso(), -1);
+    await env.ctx.db.update(contracts).set({ startsAt: addDaysIso(yesterday, -30), expiresAt: yesterday }).where(eq(contracts.officeId, office.officeId));
+
+    // consulta
+    expect((await office.api.get('/api/customers')).status).toBe(200);
+    expect((await office.api.get('/api/office/contracts')).status).toBe(200);
+    expect((await office.api.get(`/api/customers/${customerId}/declarations/${YEAR}`)).status).toBe(200);
+    expect((await office.api.post('/api/customers/export', {})).status).toBe(200);
+    // escrita da equipe bloqueada, com a mensagem para renovar
+    const blocked = await office.api.post('/api/customers', { name: 'Novo', cpfCnpj: VALID_CPFS[5] });
+    expect(blocked.status).toBe(403);
+    expect(blocked.body.error).toMatch(/Nenhum contrato do escritório está vigente.*renovar/);
+    expect((await office.api.put(`/api/customers/${customerId}/identification`, { name: 'Outro nome' })).status).toBe(403);
+    expect((await office.api.del(`/api/customers/${customerId}`)).status).toBe(403);
+    expect((await office.api.put('/api/office', { name: 'Outro escritório' })).status).toBe(403);
+    // login, conta e avisos continuam
+    const login = await env.app.inject({ method: 'POST', url: '/api/auth/login', payload: { email: office.email, password: 'senha-forte-123' } });
+    expect(login.statusCode).toBe(200);
+    expect((await office.api.put('/api/account/profile', { name: 'Ana Dona' })).status).toBe(200);
+    expect((await office.api.put('/api/auth/favorites', { path: '/kanban', label: 'Kanban', favorite: true })).status).toBe(200);
+    expect((await office.api.post('/api/notifications/read-all')).status).toBe(200);
+    // revogar acesso continua possível (segurança)
+    expect((await office.api.del(`/api/employees/${formerEmployee.userId}`)).status).toBe(200);
+    // o portal do cliente não passa pelo bloqueio da equipe
+    const portalLogin = await env.app.inject({ method: 'POST', url: '/api/portal/login', payload: { cpf: VALID_CPFS[4], code: access.body.code } });
+    expect(portalLogin.statusCode).toBe(200);
+    const asCustomer = client(env, portalLogin.json().token);
+    expect((await asCustomer.post('/api/portal/messages', { body: 'Enviei os documentos.' })).status).toBe(201);
+
+    // renovado, volta a gravar
+    await env.ctx.db.insert(contracts).values({ officeId: office.officeId, name: 'Renovação', plan: 'basic', declarationLimit: 100, year: YEAR, startsAt: todayIso(), expiresAt: addDaysIso(todayIso(), 365) });
+    expect((await office.api.post('/api/customers', { name: 'Novo', cpfCnpj: VALID_CPFS[5] })).status).toBe(201);
   });
 });
 

@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, inArray } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, isNull } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
@@ -10,6 +10,7 @@ import {
   copilotOverview,
   formatMoney,
   projectCopilotIrpfm,
+  todayIso,
   type CopilotEntryKind,
 } from '@verifco/shared';
 import type { AppContext } from '../../context';
@@ -33,11 +34,13 @@ async function officeLimit(ctx: AppContext, officeId: string) {
   return copilotLimit(rows.map((c) => ({ plan: c.plan, status: c.status, startsAt: String(c.startsAt), expiresAt: String(c.expiresAt) })));
 }
 
+/** Vagas ocupadas: habilitações ativas de clientes não excluídos. */
 async function activeCount(ctx: AppContext, officeId: string) {
   const [{ n }] = await ctx.db
     .select({ n: count() })
     .from(copilotEnrollments)
-    .where(and(eq(copilotEnrollments.officeId, officeId), eq(copilotEnrollments.status, 'active')));
+    .innerJoin(customers, eq(customers.id, copilotEnrollments.customerId))
+    .where(and(eq(copilotEnrollments.officeId, officeId), eq(copilotEnrollments.status, 'active'), isNull(customers.deletedAt)));
   return n;
 }
 
@@ -156,8 +159,11 @@ export async function copilotRoutes(app: FastifyInstance) {
     if (!enrollment || enrollment.status !== 'active') {
       return { enrolled: false, enrollment: enrollment ?? null, limit: await officeLimit(app.ctx, user.officeId), used: await activeCount(app.ctx, user.officeId) };
     }
-    const year = q.year ?? new Date().getFullYear();
-    const month = q.month ?? (year === new Date().getFullYear() ? new Date().getMonth() + 1 : 12);
+    // ano e mês correntes pelo dia de Brasília
+    const todayStr = todayIso();
+    const [thisYear, thisMonth] = todayStr.split('-').map(Number);
+    const year = q.year ?? thisYear;
+    const month = q.month ?? (year === thisYear ? thisMonth : 12);
     const rows = await db
       .select()
       .from(copilotEntries)
@@ -169,7 +175,6 @@ export async function copilotRoutes(app: FastifyInstance) {
       .innerJoin(files, eq(files.id, documents.fileId))
       .where(and(eq(documents.officeId, user.officeId), eq(documents.customerId, customer.id), eq(documents.category, 'copilot')))
       .orderBy(desc(documents.createdAt));
-    const todayStr = new Date().toISOString().slice(0, 10);
     const bills = rows.filter((r) => r.kind === 'bill');
     return {
       enrolled: true,
@@ -243,6 +248,7 @@ export async function copilotRoutes(app: FastifyInstance) {
     await getCustomerForUser(app.ctx, user, row.customerId);
     await requireActiveEnrollment(app.ctx, user.officeId, row.customerId);
     await db.delete(copilotEntries).where(eq(copilotEntries.id, id));
+    await audit(req, 'delete', 'copilot_entry', id, { customerId: row.customerId, kind: row.kind, year: row.year, month: row.month });
     return { ok: true };
   });
 
@@ -261,6 +267,7 @@ export async function copilotRoutes(app: FastifyInstance) {
       created.push(doc.id);
     }
     if (!created.length) throw badRequest('Selecione ao menos um arquivo.');
+    await audit(req, 'upload', 'copilot_document', customer.id, { count: created.length });
     reply.status(201);
     return { ids: created };
   });
@@ -276,6 +283,7 @@ export async function copilotRoutes(app: FastifyInstance) {
       .returning();
     if (!rows.length) throw notFound('Documento');
     await app.ctx.files.remove(user.officeId, rows[0].fileId);
+    await audit(req, 'delete', 'copilot_document', docId, { customerId: customer.id });
     return { ok: true };
   });
 }

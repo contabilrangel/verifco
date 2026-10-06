@@ -5,7 +5,7 @@
  * alteração são ignoradas e não entram no total do lote.
  */
 import { and, eq, isNull } from 'drizzle-orm';
-import { formatCpfCnpj, isValidCpf, isValidCpfCnpj, isValidEmail, type ImportKind, type ImportRowResult } from '@verifco/shared';
+import { formatCpfCnpj, isValidCpf, isValidCpfCnpj, isValidEmail, todayIso, utcDateIso, type ImportKind, type ImportRowResult } from '@verifco/shared';
 import type { AppContext, AuthUser } from '../../context';
 import { customerGroupMembers, customerGroups, customers, procurators, users } from '../../db/schema';
 import { customerScope } from '../../services/customers';
@@ -73,7 +73,7 @@ const fail = (errors: string[]): RowOutcome => ({ ok: false, message: errors.joi
 /** AAAA-MM-DD que existe no calendário (31/02 não passa). */
 const isRealDate = (iso: string) => {
   const d = new Date(`${iso}T12:00:00Z`);
-  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === iso;
+  return !Number.isNaN(d.getTime()) && utcDateIso(d) === iso;
 };
 
 /** CPF do cliente na linha: obrigatório e válido (aceita CNPJ quando `allowCnpj`). */
@@ -144,7 +144,7 @@ async function newCustomers(ctx: AppContext, user: AuthUser, rows: SheetRow[], l
       g.id,
     ]),
   );
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayIso();
 
   return runRows(
     rows,

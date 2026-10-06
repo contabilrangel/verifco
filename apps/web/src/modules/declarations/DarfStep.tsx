@@ -63,7 +63,7 @@ export function DarfStep() {
   const { can } = useAuth();
   const toast = useToast();
   const qc = useQueryClient();
-  const { declaration, isLoading, ensure } = useDeclaration(customer.id, year);
+  const { declaration, isLoading, error, ensure } = useDeclaration(customer.id, year);
   const q = useApi<DarfList>(['darfs', declaration?.id], declaration?.id ? `/declarations/${declaration.id}/darfs` : null);
   const [generate, setGenerate] = useState(false);
   const [edit, setEdit] = useState<DarfRow | 'new' | null>(null);
@@ -106,7 +106,8 @@ export function DarfStep() {
   };
 
   if (isLoading || (declaration?.id && q.isLoading)) return <Loading />;
-  if (q.error) return <Alert tone="danger">Não foi possível carregar as quotas do DARF.</Alert>;
+  // sem a declaração a etapa não sabe quais quotas buscar: avisa em vez de mostrar a lista vazia
+  if (error || q.error) return <Alert tone="danger">Não foi possível carregar as quotas do DARF.</Alert>;
   const data: DarfList = q.data ?? { autoSendDarfEmail: false, taxDueCents: declaration?.taxDueCents ?? 0, darfs: [] };
   const rows = data.darfs;
   const payable = (d: DarfRow) => d.amount?.totalCents ?? d.valueCents;

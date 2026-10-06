@@ -12,6 +12,7 @@ import {
   Users,
   Wand2,
 } from 'lucide-react';
+import { ADMIN_TABS, type SubTab } from './modules';
 
 export interface NavLink {
   to: string;
@@ -28,6 +29,15 @@ export interface NavGroup {
   to?: string;
   perms?: string[];
   children?: NavLink[];
+}
+
+/**
+ * Permissões que mostram uma página com abas: a união das permissões das abas registradas pelos
+ * módulos (vazio, para todos, se alguma aba não exige permissão).
+ */
+export function tabsPerms(tabs: Pick<SubTab, 'perms'>[]): string[] {
+  if (tabs.some((t) => !t.perms?.length)) return [];
+  return [...new Set(tabs.flatMap((t) => t.perms ?? []))];
 }
 
 export const NAV: NavGroup[] = [
@@ -76,9 +86,20 @@ export const NAV: NavGroup[] = [
     ],
   },
   { id: 'relatorios', label: 'Relatórios', icon: BarChart3, to: '/relatorios', perms: ['report.billing', 'report.results', 'report.backlogs', 'report.refund'] },
-  { id: 'elaboracao', label: 'Elaboração', icon: Wand2, to: '/elaboracao', perms: ['elaboration.export', 'pre_declaration.view'] },
+  // as mesmas permissões que abrem a listagem da elaboração na API (LIST_PERMS em elaboration/routes.ts)
+  { id: 'elaboracao', label: 'Elaboração', icon: Wand2, to: '/elaboracao', perms: ['elaboration.export', 'elaboration.process', 'pre_declaration.view'] },
   { id: 'pre-preenchidas', label: 'Pré-preenchidas', icon: FileStack, to: '/pre-preenchidas', perms: ['prefilled.download'] },
-  { id: 'admin', label: 'Administração', icon: Building2, to: '/admin', perms: ['office.edit', 'settings.view', 'employee.list', 'role.list', 'customer_group.list', 'integrations.manage', 'contracts.view', 'procuration.list', 'procuration.edit', 'procuration.certificate', 'copilot.manage'] },
+  {
+    id: 'admin',
+    label: 'Administração',
+    icon: Building2,
+    to: '/admin',
+    // calculada das abas que os módulos registram; getter porque os módulos importam o Shell (que importa
+    // este arquivo): a lista só é lida na renderização, com todos os módulos já carregados
+    get perms() {
+      return tabsPerms(ADMIN_TABS);
+    },
+  },
   { id: 'backup', label: 'Backup', icon: HardDriveDownload, to: '/backup', perms: ['backup.download'] },
   { id: 'downloads', label: 'Central de downloads', icon: Download, to: '/downloads' },
 ];

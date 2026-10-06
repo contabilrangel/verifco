@@ -1,7 +1,8 @@
 import { and, eq, inArray } from 'drizzle-orm';
+import { currentExerciseYear } from '@verifco/shared';
 import type { AppContext } from '../../context';
 import { aiAnalyses, customers, documents } from '../../db/schema';
-import { AI_LIMITS, FINANCIAL_ADVISOR_PROMPT, attachmentsForAi, completeWithTimeout } from './ai-service';
+import { AI_LIMITS, attachmentsForAi, completeWithTimeout, financialAdvisorPrompt } from './ai-service';
 import { runBackupJob } from './backup';
 import { clientContextText } from './common';
 import { computeRadar } from './radar';
@@ -23,12 +24,12 @@ export async function runFinancialAnalysis(ctx: AppContext, analysisId: string) 
       : [];
     if (!docs.length) throw new Error('Os documentos selecionados não estão mais disponíveis.');
     const att = await attachmentsForAi(ctx, row.officeId, docs.map((d) => d.fileId));
-    const context = await clientContextText(ctx, row.officeId, customer, new Date().getFullYear());
+    const context = await clientContextText(ctx, row.officeId, customer, currentExerciseYear());
     const out = await completeWithTimeout(
       ctx,
       row.officeId,
       {
-        system: `${FINANCIAL_ADVISOR_PROMPT}\n\nContexto do cliente:\n${context}`,
+        system: `${financialAdvisorPrompt()}\n\nContexto do cliente:\n${context}`,
         messages: [
           {
             role: 'user',

@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import ExcelJS from 'exceljs';
 import { backlogs, declarationItems, declarations } from '../src/db/schema';
 import { VALID_CPFS, createEmployee, createTestEnv, registerOffice, type Api, type TestEnv } from './helpers';
@@ -248,6 +248,32 @@ describe('relatórios gerais', () => {
     expect((await readXlsx(x.raw.rawPayload)).worksheets[0].rowCount).toBe(3);
     const emp = await createEmployee(env, api, ['report.results']);
     expect((await emp.api.get('/api/reports/backlogs')).status).toBe(403);
+  });
+
+  it('documentos faltantes: a pendência que vence hoje não aparece vencida às 22h de Brasília (CON-7)', async () => {
+    // só o relógio (Date) é falso: 22h de 06/10/2026 em Brasília, 01h de 07/10 em UTC
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2026-10-07T01:00:00Z'));
+      const { api, officeId } = await registerOffice(env);
+      const c = await newCustomer(api, 6, 'Gil Noturno');
+      const d = await declaration(officeId, c, 2026, { stage: 'filling', substatus: 'missing_documents' });
+      await env.ctx.db.insert(backlogs).values([
+        { officeId, customerId: c, declarationId: d.id, description: 'Vence hoje', dueDate: '2026-10-06' },
+        { officeId, customerId: c, declarationId: d.id, description: 'Venceu ontem', dueDate: '2026-10-05' },
+      ]);
+      const all = await api.get('/api/reports/backlogs?year=2026');
+      expect(all.body.totals).toMatchObject({ items: 2, overdue: 1 });
+      const late = Object.fromEntries(all.body.groups[0].items.map((i: any) => [i.description, i.overdueDays]));
+      expect(late).toEqual({ 'Venceu ontem': 1, 'Vence hoje': 0 });
+      const overdue = await api.get('/api/reports/backlogs?overdueOnly=true');
+      expect(overdue.body.groups[0].items.map((i: any) => i.description)).toEqual(['Venceu ontem']);
+      // a aba de pendências da declaração (brazilToday) concorda com o relatório
+      const tab = await api.get(`/api/declarations/${d.id}/backlogs`);
+      expect(tab.body.filter((b: any) => b.overdue).map((b: any) => b.description)).toEqual(['Venceu ontem']);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('restituição: só futuras e ordenação por data ou nome', async () => {

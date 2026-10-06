@@ -8,6 +8,7 @@ import {
   cashAnalysis,
   compareTaxation,
   computeIrpfm,
+  currentExerciseYear,
   formatMoney,
   irpfmFromItems,
   regularTaxFromDeclaration,
@@ -147,5 +148,5 @@ export async function clientContextText(ctx: AppContext, officeId: string, custo
 
 export const yearQuery = (q: unknown) => {
   const y = Number((q as Record<string, unknown>)?.year);
-  return Number.isInteger(y) && y >= 2000 && y <= 2100 ? y : new Date().getFullYear();
+  return Number.isInteger(y) && y >= 2000 && y <= 2100 ? y : currentExerciseYear();
 };

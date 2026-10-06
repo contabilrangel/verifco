@@ -15,6 +15,7 @@ import { backlogs, checklistSections, checklists, customers, declarationItems, d
 import { forbidden, notFound } from '../lib/errors';
 import { can } from '../lib/http';
 import { getOfficeSettings } from './settings';
+import { assertDeclarationQuota } from './plan';
 
 export type DeclarationRow = typeof declarations.$inferSelect;
 
@@ -48,13 +49,17 @@ export async function getCustomerOr404(db: DbOrTx, officeId: string, customerId:
   return c;
 }
 
-/** A declaração de um cliente num exercício é criada na primeira vez que alguém a usa. */
+/**
+ * A declaração de um cliente num exercício é criada na primeira vez que alguém a usa, dentro do
+ * limite de declarações dos contratos vigentes (services/plan.ts).
+ */
 export async function getOrCreateDeclaration(db: DbOrTx, officeId: string, customerId: string, exerciseYear: number): Promise<DeclarationRow> {
   await getCustomerOr404(db, officeId, customerId);
   const existing = await db.query.declarations.findFirst({
     where: and(eq(declarations.customerId, customerId), eq(declarations.exerciseYear, exerciseYear)),
   });
   if (existing) return existing;
+  await assertDeclarationQuota(db, officeId, exerciseYear);
   const [row] = await db
     .insert(declarations)
     .values({ officeId, customerId, exerciseYear })

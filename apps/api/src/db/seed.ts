@@ -12,10 +12,11 @@
  */
 import { sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
+import { addDaysIso, todayIso } from '@verifco/shared';
 import { buildApp } from '../app';
 import { createContext } from '../bootstrap';
 import { MemoryProviders } from '../integrations/providers';
-import { users } from './schema';
+import { contracts, users } from './schema';
 
 const DEMO_EMAIL = 'demo@verifco.dev';
 const DEMO_PASSWORD = 'verifco-demo-123';
@@ -313,6 +314,18 @@ async function main() {
     website: 'rangel-demo.com.br',
     city: 'Belo Horizonte',
     state: 'MG',
+  });
+  // pacote de demonstração: só com a avaliação de 30 dias, o escritório ficaria em consulta depois do prazo
+  const today = todayIso();
+  await ctx.db.insert(contracts).values({
+    officeId: reg.office.id,
+    name: 'Pacote de demonstração',
+    plan: 'basic',
+    declarationLimit: null,
+    year: Number(today.slice(0, 4)),
+    startsAt: today,
+    expiresAt: addDaysIso(today, 365),
+    hasBackup: true,
   });
   log('escritório criado');
 

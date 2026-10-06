@@ -399,6 +399,7 @@ export async function adminRoutes(app: FastifyInstance) {
       .where(and(eq(customerGroups.id, id), eq(customerGroups.officeId, user.officeId)))
       .returning();
     if (!row) throw notFound('Grupo');
+    await audit(req, 'update', 'customer_group', id, { name: row.name });
     return row;
   });
 

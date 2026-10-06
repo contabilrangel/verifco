@@ -57,7 +57,10 @@ Não há registro central para editar: criar a pasta basta.
 4. **Erros**: lance `badRequest`, `notFound`, `conflict`, `forbidden` (`lib/errors.ts`).
 5. **Auditoria**: ações relevantes chamam `audit(req, acao, entidade, id, dados)`.
 6. **Segredos**: senhas e chaves só cifradas (`ctx.secrets.encrypt`) e nunca devolvidas.
-7. **Dinheiro**: sempre em centavos (inteiro). Datas sem hora em `AAAA-MM-DD`.
+7. **Dinheiro**: sempre em centavos (inteiro). Datas sem hora em `AAAA-MM-DD`. "Hoje" é o dia de
+   Brasília: `todayIso()` e `addDaysIso()` de `@verifco/shared` (nunca `toISOString().slice(0, 10)`
+   nem dias somados em milissegundos; `packages/shared/test/dates.test.ts` recusa o padrão), e data
+   com hora gerada no servidor com `formatDateTimeBr()`.
 
 ### Serviços compartilhados (`src/services/`)
 
@@ -66,6 +69,7 @@ Não há registro central para editar: criar a pasta basta.
 | `customers.ts` | `customerScope`, `getCustomerForUser`, `publicCustomer` |
 | `declarations.ts` | `getOrCreateDeclaration`, `setDeclarationSubstatus`, `advanceDeclaration`, `recomputeTotals`, `listItems`; regras únicas de status: `changeSubstatus` (troca manual, com a permissão de finalizar e a situação eCAC), `syncDeclarationStage` (transmissão e situação eCAC), `syncSubstatus` ("Documentos faltantes"); `refreshDeclaration` (totais e saldo de caixa depois de mudar linhas ou outros gastos). Aceitam o banco ou uma transação aberta (`DbOrTx`; `refreshDeclaration` recebe `{ db }`) |
 | `delivery.ts` | `queueDelivery` (e-mail/WhatsApp por template ou texto, com idempotência e anexos); `createDeliveryBatch` (mala direta: envios, mensagens e jobs gravados em lote). O texto do WhatsApp sai de `htmlToText` (`packages/shared`), o mesmo da prévia e dos PDFs; para montar HTML, use `escapeHtml` de lá |
+| `plan.ts` | contratos vigentes (`planStatus`, `activeContracts`), limite de declarações por exercício (aplicado em `getOrCreateDeclaration`) e modo só consulta com o contrato vencido (hook em `app.ts`) |
 | `pdf.ts` | `PdfBuilder` + `loadBranding` (logo e cores do escritório) |
 | `xlsx.ts` | `buildWorkbook`, `readSheet`, `parseMoneyToCents`, `parseDate` |
 | `settings.ts` | `getOfficeSettings` com os padrões aplicados |

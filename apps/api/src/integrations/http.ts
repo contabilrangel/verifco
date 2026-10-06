@@ -126,10 +126,8 @@ export function errorMessage(err: unknown): string {
   return String(err);
 }
 
-/** AAAA-MM-DD de hoje (fuso de Brasília). */
-export function todayIso(): string {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(new Date());
-}
+/** AAAA-MM-DD de hoje (fuso de Brasília): o mesmo `todayIso` do pacote compartilhado. */
+export { todayIso } from '@verifco/shared';
 
 export const centsToDecimal = (cents: number) => Math.round(cents) / 100;
 export const decimalToCents = (value: number | string) => Math.round(Number(value) * 100);

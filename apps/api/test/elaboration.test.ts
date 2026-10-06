@@ -270,6 +270,28 @@ describe('elaboração', () => {
     expect((await o.api.get('/api/elaboration/jobs')).body[0].result).toMatchObject({ processed: 0, failed: 1 });
   });
 
+  it('pre_declaration.create processa e valida; pre_declaration.edit decide as linhas (COB-13)', async () => {
+    const o = await setup(4);
+    await o.upload('informe.pdf', fakePdf('informe'));
+    const creator = await createEmployee(env, o.api, ['customer.list', 'pre_declaration.view', 'pre_declaration.create']);
+    const editor = await createEmployee(env, o.api, ['customer.list', 'pre_declaration.view', 'pre_declaration.edit']);
+    const viewer = await createEmployee(env, o.api, ['customer.list', 'pre_declaration.view']);
+    const selection = { year: 2026, customerIds: [o.customerId] };
+    for (const u of [creator, editor, viewer]) expect((await u.api.get('/api/elaboration?year=2026')).status).toBe(200);
+    expect((await editor.api.post('/api/elaboration/process', selection)).status).toBe(403);
+    expect((await viewer.api.post('/api/elaboration/process', selection)).status).toBe(403);
+    env.providers.aiReplies.push(informe(1_000_000, 0));
+    expect((await creator.api.post('/api/elaboration/process', selection)).status).toBe(202);
+    await env.ctx.jobs.drain();
+    const docId = (await editor.api.get(`/api/elaboration/customers/${o.customerId}?year=2026`)).body.documents[0].id as string;
+    expect((await creator.api.put(`/api/elaboration/documents/${docId}/lines/0`, { decision: 'accept' })).status).toBe(403);
+    expect((await viewer.api.put(`/api/elaboration/documents/${docId}/lines/0`, { decision: 'accept' })).status).toBe(403);
+    expect((await editor.api.put(`/api/elaboration/documents/${docId}/lines/0`, { decision: 'accept' })).status).toBe(200);
+    expect((await editor.api.post('/api/elaboration/validate', selection)).status).toBe(403);
+    expect((await viewer.api.post('/api/elaboration/validate', selection)).status).toBe(403);
+    expect((await creator.api.post('/api/elaboration/validate', selection)).body.results[0]).toMatchObject({ inserted: 1 });
+  });
+
   it('permissões e isolamento entre escritórios', async () => {
     const o = await setup(3);
     const viewer = await createEmployee(env, o.api, ['customer.list', 'elaboration.export']);

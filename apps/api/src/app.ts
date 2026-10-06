@@ -7,6 +7,7 @@ import { HttpError } from './lib/errors';
 import { fastifyTrustProxy, isInternalAddress } from './lib/proxy';
 import { authPlugin } from './plugins/auth';
 import { registerModules } from './modules';
+import { assertPlanAllowsWrite } from './services/plan';
 import { ROUTE_LIMITS, check, consume, hit, type RouteLimit } from './services/rate-limit';
 
 /**
@@ -106,6 +107,9 @@ export async function buildApp(ctx: AppContext, opts: { logger?: boolean } = {})
     if (!rule || rule.count === 'all' || !ctx.config.RATE_LIMIT || !rule.count.includes(reply.statusCode)) return;
     await hit(ctx, `${rule.group}:${req.ip}`, rule.windowSec).catch((err) => req.log.warn({ err }, 'falha ao registrar tentativa'));
   });
+
+  // contratos do escritório vencidos: a equipe só consulta (services/plan.ts)
+  app.addHook('onRequest', async (req) => assertPlanAllowsWrite(ctx, req));
 
   app.setNotFoundHandler((_req, reply) => reply.status(404).send({ error: 'Rota não encontrada.' }));
 
