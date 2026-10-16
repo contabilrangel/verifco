@@ -67,7 +67,7 @@ function fixLabel(p: ProcuratorAccessItem): string {
 
 /**
  * Alertas de acesso dos procuradores ao eCAC, agrupados por gravidade, com o link para corrigir:
- * Administração › Procuradores para quem administra, ou Minha conta quando o procurador é o próprio
+ * Meu escritório › Procuradores para quem administra, ou Minha conta quando o procurador é o próprio
  * usuário.
  */
 export function ProcuratorAlerts({ data }: { data: ProcuratorAccessData }) {

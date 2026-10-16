@@ -17,7 +17,7 @@ import {
 } from '@verifco/shared';
 import type { AuthUser } from '../../context';
 import { customers, deliveries, emailTemplates, jobs, offices } from '../../db/schema';
-import { activeJob } from '../../jobs/queue';
+import { isJobActive } from '../../jobs/queue';
 import { badRequest, conflict, notFound } from '../../lib/errors';
 import { audit, can, dateStr, guard, paginate, parse, requirePermission, requireUser, uuidParam, yearSchema } from '../../lib/http';
 import { getCustomerForUser } from '../../services/customers';
@@ -233,20 +233,21 @@ export async function communicationRoutes(app: FastifyInstance) {
     return row;
   };
 
-  /** Pode reenviar: falhou, ou ficou "na fila" sem job que ainda vá enviá-lo (o processo caiu). */
+  /**
+   * Pode reenviar: falhou, ou ficou "na fila" sem job que ainda vá enviá-lo (o processo caiu).
+   * O job do envio tem `idempotencyKey` = id do envio (índice único), então uma consulta basta.
+   */
+  const deliveryJob = (deliveryId: string) =>
+    db.query.jobs.findFirst({ where: and(eq(jobs.type, 'delivery.send'), eq(jobs.idempotencyKey, deliveryId)) });
   const resendable = async (d: typeof deliveries.$inferSelect) => {
     if (d.status !== 'failed' && d.status !== 'queued') return false;
+    const job = await deliveryJob(d.id);
     // já entregue ao provedor com código/link: o conteúdo real foi descartado
-    const job = await db.query.jobs.findFirst({ where: and(eq(jobs.type, 'delivery.send'), eq(jobs.idempotencyKey, d.id)) });
     if (job?.payload?.sealedDropped === true) return false;
     if (d.status === 'failed') return true;
-    const active = await db.query.jobs.findFirst({ where: and(eq(jobs.type, 'delivery.send'), sql`${jobs.payload}->>'deliveryId' = ${d.id}`, activeJob()) });
-    return !active;
+    return !job || !isJobActive(job);
   };
-  const contentLost = async (d: typeof deliveries.$inferSelect) => {
-    const job = await db.query.jobs.findFirst({ where: and(eq(jobs.type, 'delivery.send'), eq(jobs.idempotencyKey, d.id)) });
-    return job?.payload?.sealedDropped === true;
-  };
+  const contentLost = async (d: typeof deliveries.$inferSelect) => (await deliveryJob(d.id))?.payload?.sealedDropped === true;
 
   /** Volta envios para a fila pelo job do próprio envio (reaberto, nunca duplicado). */
   const requeueDeliveries = (list: { id: string; officeId: string }[], userId: string) =>
@@ -414,6 +415,10 @@ export async function communicationRoutes(app: FastifyInstance) {
     const job = await findMailingRequest(ctx, user.officeId, requestId);
     if (!job) throw notFound('Envio');
     typePermission(req, String(job.payload.type));
+    // carteira restrita ou sem "E-mails enviados": só acompanha os próprios pedidos (os dos outros
+    // trazem nomes de clientes fora da carteira)
+    const restricted = !user.isOwner && (!can(user, 'mailing.list') || (await getOfficeSettings(ctx.db, user.officeId)).restrictCustomersToResponsible);
+    if (restricted && job.createdByUserId !== user.userId) throw notFound('Envio');
     return mailingRequestView(ctx, job);
   });
 

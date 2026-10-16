@@ -118,7 +118,10 @@ export const ROUTE_LIMITS: Record<string, RouteLimit> = {
 };
 
 /** Webhook do WhatsApp: eventos aceitos por integração (além das falhas por IP de `ROUTE_LIMITS`). */
-export const WHATSAPP_WEBHOOK_RULE: RateRule = { max: 300, windowSec: 60 };
+// Aplicado só depois de validar a assinatura (Meta) ou o token (Evolution); é um teto de segurança,
+// não a defesa contra flood anônimo (essa é o limite por IP). Folgado para o volume de status de uma
+// mala direta grande (enviado/entregue/lido por mensagem), que a Meta ainda agrupa em cada POST.
+export const WHATSAPP_WEBHOOK_RULE: RateRule = { max: 3000, windowSec: 60 };
 
 /** Login da equipe: falhas por e-mail (além do limite por IP). */
 export const LOGIN_EMAIL_RULE: RateRule = { max: 10, windowSec: FIFTEEN_MIN };

@@ -384,8 +384,8 @@ function SimplifiedPanel({ d }: { d: EcacPanel }) {
           <ol className="vf-ecac-steps">
             <li>Associe um procurador ao cliente (aba Identificação).</li>
             <li>Confirme a procuração eletrônica no eCAC, em nome do cliente.</li>
-            <li>Configure e ative o SERPRO em Administração › Integrações.</li>
-            <li>A sincronização automática (quando ligada em Administração › Integrações) emite o relatório a cada 30 dias; “Solicitar sincronização” acima emite na hora. O PDF e a leitura dele aparecem nesta aba.</li>
+            <li>Configure e ative o SERPRO em Meu escritório › Integrações.</li>
+            <li>A sincronização automática (quando ligada em Meu escritório › Integrações) emite o relatório a cada 30 dias; “Solicitar sincronização” acima emite na hora. O PDF e a leitura dele aparecem nesta aba.</li>
           </ol>
         </Alert>
       </div>

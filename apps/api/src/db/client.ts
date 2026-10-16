@@ -20,6 +20,21 @@ export type DbOrTx = PgDatabase<PgliteQueryResultHKT, typeof schema>;
 
 const MIGRATIONS = resolve(dirname(fileURLToPath(import.meta.url)), '../../drizzle');
 
+/** Chave do lock de sessão que serializa as migrações entre réplicas (o mesmo banco responde). */
+const MIGRATION_LOCK_KEY = 472_015;
+
+/** Roda `fn` sob um pg_advisory_lock numa conexão própria: uma réplica migra por vez; as outras esperam. */
+async function withMigrationLock(pool: pg.Pool, fn: () => Promise<unknown>) {
+  const client = await pool.connect();
+  try {
+    await client.query('select pg_advisory_lock($1)', [MIGRATION_LOCK_KEY]);
+    await fn();
+  } finally {
+    await client.query('select pg_advisory_unlock($1)', [MIGRATION_LOCK_KEY]).catch(() => undefined);
+    client.release();
+  }
+}
+
 export interface DbHandle<T = Db> {
   db: T;
   close: () => Promise<void>;
@@ -45,7 +60,9 @@ async function openWithSchema<T extends Record<string, unknown>>(url: string, ta
     try {
       await assertDatabasePurpose(db, platform);
       if ((opts.sync ?? 'migrate') === 'push') await pushFromSchema(tables, db);
-      else await migratePg(drizzlePg(pool), { migrationsFolder });
+      // lock de sessão numa conexão dedicada: com mais de uma réplica subindo junta, só uma roda as
+      // migrações por vez (o drizzle envolve o lote numa transação, mas não toma lock)
+      else await withMigrationLock(pool, () => migratePg(drizzlePg(pool), { migrationsFolder }));
     } catch (error) { await pool.end(); throw error; }
     return { db, close: () => pool.end() };
   }

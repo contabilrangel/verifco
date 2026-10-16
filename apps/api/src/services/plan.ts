@@ -113,7 +113,8 @@ export async function contractUsage(db: DbOrTx, officeId: string, today = todayI
       limit,
       used,
       remaining: limit === null ? null : Math.max(0, limit - used),
-      percent: limit === null ? null : limit === 0 ? 100 : Math.min(100, Math.round((used / limit) * 100)),
+      // 100% só quando o limite foi atingido (199 de 200 mostra 99%, não 100%)
+      percent: limit === null ? null : limit === 0 || used >= limit ? 100 : Math.min(99, Math.round((used / limit) * 100)),
     });
   }
   return {

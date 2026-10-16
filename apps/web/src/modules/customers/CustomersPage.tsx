@@ -605,7 +605,7 @@ function BulkDialogs({
           {(groupList.data ?? []).map((g) => (
             <Checkbox key={g.id} label={g.name} checked={groups.includes(g.id)} onChange={() => setGroups((l) => toggle(l, g.id))} />
           ))}
-          {groupList.data?.length === 0 && <span className="vf-muted">Nenhum grupo cadastrado. Crie grupos em Administração.</span>}
+          {groupList.data?.length === 0 && <span className="vf-muted">Nenhum grupo cadastrado. Crie grupos em Meu escritório.</span>}
         </div>
       )}
     </Modal>

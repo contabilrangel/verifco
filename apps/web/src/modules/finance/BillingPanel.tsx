@@ -217,7 +217,7 @@ function ExternalSyncNotice({ billing, canEmit, onEmit }: { billing: Billing; ca
         {text}
       </Button>
     );
-  const activate = !sync.integrationReady && <span>Ao ativar a integração em Administração › Integrações, a cobrança é emitida automaticamente.</span>;
+  const activate = !sync.integrationReady && <span>Ao ativar a integração em Meu escritório › Integrações, a cobrança é emitida automaticamente.</span>;
   if (sync.status === 'running' || (sync.status === 'queued' && !sync.error)) {
     return <Alert tone="primary">A cobrança está sendo emitida no {label}. Os links de pagamento aparecem aqui assim que ficarem prontos.</Alert>;
   }

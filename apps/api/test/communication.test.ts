@@ -355,7 +355,8 @@ describe('malas diretas recentes', () => {
     await env.ctx.db.update(customers).set({ responsibleUserId: acc.userId }).where(inArray(customers.id, [mine, noEmail]));
     await o.api.put('/api/office/settings', { restrictCustomersToResponsible: true });
 
-    const ownerRun = await o.api.post('/api/mailing/send', { type: 'monthly', channel: 'email', year: 2026, customerIds: [mine, theirs], requestId: uuid() });
+    const ownerReq = uuid();
+    const ownerRun = await o.api.post('/api/mailing/send', { type: 'monthly', channel: 'email', year: 2026, customerIds: [mine, theirs], requestId: ownerReq });
     const accRun = await acc.api.post('/api/mailing/send', { type: 'monthly', channel: 'email', year: 2026, requestId: uuid() });
     expect(accRun.status).toBe(202);
     expect(accRun.body.customers).toBe(1);
@@ -367,6 +368,9 @@ describe('malas diretas recentes', () => {
 
     expect((await acc.api.get('/api/mailing/runs')).body.map((r: any) => r.id)).toEqual([accRun.body.jobId]);
     expect((await acc.api.get(`/api/mailing/runs/${ownerRun.body.jobId}`)).status).toBe(404);
+    // o acompanhamento por requestId também respeita a carteira: o pedido do dono traz nomes de fora
+    expect((await acc.api.get(`/api/mailing/requests/${ownerReq}`)).status).toBe(404);
+    expect((await acc.api.get(`/api/mailing/requests/${accRun.body.requestId}`)).status).toBe(200);
     const detail = (await acc.api.get(`/api/mailing/runs/${accRun.body.jobId}`)).body;
     expect(detail.failures).toEqual({ count: 1, items: [{ customerId: mine, name: 'Dora Minha', channel: 'email', stage: 'delivery', message: 'Caixa cheia' }] });
     // quem ficou de fora na revisão aparece só na contagem

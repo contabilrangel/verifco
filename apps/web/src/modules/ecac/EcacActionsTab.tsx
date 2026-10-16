@@ -106,7 +106,7 @@ export function EcacActionsTab() {
           <span>A extensão não respondeu nesta página. Para usar as Ações eCAC:</span>
           <ol className="vf-ecac-steps">
             <li>Abra a Central de downloads e siga as instruções da extensão para Chrome, Edge ou Opera.</li>
-            <li>Na extensão, informe o endereço do Verifco e um token do tipo “Extensão” (Administração › Robô).</li>
+            <li>Na extensão, informe o endereço do Verifco e um token do tipo “Extensão” (Meu escritório › Robô).</li>
             <li>Recarregue esta página e clique em “Acessar” de novo.</li>
           </ol>
         </div>

@@ -152,7 +152,7 @@ export function DarfStep() {
             Imposto a pagar na declaração: <strong style={{ color: 'var(--color-text-high)' }}>{formatMoney(data.taxDueCents)}</strong>
           </span>
           <span>·</span>
-          <span>Envio automático por e-mail ao anexar o PDF: {data.autoSendDarfEmail ? 'ligado' : 'desligado'} (Administração › Preferências)</span>
+          <span>Envio automático por e-mail ao anexar o PDF: {data.autoSendDarfEmail ? 'ligado' : 'desligado'} (Meu escritório › Preferências)</span>
         </div>
         {rows.length === 0 ? (
           <EmptyState

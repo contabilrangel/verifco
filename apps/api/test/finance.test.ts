@@ -602,6 +602,21 @@ describe('orçamentos em lote', () => {
     expect(refused.results[0].message).toContain('código do orçamento');
     expect(await env.ctx.db.select().from(billings).where(eq(billings.officeId, officeId))).toHaveLength(1);
   });
+
+  it('o lote não fica "processando" para sempre se o processo cair antes de rodar', async () => {
+    const { api, token, officeId } = await setup('Escritório Queda');
+    const sheet = await buildWorkbook([{ name: 'Orçamentos', columns: ['CPF/CNPJ', 'Valor'].map((h, i) => ({ header: h, key: `c${i}` })), rows: [{ c0: VALID_CPFS[0], c1: '100,00' }] }]);
+    const mp = multipart({ year: '2026' }, { name: 'orcamentos.xlsx', data: sheet, type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const res = await env.app.inject({ method: 'POST', url: '/api/finance/budget-import', payload: mp.payload, headers: { ...mp.headers, authorization: `Bearer ${token}` } });
+    const batchId = res.json().id;
+    const job = (await env.ctx.db.query.jobs.findFirst({ where: and(eq(jobs.type, 'finance.budget_import'), eq(jobs.idempotencyKey, batchId)) }))!;
+    // o processo pegou o job e caiu na única tentativa (lease vencido): a fila o marca como falho
+    await env.ctx.db.update(jobs).set({ status: 'running', attempts: job.maxAttempts, lockedAt: new Date(Date.now() - 3600_000) }).where(eq(jobs.id, job.id));
+    await env.ctx.jobs.drain();
+    const batch = (await api.get(`/api/finance/budget-import/batches/${batchId}`)).body;
+    expect(batch.status).toBe('failed');
+    expect(batch.results[0].message).toMatch(/não foi concluída/i);
+  });
 });
 
 /** CPF válido: os 9 dígitos informados mais os dígitos verificadores. */

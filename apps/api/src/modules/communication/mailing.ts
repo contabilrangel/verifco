@@ -583,7 +583,12 @@ async function queueChunk(
   for (const e of chunk) {
     const pending = pendingOf(e);
     result.alreadyQueued += e.channels.length - pending.length;
-    if (!pending.length || (ownLink && pending.length < e.channels.length)) continue;
+    if (!pending.length) continue;
+    // link/código é único: quem já recebeu num canal não ganha outro par (invalidaria o primeiro)
+    if (ownLink && pending.length < e.channels.length) {
+      result.alreadyQueued += pending.length;
+      continue;
+    }
     try {
       let values: BulkDeliveryItem['values'] = e.values;
       let redact: string[] | undefined;

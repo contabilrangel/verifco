@@ -174,7 +174,9 @@ read -r -p 'E-mail: ' PLATFORM_OWNER_EMAIL
 read -r -s -p 'Senha (mínimo 12 caracteres): ' PLATFORM_OWNER_PASSWORD
 printf '\n'
 export PLATFORM_OWNER_NAME PLATFORM_OWNER_EMAIL PLATFORM_OWNER_PASSWORD
-pnpm platform:owner
+# o container roda como usuário `node`, que não tem o pnpm do build (fica no cache do root):
+# chame o script direto pelo node, como o próprio CMD da imagem faz
+node --import tsx src/db/platform-owner.ts
 unset PLATFORM_OWNER_NAME PLATFORM_OWNER_EMAIL PLATFORM_OWNER_PASSWORD
 ```
 

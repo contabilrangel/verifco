@@ -22,7 +22,10 @@ export function BudgetImportPage() {
   const [file, setFile] = useState<File | null>(null);
   const [result, setResult] = useState<ImportBatch | null>(null);
   const [downloading, setDownloading] = useState(false);
-  const batches = useApi<ImportBatch[]>(KEY, can('worksheet.budget') ? '/finance/budget-import/batches' : null);
+  const batches = useApi<ImportBatch[]>(KEY, can('worksheet.budget') ? '/finance/budget-import/batches' : null, {
+    // enquanto algum lote está sendo processado (inclusive de outra aba ou visita), atualiza sozinho
+    refetchInterval: (q) => (q.state.data?.some((b) => b.status === 'processing') ? 3000 : false),
+  });
 
   const upload = useAction((f: File) => api.upload<ImportBatch>('/finance/budget-import', f, { year }), {
     success: 'Planilha recebida: a importação continua em segundo plano.',

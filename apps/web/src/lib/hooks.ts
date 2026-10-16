@@ -4,12 +4,16 @@ import { ApiError, api, errorMessage } from './api';
 import { useToast } from '../ds';
 
 /** GET tipado com cache do React Query. */
-export function useApi<T>(key: QueryKey, path: string | null, opts: { enabled?: boolean; refetchInterval?: number } = {}) {
+export function useApi<T>(
+  key: QueryKey,
+  path: string | null,
+  opts: { enabled?: boolean; refetchInterval?: number | false | ((query: { state: { data: T | undefined } }) => number | false) } = {},
+) {
   return useQuery<T>({
     queryKey: key,
     queryFn: () => api.get<T>(path!),
     enabled: path !== null && (opts.enabled ?? true),
-    refetchInterval: opts.refetchInterval,
+    refetchInterval: opts.refetchInterval as never,
   });
 }
 

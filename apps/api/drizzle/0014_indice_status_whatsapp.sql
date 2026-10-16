@@ -1,0 +1,1 @@
+CREATE INDEX "deliveries_provider_msg_idx" ON "deliveries" USING btree ("office_id","provider_message_id");

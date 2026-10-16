@@ -1,4 +1,11 @@
-/** Transferência única do arquivo preservado pela migração 0007. Originais são mantidos para recuperação. */
+/**
+ * Transferência única do arquivo preservado pela migração 0007 para o banco separado da plataforma.
+ * Depois da transferência (ou quando ela já foi feita antes), o schema `legacy_platform` é removido
+ * do banco do escritório: ele guarda hashes de senha e chaves de IA cifradas e, se o
+ * PLATFORM_DATABASE_URL passasse a apontar para um banco vazio, seria reimportado em silêncio,
+ * ressuscitando contas antigas (inclusive desativadas ou com chave trocada). A fonte viva passa a
+ * ser o banco da plataforma. Em caso de conflito (destino já com dados), nada é removido.
+ */
 import { eq, getTableColumns, getTableName, sql } from 'drizzle-orm';
 import type { PgTable } from 'drizzle-orm/pg-core';
 import type { Db, PlatformDb } from './client';
@@ -7,7 +14,7 @@ import { platformUsers, platformAiConnections, platformSettings, platformAuditLo
 export async function importLegacyPlatform(source: Db, destination: PlatformDb) {
   const exists = await source.execute<{ table_name: string | null }>(sql`select to_regclass('legacy_platform.platform_users')::text as table_name`);
   if (!exists.rows[0]?.table_name) return false;
-  return destination.transaction(async (tx) => {
+  const imported = await destination.transaction(async (tx) => {
     // Mesmo lock do bootstrap de proprietário; importação e criação de conta não podem competir.
     await tx.execute(sql`select pg_advisory_xact_lock(728103)`);
     const settings = await tx.query.platformSettings.findFirst({ where: eq(platformSettings.id, 'global') });
@@ -40,4 +47,8 @@ export async function importLegacyPlatform(source: Db, destination: PlatformDb) 
     });
     return true;
   });
+  // concluída sem conflito: o banco da plataforma é agora a fonte viva; o arquivo com os segredos sai
+  // do banco do escritório (e, removido, não pode ser reimportado em silêncio num banco vazio)
+  await source.execute(sql`drop schema if exists legacy_platform cascade`);
+  return imported;
 }

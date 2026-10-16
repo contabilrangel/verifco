@@ -165,7 +165,7 @@ export function BudgetStep() {
               {approvalWithoutIntegration && (
                 <Alert tone="warning">
                   A integração {approvalWithoutIntegration} não está ativa: o orçamento será aprovado, mas a cobrança só será emitida no {approvalWithoutIntegration} quando a integração for
-                  ativada em Administração › Integrações.
+                  ativada em Meu escritório › Integrações.
                 </Alert>
               )}
             </div>

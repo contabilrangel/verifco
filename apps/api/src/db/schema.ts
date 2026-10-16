@@ -629,6 +629,8 @@ export const deliveries = pgTable(
     index('deliveries_office_idx').on(t.officeId, t.createdAt),
     uniqueIndex('deliveries_idempotency_uq').on(t.officeId, t.idempotencyKey),
     index('deliveries_customer_idx').on(t.customerId, t.createdAt),
+    // casamento dos status do WhatsApp (webhook da Meta) pelo id da mensagem no provedor
+    index('deliveries_provider_msg_idx').on(t.officeId, t.providerMessageId),
   ],
 );
 

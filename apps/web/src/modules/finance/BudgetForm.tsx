@@ -354,7 +354,7 @@ export function BudgetFormModal({
               }}
               options={methods.map((m) => ({ value: m.id, label: m.name }))}
               error={f.type === 'integration' && !['asaas', 'omie'].includes(method?.type ?? '') ? 'Escolha uma cobrança Asaas ou Omie' : undefined}
-              help={inactiveProvider ? `A integração ${inactiveProvider} não está ativa: a cobrança só é emitida depois de ativá-la em Administração › Integrações.` : undefined}
+              help={inactiveProvider ? `A integração ${inactiveProvider} não está ativa: a cobrança só é emitida depois de ativá-la em Meu escritório › Integrações.` : undefined}
             />
             <Input label="Data inicial da cobrança" type="date" value={f.billingStartDate} onChange={(e) => set('billingStartDate', e.target.value)} help="Vencimento da 1ª parcela." />
             <Select

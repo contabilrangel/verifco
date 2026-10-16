@@ -99,6 +99,13 @@
       "when": 1792117898480,
       "tag": "0013_envios_sem_conteudo_real",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1792120402601,
+      "tag": "0014_indice_status_whatsapp",
+      "breakpoints": true
     }
   ]
 }

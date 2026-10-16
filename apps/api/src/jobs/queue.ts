@@ -485,12 +485,16 @@ export class JobQueue {
       .catch(() => undefined);
   }
 
-  /** Devolve à fila os jobs que este processo não vai terminar (desligamento). */
+  /**
+   * Devolve à fila os jobs que este processo não vai terminar (desligamento). Como é uma devolução
+   * cooperativa (não uma falha), estorna a tentativa que o `claim` contou: um deploy no meio de um
+   * job pesado não gasta uma das tentativas dele.
+   */
   private async release(list: JobRow[]) {
     for (const job of list) {
       await this.db
         .update(jobs)
-        .set({ status: 'queued', lockedAt: null, lockToken: null, runAt: new Date() })
+        .set({ status: 'queued', lockedAt: null, lockToken: null, runAt: new Date(), attempts: sql`greatest(${jobs.attempts} - 1, 0)` })
         .where(ownRound(job))
         .catch(() => undefined);
     }

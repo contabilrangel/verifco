@@ -85,7 +85,7 @@ function PermissionsCard({ me }: { me: Me }) {
           <p className="vf-muted vf-text-xs">
             {me.user.isOwner
               ? 'Como dono da conta, você tem acesso a tudo.'
-              : 'Somente leitura. As permissões vêm da sua função; quem administra o escritório pode alterá-las em Administração › Funções.'}
+              : 'Somente leitura. As permissões vêm da sua função; quem administra o escritório pode alterá-las em Meu escritório › Funções.'}
           </p>
           {withAccess
             .filter((c) => c.on.length > 0)
@@ -168,7 +168,7 @@ function PasswordCard() {
 
 /**
  * Se o usuário é procurador cadastrado: forma de autenticação e certificado A1, que ele mesmo
- * configura aqui (sem precisar das permissões de Administração › Procuradores).
+ * configura aqui (sem precisar das permissões de Meu escritório › Procuradores).
  */
 function ProcuratorCard() {
   const { can } = useAuth();
@@ -183,7 +183,7 @@ function ProcuratorCard() {
         ))}
         {can('procuration.edit', 'procuration.certificate') && (
           <Link to="/admin/procuradores" className="vf-text-sm-bold">
-            Gerenciar todos em Administração › Procuradores
+            Gerenciar todos em Meu escritório › Procuradores
           </Link>
         )}
       </div>

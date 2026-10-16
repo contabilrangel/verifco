@@ -115,7 +115,10 @@ it('preserva e transfere a administração antiga com IDs, hash, chave cifrada, 
     expect(secrets.decryptJson(copied.secretsEnc)).toEqual({ apiKey: 'legacy-secret' });
     expect((await destination.db.query.platformSettings.findFirst())!).toMatchObject({ defaultAiId: connection.id, legacyImportedAt: expect.any(Date) });
     expect((await destination.db.select().from(platformAuditLogs))[0]).toMatchObject({ actorId: account.id, action: 'legacy.audit' });
+    // concluída a transferência, o arquivo com os hashes e as chaves sai do banco do escritório
+    expect((await client.query<{ t: string | null }>(`select to_regclass('legacy_platform.platform_users')::text as t`)).rows[0].t).toBeNull();
     await destination.db.update(platformAiConnections).set({ model: 'modelo-novo' }).where(eq(platformAiConnections.id, connection.id));
+    // sem o arquivo, não há reimportação silenciosa (nem num banco de plataforma vazio)
     expect(await importLegacyPlatform(source, destination.db)).toBe(false);
     expect((await destination.db.query.platformAiConnections.findFirst())!.model).toBe('modelo-novo');
   } finally {
