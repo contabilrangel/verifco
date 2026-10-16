@@ -504,6 +504,14 @@ describe('login do procurador dono do certificado (INT-15)', () => {
     p = await procurator(office.cert.id);
     expect(p.loginStatus).toBe('expired');
     expect(await dashboardLogin(office.api)).toMatchObject({ loginOk: 0, loginError: 1 });
+
+    // salvar de novo sem mudar a validade mantém o resultado; certificado renovado volta a "sem verificação"
+    const body = { name: p.name, cpfCnpj: p.cpfCnpj };
+    expect((await office.api.put(`/api/procurators/${p.id}`, { ...body, certificateExpiresAt: '2020-01-31' })).status).toBe(200);
+    expect((await procurator(p.id)).loginStatus).toBe('expired');
+    expect((await office.api.put(`/api/procurators/${p.id}`, { ...body, certificateExpiresAt: '2099-06-30' })).status).toBe(200);
+    p = await procurator(p.id);
+    expect(p).toMatchObject({ loginStatus: 'unknown', lastValidatedAt: null });
   });
 
   it('o uso pelo robô também grava o login', async () => {
@@ -515,5 +523,36 @@ describe('login do procurador dono do certificado (INT-15)', () => {
     const p = await procurator(office.cert.id);
     expect(p.loginStatus).toBe('ok');
     expect(p.lastValidatedAt).toBeInstanceOf(Date);
+  });
+});
+
+describe('avisos de mudança do robô', () => {
+  it('a primeira sincronização só registra; as seguintes avisam uma vez por cliente, não uma por mensagem', async () => {
+    const office = await officeWithSerpro();
+    await office.addCustomer('Rui Caixa Postal', VALID_CPFS[3]);
+    const message = (i: number) => ({ isn: `00099${String(i).padStart(5, '0')}`, assuntoModelo: `Aviso ${i}`, valorParametroAssunto: '', dataEnvio: '20260408', indicadorLeitura: '0', dataLeitura: '', relevancia: '1', descricaoOrigem: 'RECEITA FEDERAL DO BRASIL' });
+    let total = 6;
+    env.providers.fetch = serproGateway((c) => {
+      if (c.servico === 'OBTERPROCURACAO41') return procurationOk;
+      if (c.servico === 'INNOVAMSG63') return { dados: { codigo: '00', conteudo: [{ indicadorMensagensNovas: '1' }] } };
+      if (c.servico === 'MSGCONTRIBUINTE61') {
+        return { dados: { codigo: '00', conteudo: [{ quantidadeMensagens: String(total), indicadorUltimaPagina: 'S', listaMensagens: Array.from({ length: total }, (_, i) => message(i)) }] } };
+      }
+      if (c.servico === 'SOLICITARPROTOCOLO91') return { dados: { protocoloRelatorio: 'P', tempoEspera: 10 } };
+      if (c.servico === 'RELATORIOSITFIS92') return { dados: [{ pdf: pdf.toString('base64') }] };
+      return { dados: [] };
+    }).fn;
+    const changes = async () => (await office.api.get('/api/notifications')).body.filter((n: any) => n.title === 'Mudança no eCAC: Rui Caixa Postal');
+
+    expect((await office.api.post('/api/robot/sync-office')).status).toBe(202);
+    await env.ctx.jobs.drain();
+    expect(await changes()).toHaveLength(0);
+
+    total = 8;
+    expect((await office.api.post('/api/robot/sync-office')).status).toBe(202);
+    await env.ctx.jobs.drain();
+    const notes = await changes();
+    expect(notes).toHaveLength(1);
+    expect(notes[0].body).toBe('Caixa postal: 8 mensagem(ns) não lida(s) (antes 6)');
   });
 });

@@ -2,13 +2,15 @@ import { ClipboardList, FileSpreadsheet, FolderOpen, LayoutDashboard, Receipt } 
 import { KANBAN_PERMISSIONS } from '@verifco/shared';
 import { HomeRoute, RequirePermission } from '../../app/access';
 import type { VerifcoModule } from '../../app/modules';
-import { BacklogsStep } from './BacklogsStep';
-import { CustomerDashboardTab } from './CustomerDashboardTab';
-import { DarfStep } from './DarfStep';
-import { DashboardPage } from './DashboardPage';
-import { DeclarationStep } from './DeclarationStep';
-import { DocumentsStep } from './DocumentsStep';
-import { KanbanPage } from './KanbanPage';
+import { lazyPage } from '../../lib/lazy';
+
+const BacklogsStep = lazyPage(() => import('./BacklogsStep'), 'BacklogsStep');
+const CustomerDashboardTab = lazyPage(() => import('./CustomerDashboardTab'), 'CustomerDashboardTab');
+const DarfStep = lazyPage(() => import('./DarfStep'), 'DarfStep');
+const DashboardPage = lazyPage(() => import('./DashboardPage'), 'DashboardPage');
+const DeclarationStep = lazyPage(() => import('./DeclarationStep'), 'DeclarationStep');
+const DocumentsStep = lazyPage(() => import('./DocumentsStep'), 'DocumentsStep');
+const KanbanPage = lazyPage(() => import('./KanbanPage'), 'KanbanPage');
 
 /** Núcleo do IRPF: dashboard, Kanban, painel do cliente e etapas da declaração. */
 export const module: VerifcoModule = {

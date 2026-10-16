@@ -3,11 +3,11 @@ import { SITFIS_STATUS, addDaysIso as addDays, brazilToday, ecacAutoSyncPeriod, 
 import type { AppContext } from '../../context';
 import type { Db } from '../../db/client';
 import { auditLogs, customers, darfs, ecacRecords, integrations, jobs, procurators } from '../../db/schema';
-import { WAIT_FOR_CHILDREN, type JobHelpers, type JobRow } from '../../jobs/queue';
+import { WAIT_FOR_CHILDREN, activeJob, type JobHelpers, type JobRow } from '../../jobs/queue';
 import type { CustomerRow } from '../../services/customers';
 import { notify } from '../../services/notify';
 import { uploadedFromBase64 } from '../../services/uploads';
-import { saveEcacRecord } from './records';
+import { createEcacChangeBatch, flushEcacChanges, saveEcacRecord, type EcacChangeBatch } from './records';
 import {
   SERPRO_SERVICES,
   findField,
@@ -71,6 +71,25 @@ export interface SyncOptions {
  * (malha, processamento, lote de restituição) nem emite CND de pessoa física.
  */
 export async function syncCustomerViaSerpro(ctx: AppContext, client: SerproClient, customer: CustomerRow, opts: SyncOptions = {}) {
+  // as mudanças da sincronização inteira viram um aviso só; a primeira sincronização pelo robô
+  // registra a situação inicial e não avisa nada (não é mudança)
+  const [{ previous }] = await ctx.db
+    .select({ previous: count() })
+    .from(ecacRecords)
+    .where(and(eq(ecacRecords.customerId, customer.id), eq(ecacRecords.source, 'serpro')));
+  const batch = createEcacChangeBatch();
+  // a caixa postal compara com o contador de antes da sincronização (o indicador do SERPRO, gravado
+  // no meio dela, é 0, 1 ou 2 e não a quantidade de mensagens)
+  const fresh = (await ctx.db.query.customers.findFirst({ where: eq(customers.id, customer.id) })) ?? customer;
+  batch.set(customer.id, { customer: fresh, record: null, changes: [], mailboxBefore: fresh.ecacMailboxMessages, mailboxAfter: null });
+  try {
+    return await runCustomerSync(ctx, client, customer, opts, batch);
+  } finally {
+    if (previous > 0) await flushEcacChanges(ctx, batch);
+  }
+}
+
+async function runCustomerSync(ctx: AppContext, client: SerproClient, customer: CustomerRow, opts: SyncOptions, batch: EcacChangeBatch) {
   const { db } = ctx;
   if (!customer.procuratorId) throw new Error('Cliente sem procurador associado: associe um procurador para consultar a procuração eletrônica.');
   const procurator = await db.query.procurators.findFirst({ where: eq(procurators.id, customer.procuratorId) });
@@ -93,6 +112,7 @@ export async function syncCustomerViaSerpro(ctx: AppContext, client: SerproClien
   const procInfo = proc.pending ? null : interpretProcuration(proc.dados, today);
   // um registro por cliente, atualizado a cada sincronização (a rotina diária não acumula cópias)
   await saveEcacRecord(ctx, {
+    batch,
     officeId: customer.officeId,
     customer,
     kind: 'procuration',
@@ -110,6 +130,7 @@ export async function syncCustomerViaSerpro(ctx: AppContext, client: SerproClien
   const mail = await client.call({ ...SERPRO_SERVICES.mailboxIndicator, contribuinte: customer.cpfCnpj, dados: '' });
   const unread = mail.pending ? null : interpretMailbox(mail.dados);
   await saveEcacRecord(ctx, {
+    batch,
     officeId: customer.officeId,
     customer,
     kind: 'other',
@@ -136,14 +157,14 @@ export async function syncCustomerViaSerpro(ctx: AppContext, client: SerproClien
       steps.push(`${label}: falhou (${errMsg(err)})`);
     }
   };
-  await step('mensagens da caixa postal', () => syncMailbox(ctx, client, customer, unread, thorough));
-  await step('situação fiscal', () => syncFiscalSituation(ctx, client, customer, today, thorough));
+  await step('mensagens da caixa postal', () => syncMailbox(ctx, client, customer, unread, thorough, batch));
+  await step('situação fiscal', () => syncFiscalSituation(ctx, client, customer, today, thorough, batch));
   await step('pagamentos do DARF', () => syncPayments(ctx, client, customer, today, thorough));
   return { customerId: customer.id, steps, warnings };
 }
 
 /** Lista da caixa postal (bilhetada): só com mensagem nova, alguma ainda não lida no Verifco ou pedido manual. */
-async function syncMailbox(ctx: AppContext, client: SerproClient, customer: CustomerRow, indicator: number | null, thorough: boolean) {
+async function syncMailbox(ctx: AppContext, client: SerproClient, customer: CustomerRow, indicator: number | null, thorough: boolean, batch: EcacChangeBatch) {
   const [{ unreadStored }] = await ctx.db
     .select({ unreadStored: count() })
     .from(ecacRecords)
@@ -156,6 +177,7 @@ async function syncMailbox(ctx: AppContext, client: SerproClient, customer: Cust
   let created = 0;
   for (const m of list) {
     const saved = await saveEcacRecord(ctx, {
+      batch,
       officeId: customer.officeId,
       customer,
       kind: 'mailbox_message',
@@ -195,7 +217,7 @@ const sitfisStep = (reading: SitfisReading) =>
  * Relatório de situação fiscal (SITFIS): pede o protocolo, espera o tempo indicado, grava o PDF e a
  * leitura dele. A leitura nunca impede a gravação: o PDF é a fonte da verdade.
  */
-async function syncFiscalSituation(ctx: AppContext, client: SerproClient, customer: CustomerRow, today: string, thorough: boolean) {
+async function syncFiscalSituation(ctx: AppContext, client: SerproClient, customer: CustomerRow, today: string, thorough: boolean, batch: EcacChangeBatch) {
   const last = await ctx.db.query.ecacRecords.findFirst({
     where: and(eq(ecacRecords.customerId, customer.id), eq(ecacRecords.kind, 'fiscal_situation'), eq(ecacRecords.source, 'serpro')),
     orderBy: desc(ecacRecords.fetchedAt),
@@ -222,6 +244,7 @@ async function syncFiscalSituation(ctx: AppContext, client: SerproClient, custom
     if (!file || file.data.subarray(0, 5).toString('latin1') !== '%PDF-') return 'situação fiscal: a resposta do SERPRO não trouxe o PDF do relatório';
     const reading = readSitfisReport(file.data);
     await saveEcacRecord(ctx, {
+      batch,
       officeId: customer.officeId,
       customer,
       kind: 'fiscal_situation',
@@ -446,6 +469,19 @@ export async function nextScheduledOfficeSync(db: Db, officeId: string) {
   return row?.runAt ?? null;
 }
 
+/**
+ * Outra sincronização geral do escritório na vez ou em andamento (o pai esperando os clientes
+ * conta como em andamento); a rodada agendada para depois não conta.
+ */
+async function otherOfficeSyncActive(db: Db, officeId: string, jobId: string) {
+  const [row] = await db
+    .select({ id: jobs.id })
+    .from(jobs)
+    .where(and(eq(jobs.officeId, officeId), eq(jobs.type, ECAC_SYNC_OFFICE), ne(jobs.id, jobId), lte(jobs.runAt, new Date()), activeJob()))
+    .limit(1);
+  return Boolean(row);
+}
+
 /** Última sincronização geral já iniciada ou na vez (a rodada agendada para depois não conta). */
 export async function latestOfficeSync(db: Db, officeId: string) {
   const [row] = await db
@@ -514,6 +550,9 @@ export async function registerJobs(ctx: AppContext) {
       const day = autoRunDay(job);
       await scheduleEcacAutoSync(ctx, officeId, { afterDay: day });
       if (setting.mode !== trigger || !isEcacAutoSyncDay(setting, day)) return { skipped: true, reason: 'A frequência da sincronização automática mudou: vale a próxima rodada agendada.' };
+      // uma sincronização geral (ex.: pedida no robô) ainda com clientes em andamento: a rodada não
+      // repete as consultas bilhetadas do SERPRO para os mesmos clientes
+      if (await otherOfficeSyncActive(db, officeId, job.id)) return { skipped: true, reason: 'Já havia uma sincronização geral em andamento: esta rodada não repetiu as consultas.' };
     }
     return fanOutOfficeSync(ctx, job, helpers);
   }, {

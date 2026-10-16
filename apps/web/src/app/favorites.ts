@@ -15,5 +15,5 @@ export function visibleFavorites(list: readonly Favorite[] | undefined): Favorit
 /** O favorito corresponde à página aberta (caminho e busca exatos). */
 export const isCurrentFavorite = (f: Favorite, location: { pathname: string; search: string }) => f.path === location.pathname + location.search;
 
-/** Nome do favorito: título da página e, quando houver, a aba aberta ("Administração › Colaboradores"). */
+/** Nome do favorito: título da página e, quando houver, a aba aberta ("Meu escritório › Colaboradores"). */
 export const favoriteLabel = (title: string, section?: string) => (section && section !== title ? `${title} › ${section}` : title).slice(0, 200);

@@ -118,10 +118,19 @@ export const ROUTE_LIMITS: Record<string, RouteLimit> = {
 };
 
 /** Webhook do WhatsApp: eventos aceitos por integração (além das falhas por IP de `ROUTE_LIMITS`). */
-export const WHATSAPP_WEBHOOK_RULE: RateRule = { max: 300, windowSec: 60 };
+// Aplicado só depois de validar a assinatura (Meta) ou o token (Evolution); é um teto de segurança,
+// não a defesa contra flood anônimo (essa é o limite por IP). Folgado para o volume de status de uma
+// mala direta grande (enviado/entregue/lido por mensagem), que a Meta ainda agrupa em cada POST.
+export const WHATSAPP_WEBHOOK_RULE: RateRule = { max: 3000, windowSec: 60 };
 
 /** Login da equipe: falhas por e-mail (além do limite por IP). */
 export const LOGIN_EMAIL_RULE: RateRule = { max: 10, windowSec: FIFTEEN_MIN };
+/**
+ * Login do painel do sistema: só as falhas contam. Por e-mail + IP, para que tentativas de outros
+ * endereços não bloqueiem o dono; e um teto por e-mail bem mais alto, contra ataque distribuído.
+ */
+export const PLATFORM_LOGIN_RULE: RateRule = { max: 10, windowSec: FIFTEEN_MIN };
+export const PLATFORM_LOGIN_EMAIL_RULE: RateRule = { max: 100, windowSec: FIFTEEN_MIN };
 /** Falhas seguidas que bloqueiam o CPF (portal) ou o link do checklist. */
 export const LOGIN_MAX_FAILURES = 5;
 /**

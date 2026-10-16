@@ -1,12 +1,14 @@
 import { Receipt, Wallet } from 'lucide-react';
 import type { VerifcoModule } from '../../app/modules';
-import { BillingReportPage } from './BillingReport';
-import { BudgetImportPage } from './BudgetImportPage';
-import { BudgetStep } from './BudgetStep';
-import { PaymentMethodsPage } from './PaymentMethodsPage';
-import { PriceTablesPage } from './PriceTablesPage';
-import { PublicBudgetPage } from './PublicBudgetPage';
+import { lazyPage } from '../../lib/lazy';
 import './finance.css';
+
+const BillingReportPage = lazyPage(() => import('./BillingReport'), 'BillingReportPage');
+const BudgetImportPage = lazyPage(() => import('./BudgetImportPage'), 'BudgetImportPage');
+const BudgetStep = lazyPage(() => import('./BudgetStep'), 'BudgetStep');
+const PaymentMethodsPage = lazyPage(() => import('./PaymentMethodsPage'), 'PaymentMethodsPage');
+const PriceTablesPage = lazyPage(() => import('./PriceTablesPage'), 'PriceTablesPage');
+const PublicBudgetPage = lazyPage(() => import('./PublicBudgetPage'), 'PublicBudgetPage');
 
 /** Financeiro: métodos, tabelas, orçamento/faturamento do cliente, relatório e lote. */
 export const module: VerifcoModule = {

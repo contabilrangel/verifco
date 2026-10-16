@@ -174,6 +174,27 @@ describe('sincronização automática configurável', () => {
     expect(ecacAutoSyncPeriod('weekly', String(moved!.payload.day))).not.toBe(ecacAutoSyncPeriod('weekly', day));
   });
 
+  it('com uma sincronização geral ainda em andamento, a rodada automática não repete as consultas', async () => {
+    const office = await officeWithSerpro({ autoSync: 'daily' });
+    const [queued] = await autoQueued(office.officeId);
+    // sincronização pedida no robô: o pai espera (sem lease) um cliente que outro worker executa
+    const [manual] = await env.ctx.db
+      .insert(jobs)
+      .values({ type: 'ecac.sync_office', officeId: office.officeId, payload: {}, status: 'running', lockedAt: null, attempts: 1, maxAttempts: 1 })
+      .returning();
+    await env.ctx.db
+      .insert(jobs)
+      .values({ type: 'ecac.sync', officeId: office.officeId, parentId: manual.id, payload: { customerId: crypto.randomUUID() }, status: 'running', lockedAt: new Date(), lockToken: crypto.randomUUID(), attempts: 1 });
+    await env.ctx.db.update(jobs).set({ runAt: new Date(Date.now() - 1000) }).where(eq(jobs.id, queued.id));
+    await env.ctx.jobs.drain();
+    expect((await env.ctx.db.query.jobs.findFirst({ where: eq(jobs.id, queued.id) }))!.result).toMatchObject({ skipped: true, reason: expect.stringMatching(/em andamento/) });
+    // a cadeia continua: a rodada seguinte já está agendada
+    expect(await autoQueued(office.officeId)).toHaveLength(1);
+    expect((await officeSyncs(office.officeId)).some((j) => j.payload.fanout)).toBe(false);
+    await env.ctx.db.delete(jobs).where(eq(jobs.parentId, manual.id));
+    await env.ctx.db.delete(jobs).where(eq(jobs.id, manual.id));
+  });
+
   it('a configuração vale na hora de rodar: desligada ou trocada depois do agendamento não sincroniza', async () => {
     const office = await officeWithSerpro({ autoSync: 'daily' });
     const setConfig = (config: Record<string, unknown>) =>

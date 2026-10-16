@@ -115,10 +115,38 @@ it('preserva e transfere a administração antiga com IDs, hash, chave cifrada, 
     expect(secrets.decryptJson(copied.secretsEnc)).toEqual({ apiKey: 'legacy-secret' });
     expect((await destination.db.query.platformSettings.findFirst())!).toMatchObject({ defaultAiId: connection.id, legacyImportedAt: expect.any(Date) });
     expect((await destination.db.select().from(platformAuditLogs))[0]).toMatchObject({ actorId: account.id, action: 'legacy.audit' });
+    // concluída a transferência, o arquivo com os hashes e as chaves sai do banco do escritório
+    expect((await client.query<{ t: string | null }>(`select to_regclass('legacy_platform.platform_users')::text as t`)).rows[0].t).toBeNull();
     await destination.db.update(platformAiConnections).set({ model: 'modelo-novo' }).where(eq(platformAiConnections.id, connection.id));
+    // sem o arquivo, não há reimportação silenciosa (nem num banco de plataforma vazio)
     expect(await importLegacyPlatform(source, destination.db)).toBe(false);
     expect((await destination.db.query.platformAiConnections.findFirst())!.model).toBe('modelo-novo');
   } finally {
     await client.close(); await destination.close(); await occupied.close(); rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it('instalação nova (legacy_platform existe mas vazio) não é descartada no primeiro boot; uma transferência real ainda pode vir', async () => {
+  // Reproduz o CI: o app sobe antes de haver qualquer administração antiga, depois o legacy_platform
+  // é preenchido e um novo boot transfere. Se o primeiro boot apagasse o schema vazio, a transferência
+  // nunca aconteceria.
+  const client = new PGlite(); const source = drizzle(client, { schema: officeSchema });
+  const destination = await openPlatformDatabase('pglite:memory', { sync: 'migrate' });
+  try {
+    await migrate(source, { migrationsFolder: MIGRATIONS });
+    const legacyExists = async () => (await client.query<{ t: string | null }>(`select to_regclass('legacy_platform.platform_users')::text as t`)).rows[0].t;
+    expect(await legacyExists()).not.toBeNull();
+
+    // primeiro boot: nada a transferir, o arquivo (vazio) é mantido
+    expect(await importLegacyPlatform(source, destination.db)).toBe(false);
+    expect(await legacyExists()).not.toBeNull();
+
+    // depois surge uma administração antiga; a transferência roda e só então o arquivo é removido
+    await client.query(`insert into legacy_platform.platform_users (name,email,password_hash,role) values ('Dono','owner@old.com','h','owner')`);
+    expect(await importLegacyPlatform(source, destination.db)).toBe(true);
+    expect((await destination.db.query.platformUsers.findFirst())!.passwordHash).toBe('h');
+    expect(await legacyExists()).toBeNull();
+  } finally {
+    await client.close(); await destination.close();
   }
 });

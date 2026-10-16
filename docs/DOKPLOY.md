@@ -31,7 +31,8 @@ Na aplicação **Verifco completo**, use o caminho
 `./compose.dokploy-managed.yml` e o modelo de ambiente
 `deploy/dokploy-managed.env.example`. O Compose contém apenas **web, API e worker**.
 API e worker participam de `dokploy-network` para acessar os bancos gerenciados,
-além de `backend` para comunicação com a web. A rede externa deve existir no servidor
+além de `backend` para comunicação com a web (a web chama a API pelo apelido `verifco-api`,
+que só existe na rede `backend`). A rede externa deve existir no servidor
 do Dokploy; confira o resultado em **Preview Compose**. Os bancos permanecem em
 serviços independentes e não reiniciam durante uma atualização da aplicação.
 
@@ -173,7 +174,9 @@ read -r -p 'E-mail: ' PLATFORM_OWNER_EMAIL
 read -r -s -p 'Senha (mínimo 12 caracteres): ' PLATFORM_OWNER_PASSWORD
 printf '\n'
 export PLATFORM_OWNER_NAME PLATFORM_OWNER_EMAIL PLATFORM_OWNER_PASSWORD
-pnpm platform:owner
+# o container roda como usuário `node`, que não tem o pnpm do build (fica no cache do root):
+# chame o script direto pelo node, como o próprio CMD da imagem faz
+node --import tsx src/db/platform-owner.ts
 unset PLATFORM_OWNER_NAME PLATFORM_OWNER_EMAIL PLATFORM_OWNER_PASSWORD
 ```
 

@@ -28,6 +28,7 @@ const COLUMNS = [
   { header: 'Início da cobrança', key: 'start', width: 18 },
   { header: 'Status', key: 'status', width: 14 },
   { header: 'Observação interna', key: 'note', width: 36 },
+  { header: 'Código do orçamento', key: 'id', width: 38 },
 ];
 
 export async function importRoutes(app: FastifyInstance) {
@@ -76,6 +77,7 @@ export async function importRoutes(app: FastifyInstance) {
           start: brDate(b.billingStartDate),
           status: budgetStatusLabel(b.status),
           note: b.internalNote ?? '',
+          id: b.id,
         });
       }
     }
@@ -88,7 +90,8 @@ export async function importRoutes(app: FastifyInstance) {
       { field: 'Parcelas', rule: 'Até o máximo da forma de pagamento. Vazio = 1.' },
       { field: 'Início da cobrança', rule: 'Data da 1ª parcela (DD/MM/AAAA). As demais vencem mês a mês.' },
       { field: 'Status', rule: 'Rascunho, Aprovado, Recusado ou Cancelado. Aprovar gera o faturamento. O envio ao cliente é feito pelo sistema.' },
-      { field: 'Atualização', rule: 'Se o cliente já tem orçamento da mesma categoria no ano, ele é atualizado; senão, um novo é criado. Orçamentos aprovados não mudam de valor.' },
+      { field: 'Código do orçamento', rule: 'Preenchido pelo modelo: identifica o orçamento que a linha atualiza. Não altere. Em branco = orçamento novo, ou o único orçamento em aberto do cliente na mesma categoria.' },
+      { field: 'Atualização', rule: 'Linhas com código atualizam aquele orçamento. Sem código, se o cliente já tem um orçamento da mesma categoria no ano, ele é atualizado; se tem mais de um, a linha é recusada (informe o código); senão, um novo é criado. Orçamentos aprovados não mudam de valor.' },
     ];
     const xlsx = await buildWorkbook([
       { name: `Orçamentos ${year}`, columns: COLUMNS, rows },

@@ -1,5 +1,6 @@
 import { useState, type CSSProperties, type ReactNode } from 'react';
 import { Link, useNavigate } from 'react-router';
+import { KANBAN_PERMISSIONS } from '@verifco/shared';
 import {
   AlertTriangle,
   BadgeCheck,
@@ -126,9 +127,11 @@ export function DashboardPage() {
       title="Dashboard"
       description={`Olá, ${me?.user.name.split(' ')[0] ?? ''}. Este é o retrato da carteira no exercício ${year} (ano-calendário ${year - 1}).`}
       actions={
-        <Button kind="secondary" icon={<Columns3 />} onClick={() => navigate('/kanban')}>
-          Abrir Kanban
-        </Button>
+        can(...KANBAN_PERMISSIONS) ? (
+          <Button kind="secondary" icon={<Columns3 />} onClick={() => navigate('/kanban')}>
+            Abrir Kanban
+          </Button>
+        ) : undefined
       }
     />
   );
@@ -195,7 +198,7 @@ export function DashboardPage() {
                   Cadastre ou <Link to="/importacoes/novos-clientes">importe seus clientes</Link> em lote.
                 </li>
                 <li>
-                  Crie grupos e associe procuradores em <Link to="/admin">Administração</Link>.
+                  Crie grupos e associe procuradores em <Link to="/admin">Meu escritório</Link>.
                 </li>
                 <li>Abra o cliente e, na aba IRPF, lance o resumo e as fichas da declaração.</li>
                 <li>
@@ -247,9 +250,11 @@ export function DashboardPage() {
             data={stageData}
             chart={<StackedBar data={stageData} ariaLabel="Declarações por etapa" />}
             footer={
-              <Link to="/kanban" className="vf-inline" style={{ '--gap': '4px' } as CSSProperties}>
-                Ver no Kanban <ChevronRight size={14} />
-              </Link>
+              can(...KANBAN_PERMISSIONS) ? (
+                <Link to="/kanban" className="vf-inline" style={{ '--gap': '4px' } as CSSProperties}>
+                  Ver no Kanban <ChevronRight size={14} />
+                </Link>
+              ) : undefined
             }
           />
           <ChartCard
@@ -269,7 +274,7 @@ export function DashboardPage() {
             title="Acesso dos procuradores"
             subtitle="Certificado digital e último login no SERPRO"
             data={loginData}
-            empty="Cadastre procuradores em Administração."
+            empty="Cadastre procuradores em Meu escritório."
             chart={<Donut data={nonZero(loginData)} ariaLabel="Procuradores por situação do acesso" centerLabel="procuradores" />}
             footer={login.total > 0 && authSummary}
           />

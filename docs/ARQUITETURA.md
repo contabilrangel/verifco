@@ -188,6 +188,9 @@ Cada pasta `src/modules/<nome>/module.tsx` exporta `module: VerifcoModule` e é 
 automaticamente (`import.meta.glob`):
 
 ```tsx
+// páginas carregadas só quando abertas: cada uma vira um arquivo à parte do pacote inicial
+const PaymentMethodsPage = lazyPage(() => import('./PaymentMethodsPage'), 'PaymentMethodsPage');
+
 export const module: VerifcoModule = {
   routes: [{ path: 'financeiro/metodos', element: <PaymentMethodsPage /> }],   // dentro do Shell
   publicRoutes: [{ path: '/portal', element: <PortalPage /> }],                // fora do Shell

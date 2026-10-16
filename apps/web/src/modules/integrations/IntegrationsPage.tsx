@@ -453,7 +453,7 @@ function FieldInput({
         help={
           certificates && !usable.length ? (
             <>
-              Cadastre o certificado A1 em <Link to="/admin/procuradores">Administração › Procuradores</Link>.
+              Cadastre o certificado A1 em <Link to="/admin/procuradores">Meu escritório › Procuradores</Link>.
             </>
           ) : (
             f.help

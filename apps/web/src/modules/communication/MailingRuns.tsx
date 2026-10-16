@@ -107,6 +107,7 @@ export function MailingProgress({
   /** Os clientes com falha na preparação (o detalhe da mala direta já os lista à parte). */
   showFailures?: boolean;
 }) {
+  const { can } = useAuth();
   const done = finished(r);
   const att = r.attachments;
   const generating = r.status === 'done' && !done;
@@ -166,7 +167,7 @@ export function MailingProgress({
                 Tentar de novo
               </Button>
             ) : (
-              <Button onClick={onTrack}>Acompanhar envios</Button>
+              can('mailing.list') && <Button onClick={onTrack}>Acompanhar envios</Button>
             )}
             <Button kind="secondary" onClick={onRestart}>
               Nova mala direta

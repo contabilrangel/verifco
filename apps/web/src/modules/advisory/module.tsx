@@ -1,13 +1,15 @@
 import { BookOpen, Building2, Compass, Landmark, Sparkles } from 'lucide-react';
 import type { VerifcoModule } from '../../app/modules';
-import { AiTab } from './AiTab';
-import { BackupPage } from './BackupPage';
-import { CashbookTab } from './CashbookTab';
-import { CopilotAdminTab } from './CopilotAdminTab';
-import { CopilotTab } from './CopilotTab';
-import { HoldingStep } from './HoldingStep';
-import { IrpfmTab } from './IrpfmTab';
-import { RadarPage } from './RadarPage';
+import { lazyPage } from '../../lib/lazy';
+
+const AiTab = lazyPage(() => import('./AiTab'), 'AiTab');
+const BackupPage = lazyPage(() => import('./BackupPage'), 'BackupPage');
+const CashbookTab = lazyPage(() => import('./CashbookTab'), 'CashbookTab');
+const CopilotAdminTab = lazyPage(() => import('./CopilotAdminTab'), 'CopilotAdminTab');
+const CopilotTab = lazyPage(() => import('./CopilotTab'), 'CopilotTab');
+const HoldingStep = lazyPage(() => import('./HoldingStep'), 'HoldingStep');
+const IrpfmTab = lazyPage(() => import('./IrpfmTab'), 'IrpfmTab');
+const RadarPage = lazyPage(() => import('./RadarPage'), 'RadarPage');
 
 /** Consultoria e IA: Radar, backup, IA, IRPFM, Copiloto, livro caixa e holding. */
 export const module: VerifcoModule = {

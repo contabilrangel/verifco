@@ -28,7 +28,7 @@ const FILTERS = [
 ];
 
 const STEPS: { title: string; body: React.ReactNode }[] = [
-  { title: 'Cadastro do procurador', body: <>Cadastre quem tem a procuração eletrônica dos clientes em <Link to="/admin/procuradores">Administração › Procuradores</Link>.</> },
+  { title: 'Cadastro do procurador', body: <>Cadastre quem tem a procuração eletrônica dos clientes em <Link to="/admin/procuradores">Meu escritório › Procuradores</Link>.</> },
   { title: 'Associação de clientes', body: <>Associe o procurador a cada cliente (na identificação ou em lote na lista de clientes). Com a procuração eletrônica, o procurador baixa a pré-preenchida do cliente no eCAC.</> },
   {
     title: 'Download no eCAC',

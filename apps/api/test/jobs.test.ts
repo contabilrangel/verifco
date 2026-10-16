@@ -125,7 +125,8 @@ describe('fila: lease, parada e retomada (DAD-1)', () => {
     q.start(10);
     await waitFor(async () => (await getJob(a.id)).status === 'running');
     await q.stop({ graceMs: 30 });
-    expect(await getJob(a.id)).toMatchObject({ status: 'queued', lockedAt: null, attempts: 1 });
+    // devolução cooperativa (desligamento): estorna a tentativa que o claim contou, não é uma falha
+    expect(await getJob(a.id)).toMatchObject({ status: 'queued', lockedAt: null, attempts: 0 });
     // a execução que ficou para trás termina sem gravar por cima
     gate.resolve({ tarde: true });
     await sleep(30);

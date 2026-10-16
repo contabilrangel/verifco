@@ -297,8 +297,26 @@ describe('malas diretas recentes', () => {
       .where(and(eq(jobs.officeId, officeId), eq(jobs.type, 'mailing.deliver'), eq(jobs.idempotencyKey, `mailing:${sent.body.requestId}:${bad}`)));
     const detail = (await api.get(`/api/mailing/runs/${sent.body.jobId}`)).body;
     expect(detail.attachments).toEqual({ total: 2, done: 1, failed: 1 });
-    expect(detail.failures).toEqual({ count: 1, items: [{ customerId: bad, name: 'Hugo Anexo', channel: null, stage: 'attachment', message: 'Não foi possível gerar o anexo em PDF.' }] });
+    expect(detail.failures).toEqual({ count: 1, items: [{ customerId: bad, name: 'Hugo Anexo', channel: null, stage: 'attachment', message: 'Não foi possível gerar o anexo em PDF ou preparar o envio.' }] });
     expect(detail.sending.email.total).toBe(2);
+  });
+
+  it('com anexo: o envio que não pôde ser gravado (contato apagado depois do pedido) aparece nas falhas', async () => {
+    const { api, officeId } = await registerOffice(env);
+    const ok = await customer(api, 2, { name: 'Ivo Anexo' });
+    const gone = await customer(api, 3, { name: 'Júlia Anexo' });
+    const sent = await api.post('/api/mailing/send', { type: 'checklist_pdf', channel: 'email', year: 2026, customerIds: [ok, gone], requestId: uuid() });
+    const key = `mailing:${sent.body.requestId}:${gone}`;
+    // o e-mail some entre o planejamento e o envio: refaz o job do cliente sem o envio gravado
+    await env.ctx.jobs.drain();
+    await env.ctx.db.delete(deliveries).where(and(eq(deliveries.officeId, officeId), eq(deliveries.customerId, gone)));
+    await env.ctx.db.update(customers).set({ email: null }).where(eq(customers.id, gone));
+    await env.ctx.jobs.retryNow('mailing.deliver', [{ idempotencyKey: key, payload: {}, officeId }]);
+    await env.ctx.jobs.drain();
+    const job = await env.ctx.db.query.jobs.findFirst({ where: and(eq(jobs.type, 'mailing.deliver'), eq(jobs.idempotencyKey, key)) });
+    expect(job).toMatchObject({ status: 'failed', error: 'O cliente não tem e-mail cadastrado.' });
+    const detail = (await api.get(`/api/mailing/runs/${sent.body.jobId}`)).body;
+    expect(detail.failures.items).toEqual([{ customerId: gone, name: 'Júlia Anexo', channel: null, stage: 'attachment', message: 'O cliente não tem e-mail cadastrado.' }]);
   });
 
   it('exige permissão de mala direta e mostra a cada um só o que pode acompanhar', async () => {
@@ -337,7 +355,8 @@ describe('malas diretas recentes', () => {
     await env.ctx.db.update(customers).set({ responsibleUserId: acc.userId }).where(inArray(customers.id, [mine, noEmail]));
     await o.api.put('/api/office/settings', { restrictCustomersToResponsible: true });
 
-    const ownerRun = await o.api.post('/api/mailing/send', { type: 'monthly', channel: 'email', year: 2026, customerIds: [mine, theirs], requestId: uuid() });
+    const ownerReq = uuid();
+    const ownerRun = await o.api.post('/api/mailing/send', { type: 'monthly', channel: 'email', year: 2026, customerIds: [mine, theirs], requestId: ownerReq });
     const accRun = await acc.api.post('/api/mailing/send', { type: 'monthly', channel: 'email', year: 2026, requestId: uuid() });
     expect(accRun.status).toBe(202);
     expect(accRun.body.customers).toBe(1);
@@ -349,6 +368,9 @@ describe('malas diretas recentes', () => {
 
     expect((await acc.api.get('/api/mailing/runs')).body.map((r: any) => r.id)).toEqual([accRun.body.jobId]);
     expect((await acc.api.get(`/api/mailing/runs/${ownerRun.body.jobId}`)).status).toBe(404);
+    // o acompanhamento por requestId também respeita a carteira: o pedido do dono traz nomes de fora
+    expect((await acc.api.get(`/api/mailing/requests/${ownerReq}`)).status).toBe(404);
+    expect((await acc.api.get(`/api/mailing/requests/${accRun.body.requestId}`)).status).toBe(200);
     const detail = (await acc.api.get(`/api/mailing/runs/${accRun.body.jobId}`)).body;
     expect(detail.failures).toEqual({ count: 1, items: [{ customerId: mine, name: 'Dora Minha', channel: 'email', stage: 'delivery', message: 'Caixa cheia' }] });
     // quem ficou de fora na revisão aparece só na contagem

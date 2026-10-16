@@ -15,7 +15,7 @@ import {
 } from '@verifco/shared';
 import type { AppContext, AuthUser } from '../../context';
 import { budgets, customerGroupMembers, customers, declarations, deliveries, jobs, users } from '../../db/schema';
-import type { JobRow } from '../../jobs/queue';
+import { PermanentJobError, type JobRow } from '../../jobs/queue';
 import { HttpError, notFound } from '../../lib/errors';
 import { can, yearSchema } from '../../lib/http';
 import { customerScope, type CustomerRow } from '../../services/customers';
@@ -474,7 +474,7 @@ export async function mailingRunDetail(ctx: AppContext, user: AuthUser, jobId: s
     : [];
   const failedAttachments = view.attachments?.failed
     ? await db
-        .select({ customerId: customers.id, name: customers.name })
+        .select({ customerId: customers.id, name: customers.name, error: jobs.error })
         .from(jobs)
         .innerJoin(customers, and(sql`${customers.id}::text = ${jobs.payload}->>'customerId'`, eq(customers.officeId, user.officeId)))
         .where(and(eq(jobs.type, MAILING_DELIVER_JOB), sql`${jobs.idempotencyKey} in (${runKeys(jobId, false)})`, eq(jobs.status, 'failed'), scope))
@@ -493,7 +493,13 @@ export async function mailingRunDetail(ctx: AppContext, user: AuthUser, jobId: s
 
   const items: MailingRunFailure[] = [
     ...prepared.map((f) => ({ customerId: f.customerId, name: f.name, channel: null, stage: 'preparation' as const, message: f.message })),
-    ...failedAttachments.map((f) => ({ customerId: f.customerId, name: f.name, channel: null, stage: 'attachment' as const, message: 'Não foi possível gerar o anexo em PDF.' })),
+    ...failedAttachments.map((f) => ({
+      customerId: f.customerId,
+      name: f.name,
+      channel: null,
+      stage: 'attachment' as const,
+      message: f.error && SHOWN_DELIVER_FAILURES.has(f.error) ? f.error : 'Não foi possível gerar o anexo em PDF ou preparar o envio.',
+    })),
     ...failedDeliveries.map((f) => ({
       customerId: f.customerId,
       name: f.name,
@@ -577,7 +583,12 @@ async function queueChunk(
   for (const e of chunk) {
     const pending = pendingOf(e);
     result.alreadyQueued += e.channels.length - pending.length;
-    if (!pending.length || (ownLink && pending.length < e.channels.length)) continue;
+    if (!pending.length) continue;
+    // link/código é único: quem já recebeu num canal não ganha outro par (invalidaria o primeiro)
+    if (ownLink && pending.length < e.channels.length) {
+      result.alreadyQueued += pending.length;
+      continue;
+    }
     try {
       let values: BulkDeliveryItem['values'] = e.values;
       let redact: string[] | undefined;
@@ -656,20 +667,20 @@ export async function deliverWithAttachment(ctx: AppContext, p: MailingJobPayloa
   const pending = p.channels.filter((ch) => !done.has(deliveryKey(p.requestId, p.customerId, ch)));
   if (!pending.length) return { skipped: true };
   const customer = await ctx.db.query.customers.findFirst({ where: and(eq(customers.id, p.customerId), eq(customers.officeId, p.officeId), isNull(customers.deletedAt)) });
-  if (!customer) return { skipped: true, reason: 'customer_not_found' };
+  if (!customer) throw new PermanentJobError(DELIVER_FAILURES.customer);
   let file: { buffer: Buffer; filename: string };
   if (type.attachment === 'kit') {
     const declaration = p.declarationId
       ? await ctx.db.query.declarations.findFirst({ where: and(eq(declarations.id, p.declarationId), eq(declarations.officeId, p.officeId)) })
       : undefined;
-    if (!declaration) return { skipped: true, reason: 'declaration_not_found' };
+    if (!declaration) throw new PermanentJobError(DELIVER_FAILURES.declaration);
     file = await buildKitPdf(ctx, declaration, customer);
   } else {
     // o mesmo PDF da etapa Documentação (itens do checklist digital do cliente)
     file = { buffer: await customerChecklistPdf(ctx, customer, p.year), filename: checklistPdfFilename(customer, p.year) };
   }
   const saved = await ctx.files.save({ officeId: p.officeId, data: file.buffer, filename: file.filename, mimeType: 'application/pdf', userId: p.userId });
-  const errors: string[] = [];
+  const errors: unknown[] = [];
   for (const ch of pending) {
     try {
       await queueDelivery(ctx, {
@@ -683,8 +694,22 @@ export async function deliverWithAttachment(ctx: AppContext, p: MailingJobPayloa
         userId: p.userId,
       });
     } catch (err) {
-      errors.push(err instanceof Error ? err.message : String(err));
+      errors.push(err);
     }
   }
-  return { fileId: saved.id, deliveries: pending.length - errors.length, errors };
+  if (errors.length) {
+    // o job falha e o cliente aparece nas falhas do envio: contato que falta não melhora com nova
+    // tentativa; erro de banco sim (os canais já gravados não se repetem, pela chave)
+    const unexpected = errors.find((e) => !(e instanceof HttpError));
+    if (unexpected) throw unexpected;
+    throw new PermanentJobError((errors[0] as HttpError).message);
+  }
+  return { fileId: saved.id, deliveries: pending.length };
 }
+
+/** Falhas do job de anexo que a tela mostra como estão (as demais viram a mensagem genérica). */
+const DELIVER_FAILURES = {
+  customer: 'O cliente foi excluído depois do pedido.',
+  declaration: 'A declaração do cliente não foi encontrada.',
+} as const;
+const SHOWN_DELIVER_FAILURES = new Set<string>([...Object.values(DELIVER_FAILURES), 'O cliente não tem e-mail cadastrado.', 'O cliente não tem celular cadastrado.']);

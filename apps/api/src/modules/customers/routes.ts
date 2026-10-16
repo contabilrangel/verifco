@@ -647,10 +647,14 @@ export async function customerRoutes(app: FastifyInstance) {
     const dup = await db.query.procurators.findFirst({ where: and(eq(procurators.officeId, user.officeId), eq(procurators.cpfCnpj, doc), ne(procurators.id, id)) });
     if (dup) throw conflict('Já existe um procurador com este CPF/CNPJ.');
     if (body.userId && !(await db.query.users.findFirst({ where: and(eq(users.id, body.userId), eq(users.officeId, user.officeId)) }))) throw badRequest('Colaborador inválido.');
+    const before = await db.query.procurators.findFirst({ where: and(eq(procurators.id, id), eq(procurators.officeId, user.officeId)) });
+    if (!before) throw notFound('Procurador');
+    // validade nova: o resultado do último login no SERPRO (ex.: "vencido") era do certificado anterior
+    const expiryChanged = body.certificateExpiresAt !== undefined && (body.certificateExpiresAt ?? null) !== (before.certificateExpiresAt ?? null);
     // sem authType no corpo, mantém a forma de acesso atual
     const [row] = await db
       .update(procurators)
-      .set({ ...body, cpfCnpj: doc, updatedAt: new Date() })
+      .set({ ...body, cpfCnpj: doc, ...(expiryChanged ? CERTIFICATE_LOGIN_RESET : {}), updatedAt: new Date() })
       .where(and(eq(procurators.id, id), eq(procurators.officeId, user.officeId)))
       .returning();
     if (!row) throw notFound('Procurador');
@@ -709,7 +713,7 @@ export async function customerRoutes(app: FastifyInstance) {
     if (p.certificateFileId) await app.ctx.files.remove(user.officeId, p.certificateFileId);
     await db
       .update(procurators)
-      .set({ certificateFileId: saved.id, certificatePasswordEnc: secrets.encrypt(password), authType: 'certificate_cloud', updatedAt: new Date() })
+      .set({ certificateFileId: saved.id, certificatePasswordEnc: secrets.encrypt(password), authType: 'certificate_cloud', ...CERTIFICATE_LOGIN_RESET, updatedAt: new Date() })
       .where(eq(procurators.id, p.id));
     await audit(req, 'upload_certificate', 'procurator', p.id, { self: p.userId === user.userId });
     return { ok: true };
@@ -718,13 +722,16 @@ export async function customerRoutes(app: FastifyInstance) {
   app.delete('/procurators/:id/certificate', async (req) => {
     const { user, p } = await procuratorForUpdate(req, 'procuration.certificate');
     if (p.certificateFileId) await app.ctx.files.remove(user.officeId, p.certificateFileId);
-    await db.update(procurators).set({ certificateFileId: null, certificatePasswordEnc: null, updatedAt: new Date() }).where(eq(procurators.id, p.id));
+    await db.update(procurators).set({ certificateFileId: null, certificatePasswordEnc: null, ...CERTIFICATE_LOGIN_RESET, updatedAt: new Date() }).where(eq(procurators.id, p.id));
     await audit(req, 'remove_certificate', 'procurator', p.id, { self: p.userId === user.userId });
     return { ok: true };
   });
 }
 
 type ProcuratorRow = typeof procurators.$inferSelect;
+
+/** Certificado trocado ou removido: o último login no SERPRO não vale mais (o alerta volta a ser pela validade). */
+const CERTIFICATE_LOGIN_RESET = { loginStatus: 'unknown', lastValidatedAt: null } as const;
 
 /** Procurador para o navegador: sem o arquivo e sem a senha do certificado (regra 6). */
 export function publicProcurator(p: ProcuratorRow) {

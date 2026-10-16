@@ -38,7 +38,7 @@ export function RobotAdminTab() {
             <Stat
               label="SERPRO Integra Contador"
               value={o.serpro === 'ready' ? 'Ativo' : o.serpro === 'not_configured' ? 'Não configurado' : 'Indisponível'}
-              hint={o.serpro === 'missing' ? 'Integração ausente nesta instalação' : <Link to="/admin/integracoes">Administração › Integrações</Link>}
+              hint={o.serpro === 'missing' ? 'Integração ausente nesta instalação' : <Link to="/admin/integracoes">Meu escritório › Integrações</Link>}
             />
             <Stat label="Última sincronização geral" value={o.lastOfficeSync ? formatDateTime(o.lastOfficeSync.createdAt) : '—'} hint={o.lastOfficeSync ? pick({ queued: 'Na fila', running: 'Executando', done: 'Concluída', failed: 'Falhou' }, o.lastOfficeSync.status) : 'Nunca executada'} />
           </div>
@@ -62,7 +62,7 @@ export function RobotAdminTab() {
           </span>
           <ul className="vf-ecac-steps vf-text-xs">
             <li>
-              Pelo SERPRO, quando você pede e na sincronização automática (desligada, diária ou semanal, em Administração › Integrações): procuração eletrônica, mensagens da caixa postal, relatório de situação fiscal (a cada 30 dias, com a leitura das pendências e da certidão vigente) e
+              Pelo SERPRO, quando você pede e na sincronização automática (desligada, diária ou semanal, em Meu escritório › Integrações): procuração eletrônica, mensagens da caixa postal, relatório de situação fiscal (a cada 30 dias, com a leitura das pendências e da certidão vigente) e
               pagamento das quotas do DARF perto do vencimento (receita 0211). Cada cliente é sincronizado numa tarefa própria.
             </li>
             <li>O SERPRO não informa a situação da declaração (processamento, malha, lote de restituição) nem emite a CND de pessoa física: lance esses dados na aba eCAC do cliente.</li>

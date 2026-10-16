@@ -135,7 +135,7 @@ export async function integrationRoutes(app: FastifyInstance) {
   const manage = { preHandler: guard('integrations.manage') };
 
   const defOf = (provider: string) => {
-    if (provider === 'ai') throw forbidden('A IA � administrada pelo propriet�rio do sistema no painel global.');
+    if (provider === 'ai') throw forbidden('A IA é administrada pelo proprietário do sistema no painel global.');
     const def = getIntegrationDef(provider);
     if (!def) throw notFound('Integração');
     return def;

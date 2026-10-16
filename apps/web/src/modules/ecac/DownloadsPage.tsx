@@ -80,7 +80,7 @@ export function DownloadsPage() {
                 No {TERMINAL[os]}, dentro da pasta: <Code>npm install</Code>
               </Step>
               <Step n={4} title="Conecte ao Verifco">
-                Crie um token do tipo “Sincronizador” em {can('ecac.robot') ? <Link to="/admin/robo">Administração › Robô</Link> : 'Administração › Robô'} e rode:
+                Crie um token do tipo “Sincronizador” em {can('ecac.robot') ? <Link to="/admin/robo">Meu escritório › Robô</Link> : 'Meu escritório › Robô'} e rode:
                 <Code>{`npm run config -- --url ${base} --token vfk_...`}</Code>
                 <Code>npm run testar</Code>
               </Step>

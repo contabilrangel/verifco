@@ -98,7 +98,7 @@ function ReportsStepContent({ ctx }: { ctx: ReportsContext }) {
       {!ctx.hasLogo && hasItems && (
         <Alert>
           Os relatórios saem com o nome do escritório. Para incluir o logo,{' '}
-          {can('office.edit') ? <Link to="/admin/empresa">cadastre-o em Administração › Empresa</Link> : 'peça ao administrador para cadastrá-lo'} (PNG ou JPG).
+          {can('office.edit') ? <Link to="/admin/empresa">cadastre-o em Meu escritório › Empresa</Link> : 'peça ao administrador para cadastrá-lo'} (PNG ou JPG).
         </Alert>
       )}
       <div className="vf-grid" style={{ '--grid-template': 'minmax(0, 1.5fr) minmax(0, 1fr)', alignItems: 'start' } as React.CSSProperties}>

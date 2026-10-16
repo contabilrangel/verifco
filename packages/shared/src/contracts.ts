@@ -4,6 +4,22 @@
  * as mesmas regras que bloqueiam a criação de declarações e as alterações com o contrato vencido.
  */
 
+/**
+ * Situação gravada no contrato, definida pelo painel do sistema. Só "active" conta como vigente
+ * (e ainda dentro das datas); a grafia "cancelled" é a que está gravada nos contratos existentes.
+ */
+export const CONTRACT_STATUS = { active: 'Ativo', expired: 'Expirado', cancelled: 'Cancelado' } as const;
+export type ContractStatus = keyof typeof CONTRACT_STATUS;
+export const CONTRACT_STATUS_KEYS = Object.keys(CONTRACT_STATUS) as [ContractStatus, ...ContractStatus[]];
+
+/** Rótulo da situação do contrato no dia (cancelado, expirado pela situação ou pela data, a iniciar, ativo). */
+export function contractSituation(c: { status: string; startsAt: string; expiresAt: string }, today: string): 'cancelled' | 'expired' | 'upcoming' | 'active' {
+  if (c.status === 'cancelled') return 'cancelled';
+  if (c.status !== 'active' || c.expiresAt < today) return 'expired';
+  if (c.startsAt > today) return 'upcoming';
+  return 'active';
+}
+
 /** Pacote vigente hoje (dia de Brasília). */
 export interface ContractUsageContract {
   id: string;
