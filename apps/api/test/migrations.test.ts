@@ -211,6 +211,47 @@ describe('migrações (SEG-4)', () => {
     }
   });
 
+  it('marca os envios antigos que já perderam o conteúdo real (o reenvio não sai mascarado)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'verifco-envios-'));
+    const client = new PGlite();
+    try {
+      cpSync(MIGRATIONS, dir, { recursive: true });
+      const journal = readJournal(MIGRATIONS);
+      const journalPath = join(dir, 'meta/_journal.json');
+      const index = journal.entries.findIndex((e) => e.tag.endsWith('_envios_sem_conteudo_real'));
+      expect(index).toBeGreaterThan(0);
+      writeFileSync(journalPath, JSON.stringify({ ...journal, entries: journal.entries.slice(0, index) }));
+      const db = drizzle(client, { schema });
+      await migrate(db, { migrationsFolder: dir });
+
+      const one = async (query: string, params: unknown[]) => (await client.query<{ id: string }>(query, params)).rows[0];
+      const office = await one(`insert into offices (name) values ($1) returning id`, ['Escritório']);
+      const delivery = async (channel: string, templateKey: string | null, body: string) =>
+        (await one(`insert into deliveries (office_id, channel, template_key, to_address, body, status) values ($1, $2, $3, 'x', $4, 'sent') returning id`, [office.id, channel, templateKey, body])).id;
+      const job = async (deliveryId: string, payload: Record<string, unknown>) =>
+        (await one(`insert into jobs (type, payload, idempotency_key, office_id, status) values ('delivery.send', $1, $2, $3, 'done') returning id`, [JSON.stringify(payload), deliveryId, office.id])).id;
+      const masked = await delivery('email', 'checklist_digital', 'Código: ••••••');
+      const template = await delivery('whatsapp', 'darf', 'Seu DARF');
+      const plain = await delivery('whatsapp', null, 'oi');
+      const pending = await delivery('email', 'checklist_digital', 'Código: ••••••');
+      const jobs = {
+        masked: await job(masked, { deliveryId: masked }),
+        template: await job(template, { deliveryId: template }),
+        plain: await job(plain, { deliveryId: plain }),
+        pending: await job(pending, { deliveryId: pending, sealed: 'cifrado' }),
+      };
+
+      writeFileSync(journalPath, JSON.stringify(journal));
+      await migrate(db, { migrationsFolder: dir });
+      const rows = await db.select({ id: schema.jobs.id, payload: schema.jobs.payload }).from(schema.jobs);
+      const dropped = Object.fromEntries(rows.map((r) => [r.id, r.payload.sealedDropped === true]));
+      expect(dropped).toEqual({ [jobs.masked]: true, [jobs.template]: true, [jobs.plain]: false, [jobs.pending]: false });
+    } finally {
+      await client.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('as migrações geradas não têm SQL à mão; o preenchimento dos links fica na migração própria', () => {
     const tags = readJournal(MIGRATIONS).entries.map((e) => e.tag);
     expect(tags).toContain(CUSTOM);
