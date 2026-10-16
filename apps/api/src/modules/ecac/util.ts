@@ -74,14 +74,41 @@ export function summarizeOfficeChildren(children: JobRow[]): Fanout {
   };
 }
 
+/** O mesmo que `summarizeOfficeChildren`, calculado no banco (sem carregar payload e resultado de cada filho). */
+async function childrenSummary(db: Db, parentId: string): Promise<Fanout> {
+  const [agg] = await db
+    .select({
+      total: sql<number>`count(*)::int`,
+      ok: sql<number>`(count(*) filter (where ${jobs.status} = 'done'))::int`,
+      failed: sql<number>`(count(*) filter (where ${jobs.status} = 'failed'))::int`,
+    })
+    .from(jobs)
+    .where(eq(jobs.parentId, parentId));
+  const failed = agg.failed
+    ? await db
+        .select({ customerId: sql<string>`${jobs.payload}->>'customerId'`, name: sql<string | null>`${jobs.payload}->>'customerName'`, error: jobs.error })
+        .from(jobs)
+        .where(and(eq(jobs.parentId, parentId), eq(jobs.status, 'failed')))
+        .orderBy(jobs.createdAt)
+        .limit(50)
+    : [];
+  return {
+    total: agg.total,
+    ok: agg.ok,
+    failed: agg.failed,
+    errors: failed.map((k) => ({ customerId: String(k.customerId), name: String(k.name ?? k.customerId), error: k.error ?? 'A sincronização foi interrompida.' })),
+  };
+}
+
 export async function fanoutJobView(db: Db, job: JobRow | null | undefined) {
   const base = jobView(job);
   const view = base && job!.runAt > job!.createdAt ? { ...base, createdAt: job!.runAt } : base;
   if (!view) return view;
   if (job!.status === 'running' && !isJobActive(job!)) return { ...view, status: 'failed', error: INTERRUPTED_ERROR };
-  const children = await db.select().from(jobs).where(eq(jobs.parentId, job!.id));
+  // contagem agregada e só os primeiros erros: a tela consulta a cada 2 s com milhares de clientes
+  const children = await childrenSummary(db, job!.id);
   const stored = fanoutOf(job!);
-  const fan = children.length ? { ...summarizeOfficeChildren(children), finishedAt: stored?.finishedAt } : stored;
+  const fan = children.total ? { ...children, finishedAt: stored?.finishedAt } : stored;
   if (!fan || job!.status === 'failed') return view;
   const finished = fan.ok + fan.failed;
   const running = finished < fan.total;

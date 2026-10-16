@@ -132,35 +132,41 @@ export async function queueDelivery(ctx: AppContext, input: QueueDeliveryInput):
   }
   const { storedSubject, storedBody, sealed } = protect(ctx, content, input.redact, templateValues);
 
-  const [row] = await db
-    .insert(deliveries)
-    .values({
-      officeId: input.officeId,
-      customerId: input.customerId,
-      channel: input.channel,
-      templateKey: input.templateKey ?? null,
-      subject: storedSubject,
-      toAddress: to,
-      toName: customer?.name ?? null,
-      body: storedBody,
-      attachments: input.attachments ?? [],
-      idempotencyKey: input.idempotencyKey ?? null,
-      createdByUserId: input.userId ?? null,
-    })
-    .returning();
-  if (input.channel === 'whatsapp' && input.customerId) {
-    await db.insert(messages).values({
-      officeId: input.officeId,
-      customerId: input.customerId,
-      direction: 'out',
-      channel: 'whatsapp',
-      body: storedBody,
-      authorUserId: input.userId ?? null,
-      deliveryId: row.id,
-    });
-  }
-  await ctx.jobs.enqueue(JOB_TYPE, sealed ? { deliveryId: row.id, sealed } : { deliveryId: row.id }, { officeId: input.officeId, idempotencyKey: row.id });
-  return row;
+  // envio, mensagem do WhatsApp e job numa transação: nunca fica um envio "na fila" sem job
+  return db.transaction(async (tx) => {
+    const [row] = await tx
+      .insert(deliveries)
+      .values({
+        officeId: input.officeId,
+        customerId: input.customerId,
+        channel: input.channel,
+        templateKey: input.templateKey ?? null,
+        subject: storedSubject,
+        toAddress: to,
+        toName: customer?.name ?? null,
+        body: storedBody,
+        attachments: input.attachments ?? [],
+        idempotencyKey: input.idempotencyKey ?? null,
+        createdByUserId: input.userId ?? null,
+      })
+      .onConflictDoNothing({ target: [deliveries.officeId, deliveries.idempotencyKey] })
+      .returning();
+    // a mesma chave gravada ao mesmo tempo por outra chamada: devolve a dela
+    if (!row) return (await tx.query.deliveries.findFirst({ where: and(eq(deliveries.officeId, input.officeId), eq(deliveries.idempotencyKey, input.idempotencyKey!)) }))!;
+    if (input.channel === 'whatsapp' && input.customerId) {
+      await tx.insert(messages).values({
+        officeId: input.officeId,
+        customerId: input.customerId,
+        direction: 'out',
+        channel: 'whatsapp',
+        body: storedBody,
+        authorUserId: input.userId ?? null,
+        deliveryId: row.id,
+      });
+    }
+    await tx.insert(jobs).values(ctx.jobs.enqueueValues(JOB_TYPE, sealed ? { deliveryId: row.id, sealed } : { deliveryId: row.id }, { officeId: input.officeId, idempotencyKey: row.id }));
+    return row;
+  });
 }
 
 export interface BulkDeliveryItem {

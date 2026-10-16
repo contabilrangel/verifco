@@ -1,11 +1,16 @@
 import { Navigate } from 'react-router';
 import { MessagesSquare } from 'lucide-react';
 import type { VerifcoModule } from '../../app/modules';
+import { lazyPage } from '../../lib/lazy';
 import './checklist.css';
-import { ChecklistLinkPage } from './ChecklistLinkPage';
-import { DocumentationStep } from './DocumentationStep';
-import { MessagesTab } from './MessagesTab';
-import { PortalChecklist, PortalHome, PortalLayout, PortalMessages } from './Portal';
+
+const ChecklistLinkPage = lazyPage(() => import('./ChecklistLinkPage'), 'ChecklistLinkPage');
+const DocumentationStep = lazyPage(() => import('./DocumentationStep'), 'DocumentationStep');
+const MessagesTab = lazyPage(() => import('./MessagesTab'), 'MessagesTab');
+const PortalChecklist = lazyPage(() => import('./Portal'), 'PortalChecklist');
+const PortalHome = lazyPage(() => import('./Portal'), 'PortalHome');
+const PortalLayout = lazyPage(() => import('./Portal'), 'PortalLayout');
+const PortalMessages = lazyPage(() => import('./Portal'), 'PortalMessages');
 
 /** Checklist DIRPF (digital e PDF), portal do cliente e mensagens. */
 export const module: VerifcoModule = {

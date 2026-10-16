@@ -297,8 +297,26 @@ describe('malas diretas recentes', () => {
       .where(and(eq(jobs.officeId, officeId), eq(jobs.type, 'mailing.deliver'), eq(jobs.idempotencyKey, `mailing:${sent.body.requestId}:${bad}`)));
     const detail = (await api.get(`/api/mailing/runs/${sent.body.jobId}`)).body;
     expect(detail.attachments).toEqual({ total: 2, done: 1, failed: 1 });
-    expect(detail.failures).toEqual({ count: 1, items: [{ customerId: bad, name: 'Hugo Anexo', channel: null, stage: 'attachment', message: 'Não foi possível gerar o anexo em PDF.' }] });
+    expect(detail.failures).toEqual({ count: 1, items: [{ customerId: bad, name: 'Hugo Anexo', channel: null, stage: 'attachment', message: 'Não foi possível gerar o anexo em PDF ou preparar o envio.' }] });
     expect(detail.sending.email.total).toBe(2);
+  });
+
+  it('com anexo: o envio que não pôde ser gravado (contato apagado depois do pedido) aparece nas falhas', async () => {
+    const { api, officeId } = await registerOffice(env);
+    const ok = await customer(api, 2, { name: 'Ivo Anexo' });
+    const gone = await customer(api, 3, { name: 'Júlia Anexo' });
+    const sent = await api.post('/api/mailing/send', { type: 'checklist_pdf', channel: 'email', year: 2026, customerIds: [ok, gone], requestId: uuid() });
+    const key = `mailing:${sent.body.requestId}:${gone}`;
+    // o e-mail some entre o planejamento e o envio: refaz o job do cliente sem o envio gravado
+    await env.ctx.jobs.drain();
+    await env.ctx.db.delete(deliveries).where(and(eq(deliveries.officeId, officeId), eq(deliveries.customerId, gone)));
+    await env.ctx.db.update(customers).set({ email: null }).where(eq(customers.id, gone));
+    await env.ctx.jobs.retryNow('mailing.deliver', [{ idempotencyKey: key, payload: {}, officeId }]);
+    await env.ctx.jobs.drain();
+    const job = await env.ctx.db.query.jobs.findFirst({ where: and(eq(jobs.type, 'mailing.deliver'), eq(jobs.idempotencyKey, key)) });
+    expect(job).toMatchObject({ status: 'failed', error: 'O cliente não tem e-mail cadastrado.' });
+    const detail = (await api.get(`/api/mailing/runs/${sent.body.jobId}`)).body;
+    expect(detail.failures.items).toEqual([{ customerId: gone, name: 'Júlia Anexo', channel: null, stage: 'attachment', message: 'O cliente não tem e-mail cadastrado.' }]);
   });
 
   it('exige permissão de mala direta e mostra a cada um só o que pode acompanhar', async () => {

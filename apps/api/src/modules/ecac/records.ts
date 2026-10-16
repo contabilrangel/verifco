@@ -71,6 +71,8 @@ export async function saveEcacRecord(
     source: EcacRecordSource;
     file?: UploadedFile | null;
     userId?: string | null;
+    /** Junta as mudanças num aviso só por cliente (`flushEcacChanges`), em vez de um por registro. */
+    batch?: EcacChangeBatch;
   },
 ): Promise<{ record: EcacRecordRow; effects: string[]; duplicate: boolean }> {
   const { db } = ctx;
@@ -112,6 +114,7 @@ export async function saveEcacRecord(
   /** Mudanças percebidas (situação anterior → nova), para o aviso ao escritório. */
   const changes: string[] = [];
   const now = new Date();
+  let mailboxUnread: number | null = null;
   // situação atual do cadastro, para comparar (o cliente recebido pode ter sido lido antes)
   const current = ['procuration', 'cnd', 'mailbox_message'].includes(kind) ? ((await db.query.customers.findFirst({ where: eq(customers.id, customer.id) })) ?? customer) : customer;
   if (kind === 'procuration') {
@@ -142,6 +145,7 @@ export async function saveEcacRecord(
       .from(ecacRecords)
       .where(and(eq(ecacRecords.customerId, customer.id), eq(ecacRecords.kind, 'mailbox_message'), sql`coalesce(${ecacRecords.data}->>'read', 'false') <> 'true'`));
     await db.update(customers).set({ ecacMailboxMessages: unread, updatedAt: now }).where(eq(customers.id, customer.id));
+    mailboxUnread = unread;
     effects.push('mailbox');
     // só mensagem nova não lida é aviso; ler as mensagens no eCAC não é
     if (unread > current.ecacMailboxMessages) changes.push(`Caixa postal: ${unread} mensagem(ns) não lida(s) (antes ${current.ecacMailboxMessages})`);
@@ -191,8 +195,40 @@ export async function saveEcacRecord(
       }
     }
   }
-  if (changes.length) await notifyEcacChanges(ctx, { record, customer: current, changes, userId: input.userId ?? null });
+  if (input.batch) {
+    const entry = input.batch.get(customer.id) ?? { customer: current, record: null, changes: [], mailboxBefore: null, mailboxAfter: null };
+    input.batch.set(customer.id, entry);
+    if (kind === 'mailbox_message') {
+      // a caixa postal entra uma vez, no fim: antes da primeira mensagem gravada × depois da última
+      entry.mailboxBefore ??= current.ecacMailboxMessages;
+      entry.mailboxAfter = mailboxUnread;
+      entry.record ??= record;
+    } else if (changes.length) {
+      entry.record = entry.changes.length ? entry.record : record;
+      entry.changes.push(...changes);
+    }
+  } else if (changes.length) {
+    await notifyEcacChanges(ctx, { record, customer: current, changes, userId: input.userId ?? null });
+  }
   return { record, effects, duplicate };
+}
+
+/** Mudanças de vários registros, por cliente, para um aviso só (sincronização do robô, lote da extensão). */
+export type EcacChangeBatch = Map<string, { customer: CustomerRow; record: EcacRecordRow | null; changes: string[]; mailboxBefore: number | null; mailboxAfter: number | null }>;
+
+export const createEcacChangeBatch = (): EcacChangeBatch => new Map();
+
+/** Avisa, uma vez por cliente, as mudanças juntadas no lote. */
+export async function flushEcacChanges(ctx: AppContext, batch: EcacChangeBatch, userId: string | null = null) {
+  for (const { customer, record, changes, mailboxBefore, mailboxAfter } of batch.values()) {
+    const all = [...changes];
+    // só mensagem nova não lida é aviso; ler as mensagens no eCAC não é
+    if (mailboxBefore !== null && mailboxAfter !== null && mailboxAfter > mailboxBefore) {
+      all.push(`Caixa postal: ${mailboxAfter} mensagem(ns) não lida(s) (antes ${mailboxBefore})`);
+    }
+    if (all.length && record) await notifyEcacChanges(ctx, { record, customer, changes: all, userId });
+  }
+  batch.clear();
 }
 
 /**

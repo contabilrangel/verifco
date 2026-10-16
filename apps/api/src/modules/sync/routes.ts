@@ -5,7 +5,7 @@ import { MACHINE_TOKEN_SCOPES, isValidCpfCnpj, onlyDigits, type MachineTokenScop
 import { apiTokens, customers, documents, ecacRecords, files, offices, prefilledStatements, procurators, users } from '../../db/schema';
 import { HttpError, badRequest, notFound } from '../../lib/errors';
 import { audit, guard, parse, requireUser, uuidParam } from '../../lib/http';
-import { recordInputSchema, saveEcacRecord } from '../ecac/records';
+import { createEcacChangeBatch, flushEcacChanges, recordInputSchema, saveEcacRecord } from '../ecac/records';
 import { ECAC_SYNC_OFFICE, latestOfficeSync, nextScheduledOfficeSync } from '../ecac/jobs';
 import { loadSerproModule, requireSerpro } from '../ecac/serpro';
 import { fanoutJobView } from '../ecac/util';
@@ -199,6 +199,8 @@ export async function syncRoutes(app: FastifyInstance) {
     const raw = req.body as { records?: unknown } | undefined;
     const list = parse(z.array(z.unknown()).min(1).max(100), Array.isArray(raw?.records) ? raw.records : raw ? [raw] : []);
     const results = [];
+    // um aviso por cliente para o lote inteiro (não um por mensagem da caixa postal)
+    const batch = createEcacChangeBatch();
     for (const [index, item] of list.entries()) {
       try {
         const input = parse(machineRecordSchema, item);
@@ -206,13 +208,14 @@ export async function syncRoutes(app: FastifyInstance) {
         const file = input.file
           ? uploadedFromBase64(input.file.filename, input.file.base64)
           : null;
-        const { record, effects, duplicate } = await saveEcacRecord(ctx, { ...input, officeId: auth.officeId, customer, source: 'extension', file });
+        const { record, effects, duplicate } = await saveEcacRecord(ctx, { ...input, officeId: auth.officeId, customer, source: 'extension', file, batch });
         await machineAudit(ctx, auth, 'sync_ecac_record', 'ecac_record', record.id, { kind: input.kind, customerId: customer.id });
         results.push({ index, ok: true, recordId: record.id, duplicate, effects });
       } catch (err) {
         results.push({ index, ok: false, error: err instanceof Error ? err.message : String(err), status: err instanceof HttpError ? err.statusCode : 500 });
       }
     }
+    await flushEcacChanges(ctx, batch);
     return { results, ok: results.filter((r) => r.ok).length, failed: results.filter((r) => !r.ok).length };
   });
 

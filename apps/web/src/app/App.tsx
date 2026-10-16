@@ -4,7 +4,10 @@ import { useAuth } from '../lib/auth';
 import { ForgotPasswordPage, LoginPage, RegisterPage, ResetPasswordPage } from '../modules/auth/AuthPages';
 import { Shell } from './Shell';
 import { APP_ROUTES, PUBLIC_ROUTES } from './routes';
-import { PlatformPanel } from '../modules/platform/PlatformPanel';
+import { lazyPage } from '../lib/lazy';
+
+/** Painel da equipe do sistema: fora do pacote que todo escritório baixa. */
+const PlatformPanel = lazyPage(() => import('../modules/platform/PlatformPanel'), 'PlatformPanel');
 
 function RequireAuth() {
   const { me, loading } = useAuth();

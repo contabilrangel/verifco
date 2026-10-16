@@ -1,10 +1,13 @@
 import { MAILING_TYPES } from '@verifco/shared';
 import type { VerifcoModule } from '../../app/modules';
-import { DeliveriesPage } from './DeliveriesPage';
+import { lazyPage } from '../../lib/lazy';
 import { Guard } from './Guard';
-import { HelpPage } from './HelpPage';
-import { MailingPage } from './MailingPage';
-import { TemplateEditorPage, TemplatesPage } from './TemplatesPage';
+
+const DeliveriesPage = lazyPage(() => import('./DeliveriesPage'), 'DeliveriesPage');
+const HelpPage = lazyPage(() => import('./HelpPage'), 'HelpPage');
+const MailingPage = lazyPage(() => import('./MailingPage'), 'MailingPage');
+const TemplateEditorPage = lazyPage(() => import('./TemplatesPage'), 'TemplateEditorPage');
+const TemplatesPage = lazyPage(() => import('./TemplatesPage'), 'TemplatesPage');
 
 const MAILING_PERMS = MAILING_TYPES.map((t) => t.permission);
 

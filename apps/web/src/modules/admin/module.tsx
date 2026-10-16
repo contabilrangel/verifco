@@ -1,15 +1,18 @@
 import { Building2, FileText, Folders, KeyRound, ShieldCheck, SlidersHorizontal, Users } from 'lucide-react';
 import type { VerifcoModule } from '../../app/modules';
-import { AccountPage, AccountPreferencesPage } from './AccountPages';
-import { ContractsTab } from './ContractsTab';
-import { EmployeesTab } from './EmployeesTab';
-import { GroupsTab } from './GroupsTab';
-import { ImportPage } from './ImportPage';
-import { OfficeTab } from './OfficeTab';
-import { PreferencesTab } from './PreferencesTab';
-import { ProcuratorsTab } from './ProcuratorsTab';
-import { RolesTab } from './RolesTab';
+import { lazyPage } from '../../lib/lazy';
 import './admin.css';
+
+const AccountPage = lazyPage(() => import('./AccountPages'), 'AccountPage');
+const AccountPreferencesPage = lazyPage(() => import('./AccountPages'), 'AccountPreferencesPage');
+const ContractsTab = lazyPage(() => import('./ContractsTab'), 'ContractsTab');
+const EmployeesTab = lazyPage(() => import('./EmployeesTab'), 'EmployeesTab');
+const GroupsTab = lazyPage(() => import('./GroupsTab'), 'GroupsTab');
+const ImportPage = lazyPage(() => import('./ImportPage'), 'ImportPage');
+const OfficeTab = lazyPage(() => import('./OfficeTab'), 'OfficeTab');
+const PreferencesTab = lazyPage(() => import('./PreferencesTab'), 'PreferencesTab');
+const ProcuratorsTab = lazyPage(() => import('./ProcuratorsTab'), 'ProcuratorsTab');
+const RolesTab = lazyPage(() => import('./RolesTab'), 'RolesTab');
 
 /** Administração do escritório, conta do usuário e importações em lote. */
 export const module: VerifcoModule = {

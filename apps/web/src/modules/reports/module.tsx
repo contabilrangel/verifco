@@ -1,8 +1,12 @@
 import { FileWarning, HandCoins, Scale } from 'lucide-react';
 import { INDIVIDUAL_REPORTS } from '@verifco/shared';
 import type { VerifcoModule } from '../../app/modules';
-import { BacklogsReport, RefundsReport, ResultsReport } from './GeneralReports';
-import { IrpfReportsStep } from './IrpfReportsStep';
+import { lazyPage } from '../../lib/lazy';
+
+const BacklogsReport = lazyPage(() => import('./GeneralReports'), 'BacklogsReport');
+const RefundsReport = lazyPage(() => import('./GeneralReports'), 'RefundsReport');
+const ResultsReport = lazyPage(() => import('./GeneralReports'), 'ResultsReport');
+const IrpfReportsStep = lazyPage(() => import('./IrpfReportsStep'), 'IrpfReportsStep');
 
 export const module: VerifcoModule = {
   reportTabs: [
