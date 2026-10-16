@@ -111,7 +111,8 @@ flowchart LR
 | `dokploy-network` | Rede externa existente no Docker, compartilhada por API, worker, bancos e roteamento do Dokploy |
 
 O Dokploy conecta a web ao roteamento dos domínios. Nginx encaminha `/api/` para
-`api:3333`; `TRUST_PROXY=2` representa Traefik e Nginx. O Compose não publica a
+`verifco-api:3333`, um apelido que a API só tem na rede `backend` (na `dokploy-network`,
+compartilhada com outros projetos, o nome `api` pode resolver para outro contêiner); `TRUST_PROXY=2` representa Traefik e Nginx. O Compose não publica a
 porta da API no host. As conexões SQL usam os nomes internos dos serviços, sem
 `localhost` ou IP público. Endereços IP internos de containers podem mudar.
 A rede compartilhada não fornece isolamento por escritório; esse controle ocorre

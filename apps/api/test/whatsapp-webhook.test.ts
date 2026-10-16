@@ -327,6 +327,22 @@ describe('modelo aprovado fora da janela de 24 h (Meta)', () => {
     expect(sent).toMatchObject({ templateKey: 'darf', values: expect.objectContaining({ CLIENTE: 'Helena', VALOR: 'R$ 99,00', VENCIMENTO: '30/09/2026' }) });
     const after = await env.ctx.db.query.jobs.findFirst({ where: eq(jobs.id, job!.id) });
     expect(after!.payload).not.toHaveProperty('sealed');
+
+    // a Meta depois avisa que não entregou: reenviar mandaria o texto sem as variáveis
+    await env.ctx.db.update(deliveries).set({ status: 'failed', error: 'A Meta não entregou a mensagem.' }).where(eq(deliveries.id, delivery.id));
+    const detail = (await office.api.get(`/api/deliveries/${delivery.id}`)).body;
+    expect(detail).toMatchObject({ canResend: false, resendNote: expect.stringMatching(/novo envio/) });
+    const resend = await office.api.post(`/api/deliveries/${delivery.id}/resend`);
+    expect(resend.status).toBe(409);
+    expect(resend.body.error).toMatch(/novo envio/);
+    expect((await office.api.post('/api/deliveries/resend-failed', {})).body).toEqual({ queued: 0 });
+    expect((await office.api.get('/api/deliveries')).body.failedCount).toBe(0);
+    // mesmo que o job volte para a fila, nada sai com o conteúdo incompleto
+    const before = env.providers.sentWhatsApp.length;
+    await env.ctx.jobs.retryNow('delivery.send', [{ idempotencyKey: delivery.id, payload: { deliveryId: delivery.id }, officeId: office.officeId }]);
+    await env.ctx.jobs.drain();
+    expect(env.providers.sentWhatsApp.length).toBe(before);
+    expect(await env.ctx.db.query.deliveries.findFirst({ where: eq(deliveries.id, delivery.id) })).toMatchObject({ status: 'failed', error: expect.stringMatching(/novo envio/) });
   });
 });
 

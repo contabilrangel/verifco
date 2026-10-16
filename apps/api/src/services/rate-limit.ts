@@ -122,6 +122,12 @@ export const WHATSAPP_WEBHOOK_RULE: RateRule = { max: 300, windowSec: 60 };
 
 /** Login da equipe: falhas por e-mail (além do limite por IP). */
 export const LOGIN_EMAIL_RULE: RateRule = { max: 10, windowSec: FIFTEEN_MIN };
+/**
+ * Login do painel do sistema: só as falhas contam. Por e-mail + IP, para que tentativas de outros
+ * endereços não bloqueiem o dono; e um teto por e-mail bem mais alto, contra ataque distribuído.
+ */
+export const PLATFORM_LOGIN_RULE: RateRule = { max: 10, windowSec: FIFTEEN_MIN };
+export const PLATFORM_LOGIN_EMAIL_RULE: RateRule = { max: 100, windowSec: FIFTEEN_MIN };
 /** Falhas seguidas que bloqueiam o CPF (portal) ou o link do checklist. */
 export const LOGIN_MAX_FAILURES = 5;
 /**

@@ -1,8 +1,9 @@
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql, type SQLWrapper } from 'drizzle-orm';
 import { currentExerciseYear, getTemplateDef, htmlToText, renderTemplate, onlyDigits, type DeliveryChannel } from '@verifco/shared';
 import type { AppContext } from '../context';
 import { customers, deliveries, emailTemplates, jobs, messages, offices, users } from '../db/schema';
 import { badRequest } from '../lib/errors';
+import { PermanentJobError } from '../jobs/queue';
 
 export type DeliveryRow = typeof deliveries.$inferSelect;
 type CustomerRow = typeof customers.$inferSelect;
@@ -261,17 +262,30 @@ export async function createDeliveryBatch(
   };
 }
 
+/**
+ * Envio entregue ao provedor e que depois falhou (ex.: status "failed" da Meta): o conteúdo real
+ * (código, link, valores do modelo) já foi descartado e reenviar mandaria o texto mascarado.
+ */
+export const SEALED_CONTENT_LOST =
+  'Esta mensagem tinha código, link ou dados que não ficam guardados depois do envio. Faça um novo envio pela tela de origem (checklist, orçamento, mala direta).';
+
+/** Condição SQL: o envio já perdeu o conteúdo real (não pode ser reenviado pelo mesmo registro). */
+export const sealedContentLost = (deliveryId: SQLWrapper) =>
+  sql`exists (select 1 from ${jobs} where ${jobs.type} = ${JOB_TYPE} and ${jobs.idempotencyKey} = (${deliveryId})::text and ${jobs.payload} ->> 'sealedDropped' = 'true')`;
+
 /** Conteúdo real (cifrado) guardado no job original do envio, se houver trechos secretos. */
-async function sealedContent(ctx: AppContext, deliveryId: string) {
+async function sealedContent(ctx: AppContext, deliveryId: string): Promise<{ jobId: string; content: SealedContent } | { lost: true } | null> {
   const job = await ctx.db.query.jobs.findFirst({ where: and(eq(jobs.type, JOB_TYPE), eq(jobs.idempotencyKey, deliveryId)) });
   const sealed = job?.payload?.sealed;
-  if (typeof sealed !== 'string') return null;
+  if (typeof sealed !== 'string') return job?.payload?.sealedDropped === true ? { lost: true } : null;
   try {
-    return { jobId: job!.id, content: JSON.parse(ctx.secrets.decrypt(sealed)) as { subject: string; body: string; values?: Record<string, string | number | null> } };
+    return { jobId: job!.id, content: JSON.parse(ctx.secrets.decrypt(sealed)) as SealedContent };
   } catch {
     return null;
   }
 }
+
+type SealedContent = { subject: string; body: string; values?: Record<string, string | number | null> };
 
 /** Executor do job: entrega e registra o resultado. */
 export async function sendDeliveryJob(ctx: AppContext, deliveryId: string) {
@@ -280,7 +294,13 @@ export async function sendDeliveryJob(ctx: AppContext, deliveryId: string) {
   if (!d || d.status === 'sent' || d.status === 'delivered') return { skipped: true };
   const office = await db.query.offices.findFirst({ where: eq(offices.id, d.officeId) });
   const files = await Promise.all(d.attachments.map(async (a) => ({ a, f: await ctx.files.get(d.officeId, a.fileId) })));
-  const secret = await sealedContent(ctx, d.id);
+  const sealed = await sealedContent(ctx, d.id);
+  if (sealed && 'lost' in sealed) {
+    // nunca manda a versão mascarada no lugar da real
+    await db.update(deliveries).set({ status: 'failed', error: SEALED_CONTENT_LOST }).where(eq(deliveries.id, d.id));
+    throw new PermanentJobError(SEALED_CONTENT_LOST);
+  }
+  const secret = sealed;
   const subject = secret?.content.subject ?? d.subject ?? '';
   const body = secret?.content.body ?? d.body;
   try {
@@ -308,7 +328,8 @@ export async function sendDeliveryJob(ctx: AppContext, deliveryId: string) {
     }
     await db.update(deliveries).set({ status: 'sent', sentAt: new Date(), providerMessageId: result.messageId, error: null }).where(eq(deliveries.id, d.id));
     // entregue: a versão com o código não fica guardada nem cifrada
-    if (secret) await db.update(jobs).set({ payload: sql`${jobs.payload} - 'sealed'` }).where(eq(jobs.id, secret.jobId));
+    // (a marca impede que um reenvio posterior saia com o texto mascarado)
+    if (secret) await db.update(jobs).set({ payload: sql`(${jobs.payload} - 'sealed') || '{"sealedDropped":true}'::jsonb` }).where(eq(jobs.id, secret.jobId));
     return { messageId: result.messageId };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

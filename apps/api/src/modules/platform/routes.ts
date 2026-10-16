@@ -2,12 +2,12 @@ import bcrypt from 'bcryptjs';
 import { asc, desc, eq, ilike, sql } from 'drizzle-orm';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { AI_PROVIDERS, aiProviderDef, todayIso } from '@verifco/shared';
+import { AI_PROVIDERS, CONTRACT_STATUS_KEYS, aiProviderDef, todayIso } from '@verifco/shared';
 import { contracts, offices } from '../../db/schema';
 import { platformUsers, platformSettings, platformAiConnections, platformAuditLogs } from '../../db/platform-schema';
 import { badRequest, conflict, forbidden, notFound, unauthorized } from '../../lib/errors';
 import { guard, parse } from '../../lib/http';
-import { consume } from '../../services/rate-limit';
+import { PLATFORM_LOGIN_EMAIL_RULE, PLATFORM_LOGIN_RULE, check, consume, fail, resetLimit } from '../../services/rate-limit';
 import { unsafeBaseUrlReason } from '../../integrations/ssrf';
 import { safeConnection, unlockConnection, resolveGlobalAi } from '../../integrations/platform-ai-store';
 import { completeConnection, connectionFetch } from '../../integrations/multi-ai';
@@ -28,7 +28,7 @@ const contractBody = z.object({
   declarationLimit: z.number().int().min(1).max(1000000).nullable(),
   year: z.number().int().min(2000).max(2100),
   startsAt: z.iso.date(), expiresAt: z.iso.date(), hasBackup: z.boolean(),
-  status: z.enum(['active', 'expired', 'cancelled']),
+  status: z.enum(CONTRACT_STATUS_KEYS),
 }).refine((v) => v.expiresAt >= v.startsAt, { message: 'O término deve ser igual ou posterior ao início.' });
 
 function platformUser(req: FastifyRequest, owner = false) {
@@ -36,6 +36,9 @@ function platformUser(req: FastifyRequest, owner = false) {
   if (owner && req.platformAuth.role !== 'owner') throw forbidden('Esta configuração é exclusiva do proprietário do sistema.');
   return req.platformAuth;
 }
+
+/** Hash de uma senha aleatória, com o mesmo custo das contas reais (o tempo não revela se o e-mail existe). */
+const DUMMY_HASH = '$2b$12$QRSR5O1zG6izTr8bvyZyTu9pVkWRxtlpoheeMyn9tTlTXKsDO1tDy';
 
 export default async function platformRoutes(app: FastifyInstance) {
   const { ctx } = app; const { db, platformDb } = ctx;
@@ -47,12 +50,22 @@ export default async function platformRoutes(app: FastifyInstance) {
   }
   app.post('/platform/login', async (req) => {
     const body = parse(loginBody, req.body);
-    await consume(rateCtx, `platform-login-email:${body.email}`, { max: 10, windowSec: 900 });
+    // só as falhas contam (quem erra a senha de propósito não bloqueia o dono em outro endereço)
+    const ipKey = `platform-login:${body.email}:${req.ip}`;
+    const emailKey = `platform-login-email:${body.email}`;
+    const message = 'Muitas tentativas sem sucesso. Aguarde alguns minutos e tente de novo.';
+    await check(rateCtx, ipKey, PLATFORM_LOGIN_RULE, message);
+    await check(rateCtx, emailKey, PLATFORM_LOGIN_EMAIL_RULE, message);
     const user = await platformDb.query.platformUsers.findFirst({ where: eq(platformUsers.email, body.email) });
-    // Mesmo custo para conta inexistente; mensagem não revela se a conta existe.
-    const hash = user?.passwordHash ?? '$2b$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy';
+    // Mesmo custo (12) das senhas reais para conta inexistente; a mensagem não revela se a conta existe.
+    const hash = user?.passwordHash ?? DUMMY_HASH;
     const valid = await bcrypt.compare(body.password, hash);
-    if (!user?.isActive || !valid) throw unauthorized('E-mail ou senha inválidos.');
+    if (!user?.isActive || !valid) {
+      await fail(rateCtx, ipKey, PLATFORM_LOGIN_RULE);
+      await fail(rateCtx, emailKey, PLATFORM_LOGIN_EMAIL_RULE);
+      throw unauthorized('E-mail ou senha inválidos.');
+    }
+    await resetLimit(rateCtx, ipKey);
     await platformDb.insert(platformAuditLogs).values({ actorId: user.id, action: 'platform.login' });
     return { token: app.jwt.sign({ typ: 'platform', sub: user.id, tv: user.tokenVersion }, { expiresIn: '1h' }) };
   });

@@ -21,7 +21,7 @@ import { activeJob } from '../../jobs/queue';
 import { badRequest, conflict, notFound } from '../../lib/errors';
 import { audit, can, dateStr, guard, paginate, parse, requirePermission, requireUser, uuidParam, yearSchema } from '../../lib/http';
 import { getCustomerForUser } from '../../services/customers';
-import { resolveTemplate } from '../../services/delivery';
+import { SEALED_CONTENT_LOST, resolveTemplate, sealedContentLost } from '../../services/delivery';
 import { getOfficeSettings } from '../../services/settings';
 import { customerChecklistPdf } from '../checklist/pdf';
 import { buildKitPdf } from '../reports/kit';
@@ -189,7 +189,7 @@ export async function communicationRoutes(app: FastifyInstance) {
       .select({ failedCount: count() })
       .from(deliveries)
       .leftJoin(customers, eq(customers.id, deliveries.customerId))
-      .where(and(...filters, eq(deliveries.status, 'failed')));
+      .where(and(...filters, eq(deliveries.status, 'failed'), sql`not ${sealedContentLost(deliveries.id)}`));
     const rows = await db
       .select({
         id: deliveries.id,
@@ -235,10 +235,17 @@ export async function communicationRoutes(app: FastifyInstance) {
 
   /** Pode reenviar: falhou, ou ficou "na fila" sem job que ainda vá enviá-lo (o processo caiu). */
   const resendable = async (d: typeof deliveries.$inferSelect) => {
+    if (d.status !== 'failed' && d.status !== 'queued') return false;
+    // já entregue ao provedor com código/link: o conteúdo real foi descartado
+    const job = await db.query.jobs.findFirst({ where: and(eq(jobs.type, 'delivery.send'), eq(jobs.idempotencyKey, d.id)) });
+    if (job?.payload?.sealedDropped === true) return false;
     if (d.status === 'failed') return true;
-    if (d.status !== 'queued') return false;
-    const job = await db.query.jobs.findFirst({ where: and(eq(jobs.type, 'delivery.send'), sql`${jobs.payload}->>'deliveryId' = ${d.id}`, activeJob()) });
-    return !job;
+    const active = await db.query.jobs.findFirst({ where: and(eq(jobs.type, 'delivery.send'), sql`${jobs.payload}->>'deliveryId' = ${d.id}`, activeJob()) });
+    return !active;
+  };
+  const contentLost = async (d: typeof deliveries.$inferSelect) => {
+    const job = await db.query.jobs.findFirst({ where: and(eq(jobs.type, 'delivery.send'), eq(jobs.idempotencyKey, d.id)) });
+    return job?.payload?.sealedDropped === true;
   };
 
   /** Volta envios para a fila pelo job do próprio envio (reaberto, nunca duplicado). */
@@ -260,6 +267,7 @@ export async function communicationRoutes(app: FastifyInstance) {
       customerName,
       templateName: d.templateKey ? (getTemplateDef(d.templateKey)?.name ?? d.templateKey) : null,
       canResend: await resendable(d),
+      resendNote: d.status === 'failed' && (await contentLost(d)) ? SEALED_CONTENT_LOST : null,
     };
   });
 
@@ -268,7 +276,10 @@ export async function communicationRoutes(app: FastifyInstance) {
     const user = requirePermission(req, ...SEND_PERMS);
     const { id } = parse(z.object({ id: z.uuid() }), req.params);
     const { d } = await loadDelivery(user, id);
-    if (!(await resendable(d))) throw conflict(d.status === 'queued' ? 'Este envio já foi colocado na fila novamente.' : 'Só é possível reenviar envios que falharam.');
+    if (!(await resendable(d))) {
+      if (await contentLost(d)) throw conflict(SEALED_CONTENT_LOST);
+      throw conflict(d.status === 'queued' ? 'Este envio já foi colocado na fila novamente.' : 'Só é possível reenviar envios que falharam.');
+    }
     // troca de estado atômica: dois cliques seguidos não geram dois reenvios
     const [row] = await db
       .update(deliveries)
@@ -289,7 +300,7 @@ export async function communicationRoutes(app: FastifyInstance) {
       .select({ id: deliveries.id })
       .from(deliveries)
       .leftJoin(customers, eq(customers.id, deliveries.customerId))
-      .where(and(...(await deliveryFilters(user, q)), eq(deliveries.status, 'failed')));
+      .where(and(...(await deliveryFilters(user, q)), eq(deliveries.status, 'failed'), sql`not ${sealedContentLost(deliveries.id)}`));
     const rows = await db
       .update(deliveries)
       .set({ status: 'queued', error: null })

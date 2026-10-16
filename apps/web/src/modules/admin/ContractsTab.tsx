@@ -1,5 +1,5 @@
 import { ExternalLink, FileText } from 'lucide-react';
-import { todayIso } from '@verifco/shared';
+import { contractSituation, todayIso } from '@verifco/shared';
 import { Alert, Card, EmptyState, Loading, Tag, type Tone } from '../../ds';
 import { useApi } from '../../lib/hooks';
 import { formatDate } from '../../lib/format';
@@ -20,14 +20,15 @@ interface ContractRow {
 
 const PLANS: Record<string, string> = { trial: 'Avaliação', basic: 'Básico', pro: 'Profissional', enterprise: 'Empresarial' };
 
-function situation(c: ContractRow): { tone: Tone; label: string } {
-  const today = todayIso();
-  if (c.status === 'canceled') return { tone: 'neutral', label: 'Cancelado' };
-  if (c.status === 'suspended') return { tone: 'warning', label: 'Suspenso' };
-  if (c.expiresAt < today) return { tone: 'danger', label: 'Expirado' };
-  if (c.startsAt > today) return { tone: 'primary', label: 'A iniciar' };
-  return { tone: 'success', label: 'Ativo' };
-}
+const SITUATION: Record<ReturnType<typeof contractSituation>, { tone: Tone; label: string }> = {
+  cancelled: { tone: 'neutral', label: 'Cancelado' },
+  expired: { tone: 'danger', label: 'Expirado' },
+  upcoming: { tone: 'primary', label: 'A iniciar' },
+  active: { tone: 'success', label: 'Ativo' },
+};
+
+/** Mesma regra do painel do sistema e do bloqueio: só "active" dentro das datas é vigente. */
+const situation = (c: ContractRow) => SITUATION[contractSituation(c, todayIso())];
 
 /** Aba Contratos: pacotes e licenças contratados pelo escritório (somente consulta). */
 export function ContractsTab() {

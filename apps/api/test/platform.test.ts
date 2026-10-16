@@ -25,6 +25,25 @@ beforeAll(async () => {
 });
 afterAll(async () => env.close());
 
+describe('limite do login global', () => {
+  const login = (password: string, ip: string) =>
+    env.app.inject({ method: 'POST', url: '/api/platform/login', payload: { email: 'owner@teste.com', password }, remoteAddress: ip });
+
+  it('falhas de outros endereços não bloqueiam o dono; no mesmo endereço, só as falhas contam', async () => {
+    env.ctx.config.RATE_LIMIT = true;
+    try {
+      for (let i = 0; i < 11; i++) expect((await login('errada', `10.9.0.${i + 1}`)).statusCode).toBe(401);
+      expect((await login('senha-sistema-123', '10.9.1.1')).statusCode).toBe(200);
+      // acertos não contam; o mesmo endereço é bloqueado depois de 10 falhas
+      for (let i = 0; i < 3; i++) expect((await login('senha-sistema-123', '10.9.2.1')).statusCode).toBe(200);
+      for (let i = 0; i < 10; i++) expect((await login('errada', '10.9.2.2')).statusCode).toBe(401);
+      expect((await login('senha-sistema-123', '10.9.2.2')).statusCode).toBe(429);
+    } finally {
+      env.ctx.config.RATE_LIMIT = false;
+    }
+  });
+});
+
 describe('administração global separada', () => {
   it('login global não aceita contas do contador e tokens não atravessam os painéis', async () => {
     const wrong = await env.app.inject({ method: 'POST', url: '/api/platform/login', payload: { email: office.email, password: 'senha-forte-123' } });

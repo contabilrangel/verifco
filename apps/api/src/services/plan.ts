@@ -101,7 +101,7 @@ export async function contractUsage(db: DbOrTx, officeId: string, today = todayI
     }))
     .sort((a, b) => a.expiresAt.localeCompare(b.expiresAt) || a.name.localeCompare(b.name));
   const validUntil = active.length ? active[active.length - 1].expiresAt : null;
-  const past = plan.all.filter((c) => c.status !== 'canceled' && String(c.expiresAt) < today).map((c) => String(c.expiresAt)).sort();
+  const past = plan.all.filter((c) => c.status !== 'cancelled' && String(c.expiresAt) < today).map((c) => String(c.expiresAt)).sort();
   const upcoming = plan.all.filter((c) => c.status === 'active' && String(c.startsAt) > today).map((c) => String(c.startsAt)).sort();
   const years = [...new Set([Number(today.slice(0, 4)), ...plan.active.map((c) => c.year)])].sort((a, b) => b - a);
   const exercises: ContractUsageExercise[] = [];

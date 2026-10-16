@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { Link, NavLink, useLocation } from 'react-router';
 import { Building2, FileCheck2, LayoutDashboard, Lock, LogOut, Mail, Plus, ShieldCheck, Sparkles, Users, History, Check, PlugZap } from 'lucide-react';
-import { AI_PROVIDERS, aiProviderDef, todayIso, formatDateTimeBr, type AiProviderKey } from '@verifco/shared';
+import { AI_PROVIDERS, CONTRACT_STATUS, aiProviderDef, contractSituation, todayIso, formatDateTimeBr, type AiProviderKey } from '@verifco/shared';
 import { Alert, Button, Card, Checkbox, ConfirmDialog, Input, Loading, PasswordInput, Select, Tag } from '../../ds';
 import { AuthFooter, AuthHeading, AuthLayout } from '../../app/AuthLayout';
 import { ApiError, errorMessage } from '../../lib/api';
@@ -197,6 +197,13 @@ function AiPage(p: PageProps) {
     </button>)}</div>
   </DataState>;
 }
+const CONTRACT_TAG = { cancelled: ['neutral', 'Cancelado'], expired: ['neutral', 'Expirado'], upcoming: ['primary', 'A iniciar'], active: ['success', 'Ativo'] } as const;
+
+function ContractTag({ contract }: { contract: { status: string; startsAt: string; expiresAt: string } }) {
+  const [tone, label] = CONTRACT_TAG[contractSituation(contract, todayIso())];
+  return <Tag tone={tone}>{label}</Tag>;
+}
+
 function ContractsPage(p: PageProps) {
   const [page, setPage] = useState(0); const [officeSearch, setOfficeSearch] = useState('');
   const list = useData<Contract[]>(`/contracts?offset=${page * 100}`, p.revision);
@@ -219,12 +226,12 @@ function ContractsPage(p: PageProps) {
       <Input label="Início" type="date" required value={form.startsAt} onChange={(e) => setForm({ ...form, startsAt: e.target.value })} />
       <Input label="Término" type="date" required min={form.startsAt} value={form.expiresAt} onChange={(e) => setForm({ ...form, expiresAt: e.target.value })} />
       <Input label="Limite de declarações (vazio = ilimitado)" type="number" min={1} value={form.declarationLimit ?? ''} onChange={(e) => setForm({ ...form, declarationLimit: e.target.value ? Number(e.target.value) : null })} />
-      <Select label="Situação" value={form.status} options={[{ value: 'active', label: 'Ativo' }, { value: 'expired', label: 'Expirado' }, { value: 'cancelled', label: 'Cancelado' }]} onChange={(e) => setForm({ ...form, status: e.target.value })} />
+      <Select label="Situação" value={form.status} options={Object.entries(CONTRACT_STATUS).map(([value, label]) => ({ value, label }))} onChange={(e) => setForm({ ...form, status: e.target.value })} />
     </div><Checkbox label="Inclui cópia de segurança" checked={form.hasBackup} onChange={(e) => setForm({ ...form, hasBackup: e.target.checked })} />
       <div className="vf-inline"><Button type="submit" loading={p.busy}>Salvar contrato</Button><Button kind="tertiary" onClick={() => setForm(null)}>Cancelar</Button></div>
     </form></Card>}
     <div className="vf-platform-list">{list.data?.map((c) => <Card key={c.id}><div className="vf-platform-row"><div><h2>{c.officeName}</h2><p>{c.name} · {c.plan} · {c.year}</p></div>
-      {p.owner && <Button kind="secondary" onClick={() => setForm(c)}>Editar contrato</Button>}</div><div className="vf-inline"><Tag tone={c.status === 'active' && c.expiresAt >= todayIso() ? 'success' : 'neutral'}>{c.status === 'cancelled' ? 'Cancelado' : c.status === 'expired' || c.expiresAt < todayIso() ? 'Expirado' : 'Ativo'}</Tag>
+      {p.owner && <Button kind="secondary" onClick={() => setForm(c)}>Editar contrato</Button>}</div><div className="vf-inline"><ContractTag contract={c} />
       <Tag>{c.declarationLimit === null ? 'Declarações ilimitadas' : c.declarationLimit + ' declarações'}</Tag><span className="vf-muted">{c.startsAt.split('-').reverse().join('/')} até {c.expiresAt.split('-').reverse().join('/')}</span></div></Card>)}</div>
     <div className="vf-inline"><Button kind="secondary" disabled={page === 0} onClick={() => setPage(page - 1)}>Anterior</Button><span>Página {page + 1}</span>
       <Button kind="secondary" disabled={(list.data?.length ?? 0) < 100} onClick={() => setPage(page + 1)}>Próxima</Button></div>

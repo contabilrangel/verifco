@@ -32,6 +32,8 @@ interface DeliveryDetail extends Omit<DeliveryRow, 'attachments'> {
   attachments: { fileId: string; filename: string }[];
   templateName: string | null;
   canResend: boolean;
+  /** Por que não dá para reenviar este envio (conteúdo com código ou link já descartado). */
+  resendNote: string | null;
 }
 
 type Filters = { templateKey: string; channel: string; status: string; from: string; to: string };
@@ -293,6 +295,7 @@ function DeliveryDrawer({ id, canResend, onClose, onResend }: { id: string | nul
               {d.error}
             </Alert>
           )}
+          {d.resendNote && d.resendNote !== d.error && <Alert tone="warning">{d.resendNote}</Alert>}
           <dl className="vf-grid" style={{ margin: 0 }}>
             <div>
               <dt className="vf-text-xs vf-muted">Destinatário</dt>

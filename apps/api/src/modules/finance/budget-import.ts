@@ -225,7 +225,20 @@ async function processLines(
       if (statusText && !status) return fail(`Status "${statusText}" não reconhecido.`);
 
       const candidates = budgetsBy.get(`${customer.id}|${category}`) ?? [];
-      const current: BudgetRow | undefined = candidates.find((b) => b.status !== 'canceled') ?? candidates[0];
+      const code = cell('codigo_do_orcamento');
+      let current: BudgetRow | undefined;
+      if (code) {
+        // a linha do modelo diz qual orçamento é: atualiza só ele
+        current = candidates.find((b) => b.id === code);
+        if (!current) return fail('Código do orçamento não encontrado para este cliente, categoria e exercício.');
+      } else {
+        // sem código, só há como saber qual atualizar se houver um único orçamento em aberto
+        const open = candidates.filter((b) => b.status !== 'canceled');
+        if (open.length > 1) {
+          return fail('O cliente tem mais de um orçamento desta categoria no ano: informe o código do orçamento (baixe o modelo de novo).');
+        }
+        current = open[0] ?? candidates[0];
+      }
       const target = (status ?? current?.status ?? 'draft') as BudgetStatus;
       if (target === 'sent' && current?.status !== 'sent') return fail('O status "Enviado" só é definido pelo envio ao cliente no sistema.');
       if (!IMPORT_STATUSES.includes(target) && target !== 'sent') return fail('Status inválido.');
@@ -237,7 +250,8 @@ async function processLines(
         const changed =
           current.amountCents !== amountCents ||
           Number(current.discountPercent) !== discount ||
-          (current.paymentMethodId ?? null) !== (method?.id ?? null) ||
+          // forma em branco no modelo = a do orçamento (não a padrão do escritório)
+          (Boolean(cell('forma_de_pagamento')) && (current.paymentMethodId ?? null) !== (method?.id ?? null)) ||
           current.installments !== installments ||
           (start !== null && current.billingStartDate !== start) ||
           target !== 'approved';

@@ -37,6 +37,13 @@ x-api: &api
 services:
   api:
     <<: *api
+    # a web encontra a API por este nome, que só existe na rede backend (na dokploy-network,
+    # compartilhada com outros projetos, o nome "api" pode apontar para outro contêiner)
+    networks:
+      backend:
+        aliases:
+          - verifco-api
+      dokploy-network: {}
 
   worker:
     <<: *api

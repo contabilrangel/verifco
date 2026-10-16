@@ -31,7 +31,8 @@ Na aplicação **Verifco completo**, use o caminho
 `./compose.dokploy-managed.yml` e o modelo de ambiente
 `deploy/dokploy-managed.env.example`. O Compose contém apenas **web, API e worker**.
 API e worker participam de `dokploy-network` para acessar os bancos gerenciados,
-além de `backend` para comunicação com a web. A rede externa deve existir no servidor
+além de `backend` para comunicação com a web (a web chama a API pelo apelido `verifco-api`,
+que só existe na rede `backend`). A rede externa deve existir no servidor
 do Dokploy; confira o resultado em **Preview Compose**. Os bancos permanecem em
 serviços independentes e não reiniciam durante uma atualização da aplicação.
 
