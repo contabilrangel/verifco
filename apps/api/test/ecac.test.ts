@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
-import { todayIso } from '@verifco/shared';
-import { apiTokens, auditLogs, darfs, declarations, documents, jobs } from '../src/db/schema';
+import { currentExerciseYear, todayIso } from '@verifco/shared';
+import { apiTokens, auditLogs, darfs, declarations, documents, files, jobs, syncInbox } from '../src/db/schema';
 import { syncCustomerViaSerpro } from '../src/modules/ecac/jobs';
 import { FILE_DATE_CLOCK_SKEW_MS, fileModifiedAt, isRectificationReceiptName } from '../src/modules/sync/ingest';
 import { interpretMailbox, interpretProcuration } from '../src/modules/ecac/serpro';
@@ -71,7 +71,7 @@ describe('tokens de máquina', () => {
     const ext = await env.app.inject({ method: 'GET', url: '/api/robot/downloads/extension', headers: { authorization: `Bearer ${office.token}` } });
     expect(ext.statusCode).toBe(200);
     const extZip = await JSZip.loadAsync(ext.rawPayload);
-    expect(Object.keys(extZip.files)).toEqual(expect.arrayContaining(['verifco-extensao/manifest.json', 'verifco-extensao/content/parsers.js']));
+    expect(Object.keys(extZip.files)).toEqual(expect.arrayContaining(['verifco-extensao/manifest.json', 'verifco-extensao/service-worker.js']));
     const sync = await env.app.inject({ method: 'GET', url: '/api/robot/downloads/sync', headers: { authorization: `Bearer ${office.token}` } });
     const syncZip = await JSZip.loadAsync(sync.rawPayload);
     expect(Object.keys(syncZip.files)).toEqual(expect.arrayContaining(['verifco-sincronizador/package.json', 'verifco-sincronizador/src/cli.ts']));
@@ -80,15 +80,155 @@ describe('tokens de máquina', () => {
     expect((await office.api.get('/api/robot/downloads/outro')).status).toBe(400);
   });
 
-  it('lista os clientes com procurador para o robô', async () => {
+  it('lista e busca os clientes ativos para o robô (nome ou CPF)', async () => {
     const { api, token } = await officeWithToken('extension');
     const p = await api.post('/api/procurators', { name: 'Procurador', cpfCnpj: '11.222.333/0001-81' });
-    const a = await api.post('/api/customers', { name: 'Com procurador', cpfCnpj: VALID_CPFS[0] });
-    await api.post('/api/customers', { name: 'Sem procurador', cpfCnpj: VALID_CPFS[1] });
+    const a = await api.post('/api/customers', { name: 'Ana com procurador', cpfCnpj: VALID_CPFS[0] });
+    await api.post('/api/customers', { name: 'Bruno sem procurador', cpfCnpj: VALID_CPFS[1] });
+    const gone = await api.post('/api/customers', { name: 'Carla excluída', cpfCnpj: VALID_CPFS[2] });
+    await api.del(`/api/customers/${gone.body.id}`);
     await api.post('/api/customers/bulk', { ids: [a.body.id], action: 'procurator', value: p.body.id });
     const res = await send(env, token, 'GET', '/api/sync/customers');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual([{ cpf: VALID_CPFS[0], name: 'Com procurador', procurationStatus: 'validating', procurator: { name: 'Procurador', cpfCnpj: '11222333000181' } }]);
+    expect(res.body).toEqual([
+      { cpf: VALID_CPFS[0], name: 'Ana com procurador', procurationStatus: 'validating', hasProcurator: true },
+      { cpf: VALID_CPFS[1], name: 'Bruno sem procurador', procurationStatus: expect.any(String), hasProcurator: false },
+    ]);
+    expect((await send(env, token, 'GET', '/api/sync/customers?q=bruno')).body.map((c: any) => c.cpf)).toEqual([VALID_CPFS[1]]);
+    expect((await send(env, token, 'GET', `/api/sync/customers?q=${VALID_CPFS[0].slice(0, 5)}`)).body.map((c: any) => c.cpf)).toEqual([VALID_CPFS[0]]);
+    // curinga do LIKE digitado pelo usuário é texto, não padrão
+    expect((await send(env, token, 'GET', '/api/sync/customers?q=%25')).body).toEqual([]);
+    expect((await send(env, token, 'GET', '/api/sync/customers?limit=1')).body).toHaveLength(1);
+    expect((await send(env, token, 'GET', '/api/sync/customers?limit=500')).status).toBe(400);
+  });
+
+  it('registra a versão do programa e avisa quando há atualização ou a versão não é mais aceita', async () => {
+    const { api, token } = await officeWithToken('sync');
+    const who = (client?: string) => env.app.inject({ method: 'GET', url: '/api/sync/whoami', headers: { authorization: `Bearer ${token}`, ...(client ? { 'x-verifco-client': client } : {}) } });
+    const silent = (await who()).json();
+    expect(silent.client).toMatchObject({ kind: 'sync', version: null, updateAvailable: false, unsupported: false });
+    expect(silent.client.latest).toMatch(/^\d+\.\d+\.\d+/);
+    const old = (await who('sync/0.0.1 (win32)')).json();
+    expect(old.client).toMatchObject({ version: '0.0.1', updateAvailable: true, unsupported: true });
+    const current = (await who(`sync/${silent.client.latest} (linux)`)).json();
+    expect(current.client).toMatchObject({ version: silent.client.latest, updateAvailable: false, unsupported: false });
+    // o cabeçalho de outro programa não vale para este token
+    expect((await who('extension/9.9.9')).json().client.version).toBeNull();
+    const listed = (await api.get('/api/robot/tokens')).body.find((t: any) => t.scope === 'sync');
+    expect(listed).toMatchObject({ clientVersion: silent.client.latest, clientPlatform: 'linux' });
+    expect((await api.get('/api/robot/overview')).body).toMatchObject({ inboxPending: 0, clientVersions: { sync: silent.client.latest, extension: expect.any(String) } });
+  });
+});
+
+describe('documento avulso enviado pelo robô', () => {
+  it('guarda na pasta do cliente com categoria, título e origem; repetido não duplica', async () => {
+    const { api, token } = await officeWithToken('extension');
+    const c = await api.post('/api/customers', { name: 'Maria', cpfCnpj: VALID_CPFS[0] });
+    const doc = (fields: Record<string, string>, content = fakePdf('recibo')) =>
+      send(env, token, 'POST', '/api/sync/documents', { multipart: multipart(fields, { name: 'download.pdf', content, type: 'application/pdf' }) });
+    const up = await doc({ cpf: VALID_CPFS[0], ano: '2026', categoria: 'health', titulo: 'Recibo do plano de saúde', origem: 'https://exemplo.com.br/recibos/1' });
+    expect(up.status).toBe(201);
+    expect(up.body).toMatchObject({ customer: { id: c.body.id, name: 'Maria' }, year: 2026, duplicate: false });
+    const stored = await env.ctx.db.query.documents.findFirst({ where: eq(documents.id, up.body.id) });
+    expect(stored).toMatchObject({ customerId: c.body.id, category: 'health', uploadedBy: 'office', processingStatus: 'not_processed' });
+    expect((stored!.extracted as any).sync).toMatchObject({ type: 'document', origin: 'https://exemplo.com.br/recibos/1', client: 'extension' });
+    const file = await env.ctx.db.query.files.findFirst({ where: eq(files.id, stored!.fileId) });
+    expect(file!.filename).toBe('Recibo do plano de saúde.pdf');
+    const again = await doc({ cpf: VALID_CPFS[0], ano: '2026' });
+    expect(again.status).toBe(200);
+    expect(again.body).toMatchObject({ id: up.body.id, duplicate: true });
+    // sem ano: vale o exercício corrente; sem categoria: "other"
+    const other = await doc({ cpf: VALID_CPFS[0] }, fakePdf('outro'));
+    expect(other.status).toBe(201);
+    expect(other.body.year).toBe(currentExerciseYear());
+    expect((await env.ctx.db.query.documents.findFirst({ where: eq(documents.id, other.body.id) }))!.category).toBe('other');
+  });
+
+  it('recusa sem arquivo, CPF inválido, categoria desconhecida, cliente de outro escritório e token sem escopo', async () => {
+    const { token } = await officeWithToken('sync');
+    const outside = await officeWithToken('sync');
+    await outside.api.post('/api/customers', { name: 'De outro escritório', cpfCnpj: VALID_CPFS[1] });
+    const post = (fields: Record<string, string>, withFile = true) =>
+      send(env, token, 'POST', '/api/sync/documents', { multipart: multipart(fields, withFile ? { name: 'a.pdf', content: fakePdf('a'), type: 'application/pdf' } : undefined) });
+    expect((await post({ cpf: VALID_CPFS[0] }, false)).status).toBe(400);
+    expect((await post({ cpf: '123' })).status).toBe(400);
+    expect((await post({})).status).toBe(400);
+    expect((await post({ cpf: VALID_CPFS[1], categoria: 'inexistente' })).status).toBe(400);
+    expect((await post({ cpf: VALID_CPFS[1], ano: '26' })).status).toBe(400);
+    expect((await post({ cpf: VALID_CPFS[1] })).status).toBe(404);
+    expect((await send(env, null, 'POST', '/api/sync/documents', { multipart: multipart({ cpf: VALID_CPFS[1] }, { name: 'a.pdf', content: 'x' }) })).status).toBe(401);
+  });
+});
+
+describe('caixa de entrada do sincronizador (arquivos sem cliente)', () => {
+  it('guarda o arquivo, avisa uma vez por dia, sugere o cliente e atribui como arquivo do sincronizador', async () => {
+    const { api, token } = await officeWithToken('sync');
+    const name = `${VALID_CPFS[0]}-IRPF-A-2026-2025-ORIGI.REC`;
+    const inbox = (fields: Record<string, string>, file: { name: string; content: string }) => send(env, token, 'POST', '/api/sync/inbox', { multipart: multipart(fields, file) });
+    const first = await inbox({ motivo: 'cliente_nao_cadastrado', caminho: `C:\\IRPF2026\\transmitidas\\${name}` }, { name, content: 'recibo-1' });
+    expect(first.status).toBe(201);
+    expect(first.body.duplicate).toBe(false);
+    const dup = await inbox({ motivo: 'cliente_nao_cadastrado' }, { name, content: 'recibo-1' });
+    expect(dup.status).toBe(200);
+    expect(dup.body).toEqual({ id: first.body.id, duplicate: true });
+    const noCpf = await inbox({ motivo: 'sem_cpf', ano: '2025' }, { name: 'declaracao.dbk', content: 'sem-cpf' });
+    expect(noCpf.status).toBe(201);
+    expect((await inbox({ motivo: 'qualquer' }, { name: 'x.pdf', content: 'x' })).status).toBe(400);
+    // token da extensão não alimenta a caixa de entrada
+    const ext = await api.post('/api/robot/tokens', { name: 'Extensão', scope: 'extension' });
+    expect((await send(env, ext.body.token, 'POST', '/api/sync/inbox', { multipart: multipart({ motivo: 'sem_cpf' }, { name: 'y.pdf', content: 'y' }) })).status).toBe(403);
+
+    const notices = (await api.get('/api/notifications')).body;
+    const list = Array.isArray(notices) ? notices : notices.data ?? notices.items;
+    expect(list.filter((n: any) => n.title === 'Sincronizador: arquivos sem cliente')).toHaveLength(1);
+    expect((await api.get('/api/robot/overview')).body.inboxPending).toBe(2);
+
+    let pending = (await api.get('/api/robot/inbox')).body;
+    expect(pending).toHaveLength(2);
+    const rec = pending.find((i: any) => i.id === first.body.id);
+    expect(rec).toMatchObject({ filename: name, reason: 'cliente_nao_cadastrado', cpf: VALID_CPFS[0], exerciseYear: 2026, suggestedCustomer: null, tokenName: expect.any(String) });
+    expect(pending.find((i: any) => i.id === noCpf.body.id)).toMatchObject({ reason: 'sem_cpf', cpf: null, exerciseYear: 2025 });
+
+    // cadastrado o cliente, a caixa passa a sugerir
+    const c = await api.post('/api/customers', { name: 'Maria', cpfCnpj: VALID_CPFS[0] });
+    pending = (await api.get('/api/robot/inbox')).body;
+    expect(pending.find((i: any) => i.id === first.body.id).suggestedCustomer).toEqual({ id: c.body.id, name: 'Maria' });
+
+    const download = await api.get(`/api/robot/inbox/${first.body.id}/download`);
+    expect(download.status).toBe(200);
+    expect(download.raw.rawPayload.toString()).toBe('recibo-1');
+
+    const filed = await api.post(`/api/robot/inbox/${first.body.id}/file`, { customerId: c.body.id, year: 2026 });
+    expect(filed.status).toBe(200);
+    expect(filed.body).toMatchObject({ ok: true, duplicate: false, customer: { id: c.body.id, name: 'Maria' }, year: 2026 });
+    const doc = await env.ctx.db.query.documents.findFirst({ where: eq(documents.id, filed.body.documentId) });
+    expect(doc).toMatchObject({ customerId: c.body.id, uploadedBy: 'sync' });
+    // o recibo atualizou a declaração, como se tivesse vindo direto do sincronizador
+    const decl = await env.ctx.db.query.declarations.findFirst({ where: and(eq(declarations.customerId, c.body.id), eq(declarations.exerciseYear, 2026)) });
+    expect(decl).toBeTruthy();
+    expect((await api.post(`/api/robot/inbox/${first.body.id}/file`, { customerId: c.body.id, year: 2026 })).status).toBe(404);
+
+    // descartar apaga a linha e o conteúdo; o mesmo arquivo pode voltar depois
+    const row = await env.ctx.db.query.syncInbox.findFirst({ where: eq(syncInbox.id, noCpf.body.id) });
+    expect((await api.del(`/api/robot/inbox/${noCpf.body.id}`)).status).toBe(200);
+    expect(await env.ctx.db.query.syncInbox.findFirst({ where: eq(syncInbox.id, noCpf.body.id) })).toBeUndefined();
+    expect(await env.ctx.db.query.files.findFirst({ where: eq(files.id, row!.fileId) })).toBeUndefined();
+    expect((await api.get('/api/robot/inbox')).body).toEqual([]);
+    expect((await api.get('/api/robot/overview')).body.inboxPending).toBe(0);
+  });
+
+  it('é do escritório: outro escritório não lista, não baixa, não atribui nem descarta', async () => {
+    const mine = await officeWithToken('sync');
+    const other = await officeWithToken('sync');
+    const item = await send(env, mine.token, 'POST', '/api/sync/inbox', { multipart: multipart({ motivo: 'sem_cpf' }, { name: 'solto.pdf', content: 'conteudo' }) });
+    const theirs = await other.api.post('/api/customers', { name: 'Cliente alheio', cpfCnpj: VALID_CPFS[0] });
+    expect((await other.api.get('/api/robot/inbox')).body).toEqual([]);
+    expect((await other.api.get(`/api/robot/inbox/${item.body.id}/download`)).status).toBe(404);
+    expect((await other.api.post(`/api/robot/inbox/${item.body.id}/file`, { customerId: theirs.body.id, year: 2026 })).status).toBe(404);
+    expect((await other.api.del(`/api/robot/inbox/${item.body.id}`)).status).toBe(404);
+    // nem o dono atribui a um cliente de outro escritório
+    expect((await mine.api.post(`/api/robot/inbox/${item.body.id}/file`, { customerId: theirs.body.id, year: 2026 })).status).toBe(404);
+    expect((await mine.api.get('/api/robot/inbox')).body).toHaveLength(1);
   });
 });
 
@@ -393,6 +533,35 @@ describe('registros do eCAC enviados pela extensão', () => {
     // token do sincronizador não envia registros interpretados
     const syncTok = await api.post('/api/robot/tokens', { name: 'Sync', scope: 'sync' });
     expect((await send(env, syncTok.body.token, 'POST', '/api/sync/ecac-records', { json: { kind: 'cnd', cpf, data: {} } })).status).toBe(403);
+  });
+
+  it('página registrada pela extensão aparece em "outros" com texto e imagem e pode ser removida; o que veio como CND fica', async () => {
+    const { api, token } = await officeWithToken('extension');
+    const c = await api.post('/api/customers', { name: 'Rita', cpfCnpj: VALID_CPFS[4] });
+    const cpf = VALID_CPFS[4];
+    const res = await send(env, token, 'POST', '/api/sync/ecac-records', {
+      json: {
+        records: [
+          {
+            kind: 'other',
+            cpf,
+            data: { title: 'Consulta de restituição', text: 'Lote 3 de 2026: creditado', url: 'https://www.restituicao.receita.fazenda.gov.br/', origin: 'page', truncated: false, capturedAt: '2026-10-06T12:00:00.000Z' },
+            file: { filename: 'tela.png', mimeType: 'image/png', base64: Buffer.from('png-falso').toString('base64') },
+          },
+          { kind: 'cnd', cpf, data: { status: 'success' } },
+        ],
+      },
+    });
+    expect(res.body.ok).toBe(2);
+    const panel = (await api.get(`/api/customers/${c.body.id}/ecac`)).body;
+    expect(panel.others).toHaveLength(1);
+    expect(panel.others[0]).toMatchObject({ kind: 'other', source: 'extension', data: { title: 'Consulta de restituição', text: 'Lote 3 de 2026: creditado' } });
+    expect(panel.others[0].fileId).toBeTruthy();
+    const fileId = panel.others[0].fileId as string;
+    expect((await api.del(`/api/customers/${c.body.id}/ecac/records/${panel.cnd.latest.id}`)).status).toBe(400);
+    expect((await api.del(`/api/customers/${c.body.id}/ecac/records/${panel.others[0].id}`)).status).toBe(200);
+    expect((await api.get(`/api/customers/${c.body.id}/ecac`)).body.others).toEqual([]);
+    expect(await env.ctx.db.query.files.findFirst({ where: eq(files.id, fileId) })).toBeUndefined();
   });
 });
 

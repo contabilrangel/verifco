@@ -2,45 +2,182 @@
 <html lang="pt-BR">
   <head>
     <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Verifco</title>
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
     <header>
       <img src="../icons/icon-32.png" alt="" width="24" height="24" />
-      <strong>Verifco</strong>
-      <span id="version" class="muted"></span>
-    </header>
-    <form id="form" autocomplete="off">
-      <label>
-        Endereço do Verifco (web)
-        <input id="webUrl" type="url" placeholder="https://app.seuescritorio.com.br" required />
-        <small>Onde você abre o Verifco. A extensão conversa com essa página para abrir o eCAC.</small>
-      </label>
-      <label>
-        Endereço da API <span class="muted">(opcional)</span>
-        <input id="apiUrl" type="url" placeholder="Em branco = mesmo endereço do Verifco" />
-      </label>
-      <label>
-        Token da extensão
-        <input id="token" type="password" placeholder="vfk_..." />
-        <small>Crie em Administração › Robô, escopo “Extensão”. Fica só neste navegador.</small>
-      </label>
-      <fieldset>
-        <legend>Captura de dados do eCAC <span class="muted">(experimental)</span></legend>
-        <label class="check"><input id="captureEnabled" type="checkbox" /> Enviar ao Verifco os dados das páginas do eCAC</label>
-        <div id="parsers" class="parsers"></div>
-        <small>Cada leitor de página começa desligado. Os leitores incluídos são pontos de extensão: veja o README.</small>
-      </fieldset>
-      <div class="actions">
-        <button type="button" id="test" class="secondary">Testar conexão</button>
-        <button type="submit">Salvar</button>
+      <div class="brand">
+        <strong>Verifco</strong>
+        <span id="conn" class="conn" role="status">Conferindo a conexão…</span>
       </div>
-      <p id="status" class="status" role="status"></p>
-    </form>
+      <span id="version" class="version"></span>
+    </header>
+
+    <p id="notice" class="notice" role="alert" hidden></p>
+
+    <main>
+      <!-- Cliente -->
+      <section class="client" aria-labelledby="clientLabel">
+        <div id="clientLabel" class="label">Cliente</div>
+        <div id="clientChosen" class="chosen" hidden>
+          <div class="who">
+            <b id="clientName"></b>
+            <span id="clientCpf" class="muted"></span>
+          </div>
+          <button type="button" id="clientChange" class="link">Trocar</button>
+        </div>
+        <div id="clientPicker" class="picker">
+          <input id="clientSearch" type="search" placeholder="Nome ou CPF" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="clientResults" aria-labelledby="clientLabel" />
+          <ul id="clientResults" class="results" role="listbox" hidden></ul>
+          <small id="clientHint" class="muted"></small>
+        </div>
+      </section>
+
+      <!-- Ações -->
+      <div class="tabs" role="tablist" aria-label="Ações">
+        <button type="button" role="tab" id="tabbtn-file" aria-controls="tab-file" aria-selected="true">Arquivo</button>
+        <button type="button" role="tab" id="tabbtn-page" aria-controls="tab-page" aria-selected="false">Página</button>
+        <button type="button" role="tab" id="tabbtn-status" aria-controls="tab-status" aria-selected="false">Situação</button>
+        <button type="button" role="tab" id="tabbtn-log" aria-controls="tab-log" aria-selected="false">Envios</button>
+      </div>
+
+      <!-- Enviar arquivo -->
+      <section id="tab-file" role="tabpanel" aria-labelledby="tabbtn-file">
+        <form id="fileForm" autocomplete="off">
+          <label id="drop" class="drop">
+            <input id="file" type="file" multiple class="visually-hidden" />
+            <span><b>Arraste o arquivo aqui</b> ou clique para escolher</span>
+            <small class="muted">Até 25 MB por arquivo</small>
+          </label>
+          <ul id="fileList" class="files" hidden></ul>
+          <label class="check"><input id="isPrefilled" type="checkbox" /> É a pré-preenchida</label>
+          <div class="grid">
+            <label>
+              Exercício
+              <input id="fileYear" type="number" min="2000" max="2100" step="1" inputmode="numeric" />
+            </label>
+            <label>
+              Categoria
+              <select id="fileCategory"></select>
+            </label>
+          </div>
+          <div class="actions">
+            <button type="button" id="openWindow" class="link" title="Abre esta tela numa janela que não fecha ao arrastar arquivos">Abrir em janela</button>
+            <button type="submit" id="fileSend">Enviar arquivo</button>
+          </div>
+          <progress id="fileProgress" max="1" value="0" hidden></progress>
+          <p id="fileStatus" class="status" role="status"></p>
+        </form>
+      </section>
+
+      <!-- Registrar esta página -->
+      <section id="tab-page" role="tabpanel" aria-labelledby="tabbtn-page" hidden>
+        <form id="pageForm" autocomplete="off">
+          <p id="pageInfo" class="muted hint"></p>
+          <label>
+            Título
+            <input id="pageTitle" type="text" maxlength="200" />
+          </label>
+          <small id="pageUrl" class="muted ellipsis"></small>
+          <label>
+            <span>Texto <span id="pageTextInfo" class="muted"></span></span>
+            <textarea id="pageText" rows="6" spellcheck="false"></textarea>
+          </label>
+          <label class="check" id="pageShotRow"><input id="pageShot" type="checkbox" checked /> Anexar imagem da tela (PNG)</label>
+          <div class="actions">
+            <button type="button" id="pageReload" class="secondary">Ler de novo</button>
+            <button type="submit" id="pageSend">Registrar página</button>
+          </div>
+          <p id="pageStatus" class="status" role="status"></p>
+        </form>
+      </section>
+
+      <!-- Situação da declaração e CND -->
+      <section id="tab-status" role="tabpanel" aria-labelledby="tabbtn-status" hidden>
+        <form id="declForm" autocomplete="off">
+          <h2>Situação da declaração</h2>
+          <div class="grid">
+            <label>
+              Exercício
+              <input id="declYear" type="number" min="2000" max="2100" step="1" inputmode="numeric" required />
+            </label>
+            <label>
+              Situação
+              <select id="declStatus" required></select>
+            </label>
+          </div>
+          <label>
+            <span>Nº do recibo <span class="muted">(opcional)</span></span>
+            <input id="declReceipt" type="text" maxlength="60" />
+          </label>
+          <div class="actions"><button type="submit">Registrar situação</button></div>
+          <p id="declStatusMsg" class="status" role="status"></p>
+        </form>
+        <form id="cndForm" autocomplete="off">
+          <h2>CND</h2>
+          <div class="grid">
+            <label>
+              Situação
+              <select id="cndStatus" required></select>
+            </label>
+            <label>
+              <span>Válida até <span class="muted">(opcional)</span></span>
+              <input id="cndValidUntil" type="date" />
+            </label>
+          </div>
+          <label>
+            <span>Código de controle <span class="muted">(opcional)</span></span>
+            <input id="cndCode" type="text" maxlength="60" />
+          </label>
+          <div class="actions"><button type="submit">Registrar CND</button></div>
+          <p id="cndStatusMsg" class="status" role="status"></p>
+        </form>
+      </section>
+
+      <!-- Últimos envios -->
+      <section id="tab-log" role="tabpanel" aria-labelledby="tabbtn-log" hidden>
+        <ul id="logList" class="log"></ul>
+        <p id="logEmpty" class="muted hint" hidden>Nenhum envio feito por este navegador ainda.</p>
+        <div class="actions"><button type="button" id="logClear" class="link">Limpar lista</button></div>
+      </section>
+
+      <!-- Configuração -->
+      <details id="config">
+        <summary>Configuração</summary>
+        <form id="configForm" autocomplete="off">
+          <label>
+            Endereço do Verifco (web)
+            <input id="webUrl" type="url" placeholder="https://app.seuescritorio.com.br" required />
+            <small>Onde você abre o Verifco. A extensão conversa com essa página para abrir o eCAC.</small>
+          </label>
+          <label>
+            <span>Endereço da API <span class="muted">(opcional)</span></span>
+            <input id="apiUrl" type="url" placeholder="Em branco = mesmo endereço do Verifco" />
+          </label>
+          <label>
+            Token da extensão
+            <input id="token" type="password" placeholder="vfk_..." />
+            <small>Crie em Meu escritório › Robô, escopo “Extensão”. Fica só neste navegador.</small>
+          </label>
+          <div class="actions">
+            <button type="button" id="test" class="secondary">Testar conexão</button>
+            <button type="submit">Salvar</button>
+          </div>
+          <p id="configStatus" class="status" role="status"></p>
+        </form>
+      </details>
+    </main>
+
     <script src="../lib/config.js"></script>
-    <script src="../content/capture-core.js"></script>
-    <script src="../content/parsers.js"></script>
+    <script src="../lib/format.js"></script>
+    <script src="../lib/statuses.js"></script>
+    <script src="../lib/api.js"></script>
+    <script src="../lib/capture.js"></script>
+    <script src="../lib/store.js"></script>
+    <script src="../lib/actions.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

@@ -32,6 +32,11 @@ const settingsSchema = z
     reportSubtitleColor: z.string().regex(/^#[0-9a-fA-F]{6}$/),
     reportLineColor: z.string().regex(/^#[0-9a-fA-F]{6}$/),
     whatsappServiceNumber: z.string().trim().max(30).refine((v) => v === '' || /^[\d\s()+-]{10,30}$/.test(v), 'Número inválido'),
+    chargeLinkAutoSend: z.boolean(),
+    reminderDarfCustomerDays: z.number().int().min(0).max(30),
+    reminderInstallmentCustomerDays: z.number().int().min(0).max(30),
+    reminderInstallmentOverdueCustomer: z.boolean(),
+    reminderOfficeDigest: z.boolean(),
   })
   .partial();
 

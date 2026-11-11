@@ -74,7 +74,10 @@ export async function ecacRoutes(app: FastifyInstance) {
       where: and(eq(ecacRecords.id, params.recordId), eq(ecacRecords.customerId, c.id), eq(ecacRecords.officeId, user.officeId)),
     });
     if (!rec) throw notFound('Registro');
-    if (rec.source !== 'manual') throw badRequest('Só registros lançados manualmente podem ser removidos.');
+    // o que alguém do escritório lançou (à mão ou registrando uma página pela extensão) pode sair;
+    // o que veio do SERPRO é o retrato oficial e fica
+    const removable = rec.source === 'manual' || (rec.source === 'extension' && rec.kind === 'other');
+    if (!removable) throw badRequest('Só registros lançados manualmente ou páginas registradas pela extensão podem ser removidos.');
     await db.delete(ecacRecords).where(eq(ecacRecords.id, rec.id));
     if (rec.fileId) await app.ctx.files.remove(user.officeId, rec.fileId);
     await audit(req, 'delete', 'ecac_record', rec.id, { kind: rec.kind });

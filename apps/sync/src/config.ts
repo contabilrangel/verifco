@@ -18,6 +18,10 @@ export interface SyncConfig {
   extensions: string[];
   /** Espera depois da última alteração antes de enviar (o programa grava em etapas). */
   debounceMs: number;
+  /** Intervalo, em minutos, da varredura periódica das pastas (0 desliga). */
+  rescanMinutes: number;
+  /** Enviar à caixa de entrada do Verifco os arquivos não identificados ou de cliente não cadastrado. */
+  inbox: boolean;
 }
 
 export const DEFAULT_CONFIG: SyncConfig = {
@@ -28,7 +32,29 @@ export const DEFAULT_CONFIG: SyncConfig = {
   prefilledFolders: [],
   extensions: ['.dec', '.rec', '.dbk', '.xml', '.pdf'],
   debounceMs: 2000,
+  rescanMinutes: 15,
+  inbox: true,
 };
+
+/** Endereço sem barra final e sem `/api`; erro quando não começa com http:// ou https://. */
+export function normalizeUrl(value: string): string {
+  const url = value.trim().replace(/\/+$/, '').replace(/\/api$/, '');
+  if (!/^https?:\/\/[^\s/]+/.test(url)) throw new Error('Use um endereço começando com http:// ou https://');
+  return url;
+}
+
+export function checkToken(value: string): string {
+  const token = value.trim();
+  if (!/^vfk_[A-Za-z0-9_-]{20,}$/.test(token)) throw new Error('O token deve começar com vfk_ (crie em Meu escritório › Robô, escopo Sincronizador).');
+  return token;
+}
+
+/** Minutos da varredura periódica: 0 desliga; senão, de 1 minuto a 1 dia. */
+export function checkRescanMinutes(value: string): number {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) throw new Error('Informe a varredura em minutos (ex.: --varredura 15; 0 desliga).');
+  return n === 0 ? 0 : Math.min(24 * 60, Math.max(1, Math.round(n)));
+}
 
 /**
  * Pasta de dados: `VERIFCO_SYNC_HOME`, ou `%APPDATA%\VerifcoSync` no Windows, ou

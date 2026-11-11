@@ -29,6 +29,14 @@
 .vf-ecac-service__icon svg { width: 24px; height: 24px; }
 .vf-ecac-legend { display: flex; flex-direction: column; gap: var(--size-spacing-03); }
 .vf-ecac-legend__row { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: var(--size-spacing-04); align-items: center; }
+.vf-ecac-picker { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border: 1px solid var(--color-border); border-radius: var(--border-radius-sm); overflow: hidden; }
+.vf-ecac-picker li + li { border-top: 1px solid var(--color-border); }
+.vf-ecac-picker button {
+  width: 100%; display: flex; justify-content: space-between; align-items: center; gap: var(--size-spacing-04);
+  padding: var(--size-spacing-03) var(--size-spacing-04); background: none; border: 0; text-align: left; cursor: pointer; color: inherit; font: inherit;
+}
+.vf-ecac-picker button:hover, .vf-ecac-picker button:focus-visible { background: var(--color-surface-low); }
+.vf-ecac-note { white-space: pre-wrap; word-break: break-word; max-height: 50vh; overflow: auto; font: var(--text-sm-regular); margin: 0; }
 .vf-ecac-link {
   display: inline-flex; align-items: center; gap: 4px; border: 0; padding: 0; background: none; cursor: pointer;
   color: var(--color-interactive); font: var(--text-sm-regular); text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 380px;

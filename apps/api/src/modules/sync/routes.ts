@@ -1,10 +1,14 @@
-import { and, asc, count, desc, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
+import { and, asc, count, desc, eq, ilike, inArray, isNotNull, isNull, like, or } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { MACHINE_TOKEN_SCOPES, isValidCpfCnpj, onlyDigits, type MachineTokenScope } from '@verifco/shared';
-import { apiTokens, customers, documents, ecacRecords, files, offices, prefilledStatements, procurators, users } from '../../db/schema';
+import { DOCUMENT_CATEGORY_LIST, MACHINE_TOKEN_SCOPES, currentExerciseYear, isValidCpfCnpj, onlyDigits, type DocumentCategory, type MachineTokenScope } from '@verifco/shared';
+import { apiTokens, customers, documents, ecacRecords, files, offices, prefilledStatements, syncInbox, users } from '../../db/schema';
 import { HttpError, badRequest, notFound } from '../../lib/errors';
-import { audit, guard, parse, requireUser, uuidParam } from '../../lib/http';
+import { audit, guard, parse, requireUser, uuidParam, yearSchema } from '../../lib/http';
+import { sha256 } from '../../lib/crypto';
+import { getOrCreateDeclaration } from '../../services/declarations';
+import { isExtractable, refreshElaborationStatus } from '../elaboration/service';
+import { listInbox, receiveInboxFile } from './inbox';
 import { createEcacChangeBatch, flushEcacChanges, recordInputSchema, saveEcacRecord } from '../ecac/records';
 import { ECAC_SYNC_OFFICE, latestOfficeSync, nextScheduledOfficeSync } from '../ecac/jobs';
 import { loadSerproModule, requireSerpro } from '../ecac/serpro';
@@ -12,10 +16,16 @@ import { fanoutJobView } from '../ecac/util';
 import { savePrefilled } from '../prefilled/service';
 import { customerByDoc, ingestSyncFile, machineAudit, resolveFileTarget } from './ingest';
 import { readMultipart } from './multipart';
-import { uploadedFromBase64 } from '../../services/uploads';
-import { PACKAGES, buildPackageZip, type PackageName } from './packages';
+import { sendStoredFile, uploadedFromBase64 } from '../../services/uploads';
+import { PACKAGES, buildPackageZip, clientVersionInfo, distributedVersions, type PackageName } from './packages';
 import { generateMachineToken, publicToken, requireMachine } from './tokens';
-import { customerScope } from '../../services/customers';
+import { customerScope, getCustomerForUser } from '../../services/customers';
+
+/** Título digitado pelo usuário com a extensão do arquivo original (o tipo gravado vem dela). */
+const withExtension = (title: string, original: string) => {
+  const ext = /\.[A-Za-z0-9]{1,8}$/.exec(original)?.[0] ?? '';
+  return ext && !title.toLowerCase().endsWith(ext.toLowerCase()) ? `${title}${ext}` : title;
+};
 
 const SCOPES = Object.keys(MACHINE_TOKEN_SCOPES) as [MachineTokenScope, ...MachineTokenScope[]];
 
@@ -115,9 +125,14 @@ export async function syncRoutes(app: FastifyInstance) {
     ]
       .sort((a, b) => b.at.getTime() - a.at.getTime())
       .slice(0, 20);
+    const [{ n: inboxPending }] = await db.select({ n: count() }).from(syncInbox).where(and(eq(syncInbox.officeId, officeId), eq(syncInbox.status, 'pending')));
     return {
       customersWithProcurator: withProcurator,
       activeTokens,
+      // arquivos do sincronizador esperando alguém atribuir a um cliente
+      inboxPending,
+      // versões que este servidor distribui (os tokens mostram a que cada programa usa)
+      clientVersions: await distributedVersions(),
       // ready = integração ativa no escritório; not_configured = existe mas falta configurar; missing = ausente
       serpro: (await loadSerproModule())
         ? await requireSerpro(ctx, officeId).then(
@@ -130,6 +145,57 @@ export async function syncRoutes(app: FastifyInstance) {
       nextAutoSync: await nextScheduledOfficeSync(db, officeId),
       activity,
     };
+  });
+
+  // ------------------------------------------------------------------ caixa de entrada
+  /** Arquivos do sincronizador sem cliente identificado, aguardando alguém do escritório. */
+  app.get('/robot/inbox', { preHandler: guard('ecac.robot') }, async (req) => {
+    const user = requireUser(req);
+    return listInbox(ctx, user.officeId);
+  });
+
+  const inboxItem = async (officeId: string, id: string) => {
+    const item = await db.query.syncInbox.findFirst({ where: and(eq(syncInbox.id, id), eq(syncInbox.officeId, officeId), eq(syncInbox.status, 'pending')) });
+    if (!item) throw notFound('Arquivo pendente');
+    return item;
+  };
+
+  app.get('/robot/inbox/:id/download', { preHandler: guard('ecac.robot') }, async (req, reply) => {
+    const user = requireUser(req);
+    const { id } = parse(uuidParam, req.params);
+    const item = await inboxItem(user.officeId, id);
+    const { row, stream } = await ctx.files.open(user.officeId, item.fileId);
+    return sendStoredFile(reply, row, stream);
+  });
+
+  /** Atribui o arquivo a um cliente e exercício: entra como qualquer arquivo do sincronizador. */
+  app.post('/robot/inbox/:id/file', { preHandler: guard('ecac.robot') }, async (req) => {
+    const user = requireUser(req);
+    const { id } = parse(uuidParam, req.params);
+    const body = parse(z.object({ customerId: z.uuid(), year: yearSchema }), req.body);
+    const item = await inboxItem(user.officeId, id);
+    const customer = await getCustomerForUser(ctx, user, body.customerId);
+    const { row, data } = await ctx.files.get(user.officeId, item.fileId);
+    const result = await ingestSyncFile(
+      ctx,
+      { tokenId: '', officeId: user.officeId, scope: 'sync', name: item.tokenName ?? 'caixa de entrada', clientVersion: null },
+      { filename: row.filename, mimeType: row.mimeType, data },
+      { cpf: customer.cpfCnpj, ano: String(body.year), ...(item.originalPath ? { caminho: item.originalPath } : {}) },
+    );
+    await db.update(syncInbox).set({ status: 'filed', documentId: result.documentId, resolvedByUserId: user.userId, resolvedAt: new Date() }).where(eq(syncInbox.id, item.id));
+    await audit(req, 'inbox_file', 'sync_inbox', item.id, { customerId: customer.id, year: body.year, filename: item.filename, documentId: result.documentId });
+    return { ok: true, documentId: result.documentId, duplicate: result.duplicate, customer: { id: customer.id, name: customer.name }, year: body.year };
+  });
+
+  /** Descarta o arquivo: o conteúdo é apagado (o sincronizador não o envia de novo). */
+  app.delete('/robot/inbox/:id', { preHandler: guard('ecac.robot') }, async (req) => {
+    const user = requireUser(req);
+    const { id } = parse(uuidParam, req.params);
+    const item = await inboxItem(user.officeId, id);
+    // a linha sai junto com o arquivo (FK em cascata)
+    await ctx.files.remove(user.officeId, item.fileId);
+    await audit(req, 'inbox_discard', 'sync_inbox', item.id, { filename: item.filename, reason: item.reason });
+    return { ok: true };
   });
 
   /** Sincroniza pelo SERPRO todos os clientes com procurador (um job por cliente). */
@@ -158,19 +224,92 @@ export async function syncRoutes(app: FastifyInstance) {
   app.get('/sync/whoami', async (req) => {
     const auth = await requireMachine(ctx, req, ['extension', 'sync']);
     const office = await db.query.offices.findFirst({ where: eq(offices.id, auth.officeId) });
-    return { office: { id: auth.officeId, name: office?.name ?? '' }, token: { name: auth.name, scope: auth.scope } };
+    return {
+      office: { id: auth.officeId, name: office?.name ?? '' },
+      token: { name: auth.name, scope: auth.scope },
+      // versão em uso × versão distribuída por este servidor (aviso de atualização no programa)
+      client: await clientVersionInfo(auth.scope, auth.clientVersion),
+    };
   });
 
-  /** CPFs e nomes dos clientes com procurador associado (a lista que o robô percorre). */
+  /**
+   * Clientes ativos do escritório para o seletor da extensão e a conferência do sincronizador:
+   * `q` busca por nome ou pelos dígitos do CPF/CNPJ; sem `q`, os primeiros por nome.
+   */
   app.get('/sync/customers', async (req) => {
     const auth = await requireMachine(ctx, req, ['extension', 'sync']);
+    const { q, limit } = parse(z.object({ q: z.string().trim().max(100).default(''), limit: z.coerce.number().int().min(1).max(100).default(20) }), req.query);
+    const digits = onlyDigits(q);
+    const escaped = q.replace(/[\\%_]/g, (c) => `\\${c}`);
+    const match = q ? or(ilike(customers.name, `%${escaped}%`), digits.length >= 3 ? like(customers.cpfCnpj, `${digits}%`) : undefined) : undefined;
     const rows = await db
-      .select({ cpf: customers.cpfCnpj, name: customers.name, procurationStatus: customers.procurationStatus, procuratorName: procurators.name, procuratorDoc: procurators.cpfCnpj })
+      .select({ cpf: customers.cpfCnpj, name: customers.name, procurationStatus: customers.procurationStatus, procuratorId: customers.procuratorId })
       .from(customers)
-      .innerJoin(procurators, eq(procurators.id, customers.procuratorId))
-      .where(and(eq(customers.officeId, auth.officeId), isNull(customers.deletedAt), eq(customers.status, 'active')))
-      .orderBy(asc(customers.name));
-    return rows.map((r) => ({ cpf: r.cpf, name: r.name, procurationStatus: r.procurationStatus, procurator: { name: r.procuratorName, cpfCnpj: r.procuratorDoc } }));
+      .where(and(eq(customers.officeId, auth.officeId), isNull(customers.deletedAt), eq(customers.status, 'active'), match))
+      .orderBy(asc(customers.name))
+      .limit(limit);
+    return rows.map((r) => ({ cpf: r.cpf, name: r.name, procurationStatus: r.procurationStatus, hasProcurator: Boolean(r.procuratorId) }));
+  });
+
+  /**
+   * Documento avulso para a pasta do cliente (multipart): `file` + `cpf` + `ano` (exercício,
+   * opcional: vale o corrente) + `categoria` (opcional) + `origem` (endereço da página ou texto
+   * livre) + `titulo`. É o "Enviar arquivo ao cliente" da extensão; o sincronizador também pode usar.
+   */
+  app.post('/sync/documents', async (req, reply) => {
+    const auth = await requireMachine(ctx, req, ['extension', 'sync']);
+    const { file, fields } = await readMultipart(req);
+    if (!file) throw badRequest('Envie o arquivo no campo "file".');
+    const cpf = onlyDigits(fields.cpf);
+    if (!cpf || !isValidCpfCnpj(cpf)) throw badRequest('Informe o CPF/CNPJ do cliente no campo "cpf".');
+    const year = fields.ano ? Number(fields.ano) : currentExerciseYear();
+    if (!Number.isInteger(year) || year < 2000 || year > 2100) throw badRequest('Ano inválido: informe o ano-exercício com 4 dígitos.');
+    const category = fields.categoria || 'other';
+    if (!DOCUMENT_CATEGORY_LIST.includes(category as DocumentCategory)) throw badRequest(`Categoria inválida: use ${DOCUMENT_CATEGORY_LIST.join(', ')}.`);
+    const customer = await customerByDoc(ctx, auth.officeId, cpf);
+    const declaration = await getOrCreateDeclaration(db, auth.officeId, customer.id, year);
+    const hash = sha256(file.data);
+    const [dup] = await db
+      .select({ id: documents.id })
+      .from(documents)
+      .innerJoin(files, eq(files.id, documents.fileId))
+      .where(and(eq(documents.customerId, customer.id), eq(documents.declarationId, declaration.id), eq(files.sha256, hash)))
+      .limit(1);
+    const base = { customer: { id: customer.id, name: customer.name }, year };
+    if (dup) return { id: dup.id, ...base, duplicate: true };
+    const saved = await ctx.files.save({ officeId: auth.officeId, data: file.data, filename: (fields.titulo?.trim() ? withExtension(fields.titulo.trim().slice(0, 200), file.filename) : file.filename), mimeType: file.mimeType });
+    const [doc] = await db
+      .insert(documents)
+      .values({
+        officeId: auth.officeId,
+        customerId: customer.id,
+        declarationId: declaration.id,
+        fileId: saved.id,
+        category,
+        // enviado por alguém do escritório pela extensão: vale como arquivo do escritório
+        uploadedBy: auth.scope === 'extension' ? 'office' : 'sync',
+        processingStatus: isExtractable(file.mimeType) ? 'not_processed' : 'not_applicable',
+        extracted: { sync: { type: 'document', origin: fields.origem ? fields.origem.slice(0, 500) : null, tokenName: auth.name, client: auth.scope } },
+      })
+      .returning();
+    await refreshElaborationStatus(db, declaration.id);
+    await machineAudit(ctx, auth, 'sync_document', 'document', doc.id, { customerId: customer.id, year, category, filename: saved.filename });
+    reply.status(201);
+    return { id: doc.id, ...base, duplicate: false };
+  });
+
+  /**
+   * Arquivo que o sincronizador não conseguiu ligar a um cliente (multipart): `file` + `motivo`
+   * (`sem_cpf` | `cliente_nao_cadastrado`) + `caminho`, `cpf` e `ano` quando conhecidos. Fica na
+   * caixa de entrada do robô até o escritório atribuir a um cliente ou descartar.
+   */
+  app.post('/sync/inbox', async (req, reply) => {
+    const auth = await requireMachine(ctx, req, ['sync']);
+    const { file, fields } = await readMultipart(req);
+    if (!file) throw badRequest('Envie o arquivo no campo "file".');
+    const result = await receiveInboxFile(ctx, auth, file, fields);
+    reply.status(result.duplicate ? 200 : 201);
+    return result;
   });
 
   /**

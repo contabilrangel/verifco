@@ -23,7 +23,7 @@ import { useCustomer } from '../customers/customerContext';
 import type { EcacPanel } from './types';
 import { JobAlert, ViewFileButton, ecacStatusLabel, ecacTone, isRunning, pick, sourceLabel, taxationLabel } from './ui';
 
-type Panel = 'declarations' | 'income' | 'darf' | 'cnd' | 'simplified' | 'mailbox';
+type Panel = 'declarations' | 'income' | 'darf' | 'cnd' | 'simplified' | 'mailbox' | 'others';
 
 export function EcacTab() {
   const { customer } = useCustomer();
@@ -128,6 +128,7 @@ export function EcacTab() {
               { value: 'cnd', label: 'CND' },
               { value: 'simplified', label: 'Situação fiscal' },
               { value: 'mailbox', label: `Caixa postal (${d.mailbox.length})` },
+              { value: 'others', label: `Outros registros (${d.others.length})` },
             ]}
           />
         </div>
@@ -137,6 +138,7 @@ export function EcacTab() {
         {panel === 'cnd' && <CndPanel d={d} />}
         {panel === 'simplified' && <SimplifiedPanel d={d} />}
         {panel === 'mailbox' && <MailboxPanel d={d} />}
+        {panel === 'others' && <OthersPanel d={d} />}
       </Card>
       <RecordModal open={showRecord} onClose={() => setShowRecord(false)} customerId={customer.id} onSaved={() => void q.refetch()} />
     </div>
@@ -485,6 +487,87 @@ function MailboxPanel({ d }: { d: EcacPanel }) {
   );
 }
 
+const text = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+
+/** Só endereços http(s) viram link: o texto vem de fora e não pode abrir outro esquema. */
+const safeUrl = (v: unknown) => {
+  const raw = text(v);
+  if (!raw) return null;
+  try {
+    const u = new URL(raw);
+    return u.protocol === 'https:' || u.protocol === 'http:' ? u : null;
+  } catch {
+    return null;
+  }
+};
+
+/** Páginas registradas pela extensão, registros "Outro" lançados à mão e o histórico da procuração. */
+function OthersPanel({ d }: { d: EcacPanel }) {
+  const [reading, setReading] = useState<EcacPanel['others'][number] | null>(null);
+  if (!d.others.length) {
+    return <EmptyState title="Nenhum outro registro" description='Aparecem aqui as páginas registradas pela extensão do navegador ("Registrar página") e os registros do tipo "Outro" lançados à mão.' />;
+  }
+  const titleOf = (r: EcacPanel['others'][number]) => text(r.data.title) ?? text(r.data.description) ?? (r.kind === 'procuration' ? 'Procuração eletrônica' : 'Registro');
+  return (
+    <>
+      <div className="vf-table-wrap">
+        <table className="vf-table">
+          <thead>
+            <tr>
+              <th>Registro</th>
+              <th>Exercício</th>
+              <th>Registrado em</th>
+              <th>Origem</th>
+              <th className="actions">Opções</th>
+            </tr>
+          </thead>
+          <tbody>
+            {d.others.map((r) => {
+              const url = safeUrl(r.data.url);
+              const body = text(r.data.text);
+              return (
+                <tr key={r.id}>
+                  <td>
+                    <span className="vf-text-sm-bold">{titleOf(r)}</span>
+                    {url && (
+                      <div className="vf-text-xs vf-muted" style={{ wordBreak: 'break-all' }}>
+                        <a href={url.href} target="_blank" rel="noopener noreferrer">
+                          {url.host}
+                        </a>
+                      </div>
+                    )}
+                    {body && (
+                      <div className="vf-text-xs">
+                        <button type="button" className="vf-ecac-link" onClick={() => setReading(r)}>
+                          Ler o texto registrado
+                        </button>
+                      </div>
+                    )}
+                  </td>
+                  <td>{r.year ?? <span className="vf-muted">—</span>}</td>
+                  <td>{formatDateTime(r.fetchedAt)}</td>
+                  <td className="vf-muted">{sourceLabel(r.source)}</td>
+                  <td className="actions">
+                    <RecordActions customerId={d.customer.id} recordId={r.id} fileId={r.fileId} manual={r.source === 'manual' || (r.source === 'extension' && r.kind === 'other')} />
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <Modal open={Boolean(reading)} title={reading ? titleOf(reading) : ''} onClose={() => setReading(null)} width={720} footer={<Button onClick={() => setReading(null)}>Fechar</Button>}>
+        {reading && (
+          <div className="vf-stack">
+            {reading.data.truncated === true && <Alert tone="warning">A página era longa: só o começo do texto foi guardado.</Alert>}
+            <pre className="vf-ecac-note">{text(reading.data.text)}</pre>
+          </div>
+        )}
+      </Modal>
+    </>
+  );
+}
+
 function RecordActions({ customerId, recordId, fileId, manual }: { customerId: string; recordId: string; fileId: string | null; manual: boolean }) {
   const { can } = useAuth();
   const [confirm, setConfirm] = useState(false);
@@ -493,14 +576,14 @@ function RecordActions({ customerId, recordId, fileId, manual }: { customerId: s
     <span className="vf-inline" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
       {fileId ? <ViewFileButton fileId={fileId} /> : null}
       {manual && can('ecac.sync') && (
-        <IconButton label="Remover registro manual" onClick={() => setConfirm(true)}>
+        <IconButton label="Remover registro" onClick={() => setConfirm(true)}>
           <Trash2 />
         </IconButton>
       )}
       <ConfirmDialog
         open={confirm}
         title="Remover registro"
-        message="O registro lançado manualmente e o arquivo anexado serão removidos."
+        message="O registro e o arquivo anexado a ele serão removidos."
         confirmLabel="Remover"
         danger
         loading={del.isPending}

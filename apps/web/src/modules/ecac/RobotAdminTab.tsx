@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
-import { Ban, Copy, KeyRound, Plus, RefreshCw } from 'lucide-react';
-import { ECAC_RECORD_KINDS, MACHINE_TOKEN_SCOPES, optionsOf } from '@verifco/shared';
-import { Alert, Button, Card, ConfirmDialog, EmptyState, Input, Loading, Modal, Select, Stat, Tag, useToast } from '../../ds';
+import { Ban, Copy, Download, FolderInput, Inbox, KeyRound, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { ECAC_RECORD_KINDS, MACHINE_TOKEN_SCOPES, currentExerciseYear, formatCpfCnpj, optionsOf } from '@verifco/shared';
+import { Alert, Button, Card, ConfirmDialog, EmptyState, IconButton, Input, Loading, Modal, Select, Stat, Tag, useToast } from '../../ds';
 import { api } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
-import { useAction, useApi } from '../../lib/hooks';
+import { useAction, useApi, useDebounced } from '../../lib/hooks';
 import { formatDateTime } from '../../lib/format';
-import type { MachineToken, RobotOverview } from './types';
+import type { InboxItem, MachineToken, RobotOverview } from './types';
 import { JobAlert, apiBaseUrl, isRunning, pick, sourceLabel } from './ui';
 
 export function RobotAdminTab() {
@@ -34,7 +34,11 @@ export function RobotAdminTab() {
         ) : (
           <div className="vf-grid" style={{ '--cols': 4 } as React.CSSProperties}>
             <Stat label="Clientes com procurador" value={o.customersWithProcurator} hint="Base percorrida pelo robô" />
-            <Stat label="Tokens ativos" value={o.activeTokens} hint="Extensões e sincronizadores" />
+            <Stat
+              label="Tokens ativos"
+              value={o.activeTokens}
+              hint={o.inboxPending > 0 ? <span className="vf-danger-text">{o.inboxPending} arquivo(s) sem cliente, abaixo</span> : 'Extensões e sincronizadores'}
+            />
             <Stat
               label="SERPRO Integra Contador"
               value={o.serpro === 'ready' ? 'Ativo' : o.serpro === 'not_configured' ? 'Não configurado' : 'Indisponível'}
@@ -58,7 +62,8 @@ export function RobotAdminTab() {
         <div className="vf-stack">
           <span className="vf-muted">
             O robô reúne os dados do eCAC por três caminhos: a integração oficial <strong>SERPRO Integra Contador</strong> (procuração, caixa postal, situação fiscal e pagamentos do DARF, sem depender do seu computador), a{' '}
-            <strong>extensão do navegador</strong> (abre os serviços do eCAC; a leitura automática das páginas ainda não está disponível) e o <strong>sincronizador</strong> (guarda nos documentos do cliente os arquivos .DEC, .REC e .DBK do programa IRPF, sem ler o conteúdo; o recibo .REC marca a declaração como transmitida). Nada é simulado: sem uma dessas fontes, os painéis ficam vazios.
+            <strong>extensão do navegador</strong> (abre os serviços do eCAC e manda para a pasta do cliente o arquivo baixado, a página registrada ou a situação que você conferiu na tela; ela não lê as páginas do eCAC sozinha) e o{' '}
+            <strong>sincronizador</strong> (guarda nos documentos do cliente os arquivos .DEC, .REC e .DBK do programa IRPF; o recibo .REC marca a declaração como transmitida). Nada é simulado: sem uma dessas fontes, os painéis ficam vazios.
           </span>
           <ul className="vf-ecac-steps vf-text-xs">
             <li>
@@ -76,7 +81,8 @@ export function RobotAdminTab() {
         </div>
       </Card>
 
-      {can('ecac.robot') && <TokensCard />}
+      {can('ecac.robot') && (o?.inboxPending ?? 0) > 0 && <InboxCard />}
+      {can('ecac.robot') && <TokensCard latest={o?.clientVersions ?? null} />}
 
       <Card flush title="Atividade recente do robô">
         {!o ? (
@@ -116,7 +122,191 @@ export function RobotAdminTab() {
   );
 }
 
-function TokensCard() {
+/** `a` é mais antiga que `b` (versões `x.y.z`). */
+const olderThan = (a: string, b: string) => {
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
+  for (let i = 0; i < 3; i++) if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) < (pb[i] ?? 0);
+  return false;
+};
+
+const PLATFORMS: Record<string, string> = { win32: 'Windows', darwin: 'macOS', linux: 'Linux' };
+
+const fileSize = (bytes: number) => (bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1).replace('.', ',')} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`);
+
+/** Arquivos que o sincronizador não conseguiu ligar a um cliente: atribuir ou descartar. */
+function InboxCard() {
+  const inbox = useApi<InboxItem[]>(['robot', 'inbox'], '/robot/inbox');
+  const [filing, setFiling] = useState<InboxItem | null>(null);
+  const [discarding, setDiscarding] = useState<InboxItem | null>(null);
+  const toast = useToast();
+  const discard = useAction((id: string) => api.del(`/robot/inbox/${id}`), { success: 'Arquivo descartado.', invalidate: [['robot']], onSuccess: () => setDiscarding(null) });
+  const download = async (item: InboxItem) => {
+    try {
+      await api.download(`/robot/inbox/${item.id}/download`, item.filename);
+    } catch {
+      toast.error('Não foi possível baixar o arquivo.');
+    }
+  };
+
+  return (
+    <Card flush title="Arquivos sem cliente">
+      <div style={{ padding: '0 24px 16px' }} className="vf-muted">
+        O sincronizador encontrou estes arquivos e não soube de quem são: o nome não traz um CPF confiável ou o CPF ainda não está cadastrado. Atribua cada um a um cliente (ele entra na pasta do cliente como qualquer arquivo do
+        sincronizador) ou descarte.
+      </div>
+      {inbox.isLoading ? (
+        <Loading />
+      ) : !inbox.data?.length ? (
+        <EmptyState icon={<Inbox />} title="Nenhum arquivo pendente" />
+      ) : (
+        <div className="vf-table-wrap">
+          <table className="vf-table">
+            <thead>
+              <tr>
+                <th>Arquivo</th>
+                <th>Motivo</th>
+                <th>CPF no arquivo</th>
+                <th>Exercício</th>
+                <th>Recebido</th>
+                <th className="actions">Opções</th>
+              </tr>
+            </thead>
+            <tbody>
+              {inbox.data.map((item) => (
+                <tr key={item.id}>
+                  <td>
+                    <span className="vf-text-sm-bold" style={{ wordBreak: 'break-all' }}>
+                      {item.filename}
+                    </span>
+                    <div className="vf-text-xs vf-muted" style={{ wordBreak: 'break-all' }}>
+                      {fileSize(item.size)}
+                      {item.originalPath ? ` · ${item.originalPath}` : ''}
+                    </div>
+                  </td>
+                  <td>
+                    <Tag tone={item.reason === 'sem_cpf' ? 'warning' : 'highlight'}>{item.reasonLabel}</Tag>
+                  </td>
+                  <td>
+                    {item.cpf ? <span className="vf-mono">{formatCpfCnpj(item.cpf)}</span> : <span className="vf-muted">—</span>}
+                    {item.suggestedCustomer && <div className="vf-text-xs vf-muted">Cadastrado: {item.suggestedCustomer.name}</div>}
+                  </td>
+                  <td>{item.exerciseYear ?? <span className="vf-muted">—</span>}</td>
+                  <td>
+                    {formatDateTime(item.createdAt)}
+                    {item.tokenName && <div className="vf-text-xs vf-muted">{item.tokenName}</div>}
+                  </td>
+                  <td className="actions">
+                    <span className="vf-inline" style={{ justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
+                      <IconButton label="Baixar arquivo" onClick={() => void download(item)}>
+                        <Download />
+                      </IconButton>
+                      <Button kind="secondary" size="sm" icon={<FolderInput />} onClick={() => setFiling(item)}>
+                        Atribuir
+                      </Button>
+                      <IconButton label="Descartar arquivo" onClick={() => setDiscarding(item)}>
+                        <Trash2 />
+                      </IconButton>
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {filing && <FileInboxModal item={filing} onClose={() => setFiling(null)} />}
+      <ConfirmDialog
+        open={Boolean(discarding)}
+        title="Descartar arquivo"
+        message={`"${discarding?.filename ?? ''}" será apagado do Verifco. O arquivo continua no computador de origem, mas o sincronizador não o envia de novo.`}
+        confirmLabel="Descartar"
+        danger
+        loading={discard.isPending}
+        onConfirm={() => discarding && discard.mutate(discarding.id)}
+        onClose={() => setDiscarding(null)}
+      />
+    </Card>
+  );
+}
+
+interface CustomerHit {
+  id: string;
+  name: string;
+  cpfCnpj: string;
+}
+
+function FileInboxModal({ item, onClose }: { item: InboxItem; onClose: () => void }) {
+  const [search, setSearch] = useState('');
+  const [chosen, setChosen] = useState<{ id: string; name: string } | null>(item.suggestedCustomer);
+  const [year, setYear] = useState(String(item.exerciseYear ?? currentExerciseYear()));
+  const term = useDebounced(search.trim());
+  const hits = useApi<{ data: CustomerHit[] }>(['customers', 'inbox-search', term], term.length >= 2 ? `/customers?search=${encodeURIComponent(term)}&pageSize=8` : null);
+  const y = Number(year);
+  const validYear = Number.isInteger(y) && y >= 2000 && y <= 2100;
+  const file = useAction(() => api.post<{ duplicate: boolean; customer: { name: string } }>(`/robot/inbox/${item.id}/file`, { customerId: chosen!.id, year: y }), {
+    success: (r) => (r.duplicate ? `${r.customer.name} já tinha este arquivo: nada foi duplicado.` : `Arquivo guardado na pasta de ${r.customer.name}.`),
+    invalidate: [['robot'], ['ecac'], ['documents']],
+    onSuccess: onClose,
+  });
+
+  return (
+    <Modal
+      open
+      title="Atribuir arquivo a um cliente"
+      onClose={onClose}
+      width={520}
+      footer={
+        <>
+          <Button kind="secondary" onClick={onClose}>
+            Cancelar
+          </Button>
+          <Button loading={file.isPending} disabled={!chosen || !validYear} onClick={() => file.mutate(undefined)}>
+            Atribuir
+          </Button>
+        </>
+      }
+    >
+      <div className="vf-stack">
+        <span className="vf-muted" style={{ wordBreak: 'break-all' }}>
+          {item.filename}
+        </span>
+        {chosen ? (
+          <div className="vf-inline">
+            <Tag tone="primary">{chosen.name}</Tag>
+            <Button kind="tertiary" size="sm" onClick={() => setChosen(null)}>
+              Trocar cliente
+            </Button>
+          </div>
+        ) : (
+          <>
+            <Input label="Cliente" placeholder="Nome ou CPF" value={search} onChange={(e) => setSearch(e.target.value)} autoFocus />
+            {term.length >= 2 &&
+              (hits.isLoading ? (
+                <Loading />
+              ) : !hits.data?.data.length ? (
+                <span className="vf-muted">Nenhum cliente encontrado. Cadastre o cliente e volte aqui.</span>
+              ) : (
+                <ul className="vf-ecac-picker">
+                  {hits.data.data.map((c) => (
+                    <li key={c.id}>
+                      <button type="button" onClick={() => setChosen({ id: c.id, name: c.name })}>
+                        <span className="vf-text-sm-bold">{c.name}</span>
+                        <span className="vf-mono vf-muted">{formatCpfCnpj(c.cpfCnpj)}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ))}
+          </>
+        )}
+        <Input label="Ano-exercício" inputMode="numeric" maxLength={4} value={year} onChange={(e) => setYear(e.target.value.replace(/\D/g, ''))} error={year && !validYear ? 'Informe o ano com 4 dígitos.' : undefined} />
+      </div>
+    </Modal>
+  );
+}
+
+function TokensCard({ latest }: { latest: RobotOverview['clientVersions'] | null }) {
   const toast = useToast();
   const tokens = useApi<MachineToken[]>(['robot', 'tokens'], '/robot/tokens');
   const [creating, setCreating] = useState(false);
@@ -170,6 +360,7 @@ function TokensCard() {
                 <th>Token</th>
                 <th>Criado por</th>
                 <th>Último uso</th>
+                <th>Versão</th>
                 <th>Situação</th>
                 <th className="actions" />
               </tr>
@@ -185,6 +376,21 @@ function TokensCard() {
                     <div className="vf-text-xs vf-muted">{formatDateTime(t.createdAt)}</div>
                   </td>
                   <td>{t.lastUsedAt ? formatDateTime(t.lastUsedAt) : <span className="vf-muted">Nunca usado</span>}</td>
+                  <td>
+                    {t.clientVersion ? (
+                      <>
+                        <span className="vf-mono">{t.clientVersion}</span>
+                        {t.clientPlatform && <span className="vf-muted"> · {PLATFORMS[t.clientPlatform] ?? t.clientPlatform}</span>}
+                        {t.active && latest?.[t.scope] && olderThan(t.clientVersion, latest[t.scope]!) && (
+                          <div className="vf-text-xs">
+                            <Link to="/downloads">Atualizar para {latest[t.scope]}</Link>
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <span className="vf-muted">—</span>
+                    )}
+                  </td>
                   <td>{t.active ? <Tag tone="success">Ativo</Tag> : <Tag tone="danger">Revogado em {formatDateTime(t.revokedAt)}</Tag>}</td>
                   <td className="actions">
                     {t.active && (
@@ -221,8 +427,8 @@ function TokensCard() {
           <Select label="Escopo" value={scope} onChange={(e) => setScope(e.target.value as 'extension' | 'sync')} options={optionsOf(MACHINE_TOKEN_SCOPES)} />
           <span className="vf-text-xs vf-muted">
             {scope === 'sync'
-              ? 'Sincronizador: envia arquivos do programa IRPF e pré-preenchidas e lê a lista de clientes com procurador.'
-              : 'Extensão: envia registros interpretados do eCAC e pré-preenchidas e lê a lista de clientes com procurador.'}
+              ? 'Sincronizador: envia arquivos do programa IRPF e pré-preenchidas e consulta os clientes do escritório pelo nome ou CPF.'
+              : 'Extensão: envia arquivos, páginas registradas e pré-preenchidas para a pasta do cliente e consulta os clientes do escritório pelo nome ou CPF.'}
           </span>
         </div>
       </Modal>

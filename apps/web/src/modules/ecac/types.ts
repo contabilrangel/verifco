@@ -67,6 +67,24 @@ export interface MachineToken {
   lastUsedIp: string | null;
   revokedAt: string | null;
   active: boolean;
+  /** Versão e sistema do programa que usou o token por último (`null` até o primeiro uso). */
+  clientVersion: string | null;
+  clientPlatform: string | null;
+}
+
+/** Arquivo que o sincronizador não conseguiu ligar a um cliente. */
+export interface InboxItem {
+  id: string;
+  filename: string;
+  originalPath: string | null;
+  reason: 'sem_cpf' | 'cliente_nao_cadastrado';
+  reasonLabel: string;
+  cpf: string | null;
+  exerciseYear: number | null;
+  size: number;
+  tokenName: string | null;
+  createdAt: string;
+  suggestedCustomer: { id: string; name: string } | null;
 }
 
 export interface RobotOverview {
@@ -76,6 +94,10 @@ export interface RobotOverview {
   lastOfficeSync: JobView | null;
   /** Próxima rodada automática (diária ou semanal) do SERPRO na fila; `null` se desligada. */
   nextAutoSync: string | null;
+  /** Arquivos do sincronizador esperando alguém atribuir a um cliente. */
+  inboxPending: number;
+  /** Versão de cada programa distribuída por este servidor. */
+  clientVersions: { sync: string | null; extension: string | null };
   activity: { at: string; type: 'file' | 'record' | 'prefilled'; customerId: string; customerName: string; detail: string; category: string }[];
 }
 

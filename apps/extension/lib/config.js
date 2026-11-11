@@ -1,6 +1,7 @@
 /*
  * Configuração compartilhada da extensão Verifco (service worker, popup e content scripts).
- * Script clássico: define `globalThis.VerifcoConfig`.
+ * Script clássico: define `globalThis.VerifcoConfig`. Só constantes; as funções ficam em
+ * lib/format.js.
  */
 (function () {
   /**
@@ -16,30 +17,30 @@
     fontes_pagadoras: { label: 'Rendimentos informados por fontes pagadoras', url: 'https://cav.receita.fazenda.gov.br/ecac/' },
   };
 
-  /** Chaves do chrome.storage.local. */
+  /** Chaves do chrome.storage.local (ficam neste navegador). */
   const STORAGE = {
-    settings: 'verifco.settings', // { webUrl, apiUrl, token, captureEnabled, enabledParsers: string[] }
+    settings: 'verifco.settings', // { webUrl, apiUrl, token }
+    log: 'verifco.log', // últimos envios: [{ at, name, cpf (mascarado), what, ok, detail }]
+  };
+
+  /** Chaves do chrome.storage.session (memória do navegador, apagada ao fechá-lo). */
+  const SESSION = {
+    pending: 'verifco.pending', // último "Acessar" do Verifco: { service, serviceLabel, cpf, at }
+    client: 'verifco.client', // cliente escolhido no popup: { cpf, name, at }
+    draft: 'verifco.draft', // seleção vinda do menu de contexto sem cliente escolhido
   };
 
   /** Contexto de "abrir serviço" vale por 30 minutos (mostra o CPF do cliente no eCAC). */
   const CONTEXT_TTL_MS = 30 * 60 * 1000;
 
-  const onlyDigits = (v) => String(v ?? '').replace(/\D+/g, '');
-  const formatCpf = (v) => {
-    const d = onlyDigits(v);
-    if (d.length === 11) return d.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4');
-    if (d.length === 14) return d.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/, '$1.$2.$3/$4-$5');
-    return String(v ?? '');
-  };
-  /** Origem (protocolo + host + porta) de uma URL, ou null. */
-  const originOf = (url) => {
-    try {
-      const u = new URL(String(url).trim());
-      return u.protocol === 'http:' || u.protocol === 'https:' ? u.origin : null;
-    } catch {
-      return null;
-    }
+  const LIMITS = {
+    fileBytes: 25 * 1024 * 1024, // limite de POST /api/sync/documents
+    pageTextChars: 8000, // texto de "Registrar esta página"
+    base64Chars: 14_000_000, // limite do anexo em POST /api/sync/ecac-records
+    logEntries: 30,
+    customers: 20,
+    draftTtlMs: 10 * 60 * 1000,
   };
 
-  globalThis.VerifcoConfig = { SERVICES, STORAGE, CONTEXT_TTL_MS, onlyDigits, formatCpf, originOf };
+  globalThis.VerifcoConfig = { SERVICES, STORAGE, SESSION, CONTEXT_TTL_MS, LIMITS };
 })();
