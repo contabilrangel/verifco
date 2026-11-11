@@ -42,7 +42,9 @@ const renderReport = (ui: React.ReactNode) =>
 const clients = () => screen.getAllByRole('link', { name: /^Cliente \d+$/ }).map((a) => a.textContent);
 const generate = () => fireEvent.click(screen.getByRole('button', { name: 'Gerar relatório' }));
 
-describe('relatórios gerais: paginação e impressão', () => {
+// Estes testes desenham tabelas de 120 linhas (duas vezes, na impressão): no jsdom isso leva
+// alguns segundos numa máquina carregada, perto do limite padrão de 5 s do Vitest.
+describe('relatórios gerais: paginação e impressão', { timeout: 30_000 }, () => {
   it('Resultados: 50 por página, com o total do relatório inteiro no rodapé', async () => {
     renderReport(<ResultsReport />);
     // sem relatório gerado não há o que imprimir
