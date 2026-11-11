@@ -39,6 +39,14 @@
 .vf-fin-public__plan { list-style: none; margin: 0; padding: var(--size-spacing-02) 0 0; border-top: 1px dashed var(--color-border-strong); display: flex; flex-direction: column; gap: var(--size-spacing-01); font: var(--text-sm-regular); color: var(--color-text-medium); }
 .vf-fin-public__plan li { display: flex; justify-content: space-between; font-variant-numeric: tabular-nums; }
 .vf-fin-public__actions { display: flex; justify-content: flex-end; gap: var(--size-spacing-03); }
+.vf-fin-public__section { display: flex; flex-direction: column; gap: var(--size-spacing-03); }
+.vf-fin-payments { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.vf-fin-payments > li { display: flex; align-items: center; justify-content: space-between; gap: var(--size-spacing-03); flex-wrap: wrap; padding: var(--size-spacing-03) 0; border-top: 1px solid var(--color-border); }
+.vf-fin-payments > li:first-child { border-top: 0; padding-top: 0; }
+.vf-fin-payments > li:last-child { padding-bottom: 0; }
+.vf-fin-payments__info { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-variant-numeric: tabular-nums; }
+.vf-fin-payments__side { display: flex; align-items: center; gap: var(--size-spacing-03); flex-wrap: wrap; justify-content: flex-end; }
+.vf-fin-payments__side .vf-btn { text-decoration: none; }
 .vf-fin-public__foot { display: flex; justify-content: space-between; gap: var(--size-spacing-03); flex-wrap: wrap; padding-top: var(--size-spacing-04); border-top: 1px solid var(--color-border); font: var(--text-xs-regular); letter-spacing: 0; color: var(--color-text-low); }
 .vf-fin-public__foot a { color: var(--color-text-medium); }
 .vf-fin-public__brand { display: inline-flex; align-items: center; gap: var(--size-spacing-02); font: var(--text-xs-regular); color: var(--color-text-low); letter-spacing: 0; }

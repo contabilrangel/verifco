@@ -2,9 +2,10 @@ import { and, eq, gt, inArray, isNull } from 'drizzle-orm';
 import { INTEGRATION_PROVIDERS, type IntegrationProvider } from '@verifco/shared';
 import type { AppContext } from '../../context';
 import { billings, customers, installments, integrations, jobs, notifications } from '../../db/schema';
+import { ASAAS_RECONCILE_JOB, reconcileAsaasPayments, scheduleAsaasReconcile } from '../../integrations/asaas';
 import { BILLING_SYNC_JOB, syncBillingExternal } from '../../integrations/billing-sync';
 import { IntegrationError, errorMessage } from '../../integrations/http';
-import { OMIE_POLL_JOB, pollOmiePayments } from '../../integrations/omie';
+import { OMIE_POLL_JOB, pollOmiePayments, scheduleOmiePoll, type OmieConfig } from '../../integrations/omie';
 import { INTERRUPTED_ERROR, JOB_LEASE_MS, PermanentJobError, type JobRow } from '../../jobs/queue';
 import { notify } from '../../services/notify';
 
@@ -85,6 +86,8 @@ export async function requestBillingSync(ctx: AppContext, list: { id: string; of
 /** Reenfileira os faturamentos do provedor com parcelas em aberto ainda sem cobrança emitida. */
 export async function requeuePendingBillings(ctx: AppContext, officeId: string, provider: IntegrationProvider, userId: string | null) {
   if (!isBillingProvider(provider)) return 0;
+  // integração Asaas salva e ativa: a conciliação periódica das cobranças passa a rodar (uma por escritório)
+  if (provider === 'asaas') await scheduleAsaasReconcile(ctx, officeId, 60_000);
   const rows = await ctx.db
     .selectDistinct({ id: billings.id, officeId: billings.officeId })
     .from(billings)
@@ -146,14 +149,33 @@ export async function billingSyncStates(ctx: AppContext, officeId: string, list:
 }
 
 /**
+ * Ao subir a API: todo escritório com o Asaas ou o Omie ativo ganha a conferência periódica dos
+ * pagamentos, se ainda não tiver uma na fila (a cadeia se reagenda sozinha, mas para quando o job
+ * falha de vez ou o processo cai entre uma rodada e o agendamento da próxima).
+ */
+export async function ensureBillingSchedules(ctx: AppContext) {
+  const rows = await ctx.db
+    .select({ officeId: integrations.officeId, provider: integrations.provider, publicConfig: integrations.publicConfig })
+    .from(integrations)
+    .where(and(inArray(integrations.provider, BILLING_PROVIDERS), eq(integrations.enabled, true)));
+  // outra instância pode agendar ao mesmo tempo: a chave de idempotência recusa a duplicata
+  for (const r of rows) {
+    if (r.provider === 'asaas') await scheduleAsaasReconcile(ctx, r.officeId).catch(() => undefined);
+    else await scheduleOmiePoll(ctx, r.officeId, r.publicConfig as Partial<OmieConfig>).catch(() => undefined);
+  }
+}
+
+/**
  * Executores da fila ligados às integrações:
  * - `billing.sync_external` `{ billingId }`: cria as cobranças das parcelas no Asaas/Omie
  *   (enfileirado pelo módulo financeiro ao faturar com `billings.provider`). Repete com espera
  *   crescente (até 24 h); erro permanente não repete; na falha final, avisa o escritório.
  * - `omie.poll_payments` `{ officeId }`: consulta as contas a receber em aberto no Omie e
  *   marca as pagas; reagenda a si mesmo conforme o intervalo configurado.
+ * - `asaas.reconcile_payments` `{ officeId }`: confere no Asaas as cobranças em aberto (o webhook
+ *   pode falhar) e reagenda a si mesmo a cada 6 h.
  */
-export function registerJobs(ctx: AppContext) {
+export async function registerJobs(ctx: AppContext) {
   ctx.jobs.register(
     BILLING_SYNC_JOB,
     async (job, { progress }) => {
@@ -174,4 +196,16 @@ export function registerJobs(ctx: AppContext) {
     if (!officeId) throw new Error('Job omie.poll_payments sem escritório.');
     return pollOmiePayments(ctx, officeId);
   });
+
+  ctx.jobs.register(
+    ASAAS_RECONCILE_JOB,
+    async (job) => {
+      const officeId = job.officeId ?? String(job.payload.officeId ?? '');
+      if (!officeId) throw new Error('Job asaas.reconcile_payments sem escritório.');
+      return reconcileAsaasPayments(ctx, officeId);
+    },
+    { perOffice: 1 },
+  );
+
+  await ensureBillingSchedules(ctx).catch(() => undefined);
 }

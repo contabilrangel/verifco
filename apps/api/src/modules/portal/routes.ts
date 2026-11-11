@@ -2,10 +2,13 @@ import { and, asc, count, desc, eq, inArray, isNotNull, isNull, ne, type SQL } f
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
+  brazilToday,
   checklistLock,
   checklistProgress,
   currentExerciseYear,
   customerDeclarationStatus,
+  darfPayable,
+  darfStatus,
   isValidCpfCnpj,
   onlyDigits,
   stageOfSubstatus,
@@ -18,6 +21,7 @@ import {
   checklistSections,
   checklists,
   customers,
+  darfs,
   declarations,
   documents,
   files,
@@ -51,7 +55,9 @@ const sharedWithCustomer = (customerId: string, officeId: string): SQL =>
 /**
  * Portal do cliente: login com CPF + código do portal (gerado em
  * `POST /customers/:id/portal-access`), status das declarações, pendências,
- * checklist do ano, documentos do escritório e mensagens (módulo messages).
+ * checklist do ano, quotas do DARF com a guia, documentos do escritório e mensagens
+ * (módulo messages). Os orçamentos e os pagamentos dos honorários ficam no módulo financeiro
+ * (`/portal/budgets`).
  */
 export async function portalRoutes(app: FastifyInstance) {
   const { ctx } = app;
@@ -179,7 +185,41 @@ export async function portalRoutes(app: FastifyInstance) {
       .from(messages)
       .where(and(eq(messages.customerId, auth.customerId), eq(messages.officeId, auth.officeId), eq(messages.direction, 'out'), isNull(messages.readAt)));
 
-    return { exerciseYear: year, declarations: declarationCards, pendencies, checklist, documents: sharedDocs, unreadMessages: unread };
+    // quotas do imposto dos mesmos exercícios dos cartões (o e-mail do DARF manda o cliente baixar a guia aqui)
+    const today = brazilToday();
+    const darfRows = await db
+      .select({ darf: darfs, exerciseYear: declarations.exerciseYear })
+      .from(darfs)
+      .innerJoin(declarations, eq(declarations.id, darfs.declarationId))
+      .where(and(eq(darfs.customerId, auth.customerId), eq(darfs.officeId, auth.officeId), inArray(declarations.exerciseYear, [year, year - 1])))
+      .orderBy(desc(declarations.exerciseYear), asc(darfs.quotaNumber), asc(darfs.dueDate));
+    const darfList = darfRows.map(({ darf, exerciseYear }) => {
+      // quota gerada a partir da 2ª guarda só o principal: `amount` traz o valor com os juros até o vencimento
+      const amount = darfPayable(darf);
+      return {
+        id: darf.id,
+        exerciseYear,
+        quotaNumber: darf.quotaNumber,
+        dueDate: darf.dueDate,
+        valueCents: darf.valueCents,
+        amount: amount ? { totalCents: amount.totalCents, note: amount.note } : null,
+        status: darfStatus({ status: darf.status, paidAt: darf.paidAt, dueDate: darf.dueDate }, today),
+        paidAt: darf.paidAt,
+        hasFile: Boolean(darf.fileId),
+      };
+    });
+
+    return { exerciseYear: year, declarations: declarationCards, pendencies, checklist, darfs: darfList, documents: sharedDocs, unreadMessages: unread };
+  });
+
+  /** Guia (PDF) de uma quota do DARF do próprio cliente. */
+  app.get('/portal/darfs/:id/file', async (req, reply) => {
+    const auth = requirePortal(req);
+    const { id } = parse(z.object({ id: z.uuid() }), req.params);
+    const darf = await db.query.darfs.findFirst({ where: and(eq(darfs.id, id), eq(darfs.customerId, auth.customerId), eq(darfs.officeId, auth.officeId)) });
+    if (!darf?.fileId) throw notFound('Guia do DARF');
+    const { row, stream } = await ctx.files.open(auth.officeId, darf.fileId);
+    return sendStoredFile(reply, row, stream, (req.query as Record<string, string>).inline === '1');
   });
 
   /** Download de documento que o escritório compartilhou com o cliente. */

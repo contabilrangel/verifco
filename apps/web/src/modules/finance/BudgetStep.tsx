@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { Check, ChevronDown, Copy, FileSignature, History, Link2, Lock, MoreHorizontal, Pencil, Plus, Send, Trash2, X } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
+import { Ban, Check, ChevronDown, Copy, FileSignature, History, Link2, Lock, MoreHorizontal, Pencil, Plus, Send, Trash2, X } from 'lucide-react';
 import { todayIso } from '@verifco/shared';
-import { Alert, Button, Card, Checkbox, ConfirmDialog, EmptyState, IconButton, Input, Loading, Menu, MenuItem, Modal, Tag, useToast } from '../../ds';
+import { Alert, Button, Card, Checkbox, ConfirmDialog, EmptyState, IconButton, Input, Loading, Menu, MenuItem, Modal, Tag, Textarea, useToast } from '../../ds';
 import { api } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { useAction, useApi } from '../../lib/hooks';
@@ -13,7 +14,8 @@ import { BudgetFormModal } from './BudgetForm';
 import type { Budget, BudgetList } from './types';
 import { BudgetStatusTag, PAYMENT_STATUS, budgetTypeLabel, formatNumber, inactiveIntegration, paymentStatusTone } from './ui';
 
-type Action = { kind: 'approve' | 'reject' | 'delete' | 'send' | 'link'; budget: Budget } | null;
+type ActionKind = 'approve' | 'reject' | 'delete' | 'send' | 'link' | 'cancel';
+type Action = { kind: ActionKind; budget: Budget } | null;
 
 /** Etapa "Orçamento" da aba IRPF do cliente. */
 export function BudgetStep() {
@@ -207,6 +209,7 @@ export function BudgetStep() {
         onConfirm={() => action && newLink.mutate(action.budget)}
         onClose={() => setAction(null)}
       />
+      <CancelBudgetModal budget={action?.kind === 'cancel' ? action.budget : null} customerId={customer.id} onClose={() => setAction(null)} />
       <SendBudgetModal budget={action?.kind === 'send' ? action.budget : null} contact={contact} customerId={customer.id} onClose={() => setAction(null)} onSent={(l) => (setAction(null), setLink(l))} />
       <LinkModal link={link} onClose={() => setLink(null)} />
       <ConfirmDialog
@@ -231,7 +234,7 @@ function BudgetCard({
   budget: Budget;
   contact: { email: boolean; mobile: boolean };
   onEdit: () => void;
-  onAction: (k: 'approve' | 'reject' | 'delete' | 'send' | 'link') => void;
+  onAction: (k: ActionKind) => void;
 }) {
   const { can } = useAuth();
   const approved = b.status === 'approved';
@@ -242,7 +245,9 @@ function BudgetCard({
     b.approvedAt && `Aprovado em ${formatDateTime(b.approvedAt)}${b.approvedBy ? ` por ${b.approvedBy}` : ''}`,
     b.rejectedAt && b.status === 'rejected' && `Recusado em ${formatDateTime(b.rejectedAt)}`,
   ].filter(Boolean);
-  const hasMenu = (sendable && can('budget.send')) || (!approved && can('budget.delete'));
+  // aprovado não é excluído: cancela-se, com as parcelas em aberto (as pagas ficam como histórico)
+  const cancelable = approved && can('budget.approve');
+  const hasMenu = (sendable && can('budget.send')) || (!approved && can('budget.delete')) || cancelable;
 
   return (
     <Card>
@@ -298,6 +303,11 @@ function BudgetCard({
                     {!approved && can('budget.delete') && (
                       <MenuItem icon={<Trash2 />} danger onClick={() => (close(), onAction('delete'))}>
                         Excluir orçamento
+                      </MenuItem>
+                    )}
+                    {cancelable && (
+                      <MenuItem icon={<Ban />} danger onClick={() => (close(), onAction('cancel'))}>
+                        Cancelar orçamento
                       </MenuItem>
                     )}
                   </>
@@ -356,6 +366,62 @@ function BudgetCard({
         )}
       </div>
     </Card>
+  );
+}
+
+/** Cancela o orçamento aprovado: as parcelas em aberto são canceladas (também no Asaas/Omie) e as pagas ficam. */
+export function CancelBudgetModal({ budget, customerId, onClose }: { budget: Budget | null; customerId: string; onClose: () => void }) {
+  const qc = useQueryClient();
+  const [reason, setReason] = useState('');
+  const cancel = useAction(() => api.post(`/finance/budgets/${budget!.id}/cancel`, { reason: reason.trim() || undefined }), {
+    success: 'Orçamento cancelado.',
+    invalidate: [['finance', 'budgets', customerId], ['customer', customerId]],
+    onSuccess: () => close(),
+  });
+  const close = () => {
+    cancel.reset();
+    setReason('');
+    onClose();
+  };
+  // o provedor recusou uma parcela no meio: as anteriores já foram canceladas, então a lista é recarregada
+  const submit = () => cancel.mutate(undefined, { onError: () => void qc.invalidateQueries({ queryKey: ['finance', 'budgets', customerId] }) });
+  const list = budget?.billing?.installments ?? [];
+  const open = list.filter((i) => i.status === 'open' || i.status === 'overdue');
+  const paid = list.filter((i) => i.status === 'paid');
+  const atProvider = Boolean(budget?.billing?.provider && budget.billing.externalSync?.integrationReady && open.some((i) => i.externalId));
+  const provider = budget?.billing?.provider === 'omie' ? 'Omie' : 'Asaas';
+  // parou no meio (o provedor recusou uma parcela): a mensagem diz quais foram canceladas
+  const error = cancel.error ? cancel.error.message : null;
+  return (
+    <Modal
+      open={Boolean(budget)}
+      title="Cancelar orçamento"
+      onClose={close}
+      width={500}
+      footer={
+        <>
+          <Button kind="secondary" onClick={close}>
+            Voltar
+          </Button>
+          <Button kind="danger" loading={cancel.isPending} onClick={submit}>
+            Cancelar orçamento
+          </Button>
+        </>
+      }
+    >
+      <div className="vf-stack">
+        <span className="vf-muted">
+          O orçamento de <strong>{budget?.categoryLabel}</strong> ({budget ? formatMoney(budget.totalCents) : ''}) passa a cancelado e sai do portal do cliente.{' '}
+          {open.length
+            ? `${open.length === 1 ? 'A parcela em aberto é cancelada' : `As ${open.length} parcelas em aberto são canceladas`} (${formatMoney(open.reduce((a, i) => a + i.amountCents, 0))}).`
+            : 'Não há parcela em aberto para cancelar.'}{' '}
+          {paid.length ? `${paid.length === 1 ? 'A parcela paga continua' : `As ${paid.length} parcelas pagas continuam`} no histórico, com os recibos.` : ''} Não dá para desfazer.
+        </span>
+        {atProvider && <Alert tone="primary">As cobranças em aberto também são canceladas no {provider}: os links de pagamento do cliente deixam de funcionar.</Alert>}
+        <Textarea label="Motivo (opcional)" value={reason} onChange={(e) => setReason(e.target.value)} rows={2} maxLength={500} />
+        {error && <Alert tone="danger">{error}</Alert>}
+      </div>
+    </Modal>
   );
 }
 

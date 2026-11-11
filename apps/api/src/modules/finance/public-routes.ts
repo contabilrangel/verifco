@@ -8,22 +8,28 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { buildInstallmentPlan, splitInstallments } from '@verifco/shared';
 import type { AppContext } from '../../context';
-import { auditLogs, budgets, customers, offices, paymentMethods } from '../../db/schema';
+import { auditLogs, billings, budgets, customers, installments, offices, paymentMethods } from '../../db/schema';
 import { sha256 } from '../../lib/crypto';
 import { HttpError, conflict, notFound, unauthorized } from '../../lib/errors';
 import { optionalText, parse, uuidParam } from '../../lib/http';
 import { notify } from '../../services/notify';
 import { sendStoredFile } from '../../services/uploads';
-import { approveBudget, linkExpiresAt, rejectBudget, type BudgetRow } from './service';
+import { approveBudget, customerPayments, linkExpiresAt, rejectBudget, type BudgetRow } from './service';
 import { categoryLabel } from './text';
 
 const tokenParam = z.object({ token: z.string().min(20).max(200) });
 const gone = (message: string) => new HttpError(410, message);
 
-/** Resumo da proposta mostrado ao cliente (sem observação interna nem dados de outros clientes). */
+/**
+ * Resumo da proposta mostrado ao cliente (sem observação interna nem dados de outros clientes).
+ * Aprovada e faturada, traz em `payments` as parcelas de verdade, com o link de pagamento do
+ * provedor (boleto/Pix) de cada uma em aberto; antes disso, `payments` é null e vale o `plan`.
+ */
 async function publicSummary(ctx: AppContext, b: BudgetRow) {
   const method = b.paymentMethodId ? await ctx.db.query.paymentMethods.findFirst({ where: eq(paymentMethods.id, b.paymentMethodId) }) : null;
   const plan = b.billingStartDate ? buildInstallmentPlan(b.totalCents, b.installments, b.billingStartDate) : null;
+  const billing = b.status === 'approved' ? await ctx.db.query.billings.findFirst({ where: eq(billings.budgetId, b.id) }) : null;
+  const payments = billing ? customerPayments(await ctx.db.select().from(installments).where(eq(installments.billingId, billing.id))) : null;
   return {
     id: b.id,
     status: b.status,
@@ -37,6 +43,7 @@ async function publicSummary(ctx: AppContext, b: BudgetRow) {
     installments: b.installments,
     installmentAmounts: splitInstallments(b.totalCents, b.installments),
     plan,
+    payments,
     paymentMethod: method?.name ?? null,
     billingStartDate: b.billingStartDate,
     sentAt: b.sentAt,
@@ -145,7 +152,7 @@ export async function publicRoutes(app: FastifyInstance) {
     return b;
   };
 
-  /** Propostas enviadas e aprovadas do próprio cliente. */
+  /** Propostas enviadas e aprovadas do próprio cliente; as aprovadas trazem as parcelas e os links de pagamento. */
   app.get('/portal/budgets', async (req) => {
     const auth = portalCustomer(req);
     const rows = await db

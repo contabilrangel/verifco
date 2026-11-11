@@ -38,6 +38,20 @@ export interface Installment {
   receiptSentAt: string | null;
   externalId: string | null;
   externalUrl: string | null;
+  /** Quando o link de pagamento foi enviado ao cliente (automático ou "Enviar cobrança"). */
+  chargeSentAt?: string | null;
+  canceledAt?: string | null;
+  cancelReason?: string | null;
+}
+
+/** Parcela como o cliente vê (link público e portal): `payUrl` é o boleto/Pix do provedor enquanto está em aberto. */
+export interface CustomerPayment {
+  number: number;
+  dueDate: string;
+  amountCents: number;
+  status: 'open' | 'paid' | 'overdue' | 'canceled';
+  paidAt: string | null;
+  payUrl: string | null;
 }
 
 /** Emissão da cobrança no Asaas/Omie (último job do faturamento). */
@@ -128,6 +142,8 @@ export interface PublicBudget {
     installments: number;
     installmentAmounts: number[];
     plan: { number: number; dueDate: string; amountCents: number }[] | null;
+    /** Parcelas do faturamento (orçamento aprovado); null antes de aprovar. */
+    payments?: CustomerPayment[] | null;
     paymentMethod: string | null;
     billingStartDate: string | null;
     approvedAt: string | null;

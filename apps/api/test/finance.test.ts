@@ -291,9 +291,29 @@ describe('orçamentos', () => {
     const list = await api.get(`/api/finance/customers/${customerId}/budgets?year=2026`);
     expect(list.body.data[0].billing.installments[0].externalUrl).toBe('https://pagar.exemplo/1');
     const inst = list.body.data[0].billing.installments[0];
-    // com a integração ativa, o valor da cobrança emitida só muda no provedor (INT-10)
-    await api.put('/api/integrations/asaas', { enabled: true, config: { environment: 'sandbox' }, secrets: { apiKey: '$aact_hmlg_abc123456789' } });
-    expect((await api.put(`/api/finance/installments/${inst.id}`, { amountCents: 1 })).status).toBe(409);
+    // com a integração ativa, a mudança de valor vai primeiro ao Asaas; se ele recusar, nada muda aqui
+    const realFetch = env.providers.fetch;
+    const calls: string[] = [];
+    env.providers.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      calls.push(`${init?.method ?? 'GET'} ${new URL(String(input)).pathname}`);
+      const refused = init?.method === 'PUT' && String(input).includes('/payments/');
+      return new Response(JSON.stringify(refused ? { errors: [{ description: 'O valor mínimo da cobrança é R$ 5,00.' }] } : { id: 'pay_1', status: 'PENDING', dueDate: '2030-01-10', data: [] }), {
+        status: refused ? 400 : 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    try {
+      await api.put('/api/integrations/asaas', { enabled: true, config: { environment: 'sandbox' }, secrets: { apiKey: '$aact_hmlg_abc123456789' } });
+      const refused = await api.put(`/api/finance/installments/${inst.id}`, { amountCents: 1 });
+      expect(refused.status).toBe(409);
+      expect(refused.body.error).toContain('O valor mínimo da cobrança é R$ 5,00');
+      expect(calls).toEqual(['GET /v3/payments/pay_1', 'PUT /v3/payments/pay_1']);
+      expect((await env.ctx.db.query.installments.findFirst({ where: eq(installments.id, inst.id) }))!.amountCents).toBe(inst.amountCents);
+      // a emissão que estava na fila não tem mais o que emitir e não fica para o próximo teste
+      await env.ctx.jobs.drain();
+    } finally {
+      env.providers.fetch = realFetch;
+    }
   });
 });
 

@@ -17,14 +17,41 @@ import {
   ThumbsUp,
 } from 'lucide-react';
 import { BUDGET_CATEGORIES } from '@verifco/shared';
-import { Alert, Button, Card, ConfirmDialog, Input, Loading, Progress, Tag, cx, useToast } from '../../ds';
+import { Alert, Button, Card, ConfirmDialog, Input, Loading, Modal, Progress, Tag, Textarea, cx, useToast, type Tone } from '../../ds';
 import { ApiError, errorMessage } from '../../lib/api';
 import { formatDate, formatMoney } from '../../lib/format';
+import { CustomerPayments } from '../finance/CustomerPayments';
+import type { CustomerPayment } from '../finance/types';
 import { ChatThread, Composer, timeOf, type ChatEntry } from './Chat';
 import { CustomerChecklist } from './CustomerChecklist';
 import { customerClient, formatBytes, maskCpfInput, portalSession, publicApi, type CustomerClient, type PortalSession } from './customerApi';
-import { PublicFrame } from './PublicFrame';
-import type { CustomerTone, PortalBudget, PortalMessage, PortalOverview } from './types';
+import { PublicFrame, type OfficeContact } from './PublicFrame';
+import type { CustomerTone, PortalBudget as BasePortalBudget, PortalMessage, PortalOverview as BasePortalOverview } from './types';
+
+/** Orçamento do portal; aprovado e faturado, traz as parcelas com o link de pagamento. */
+type PortalBudget = BasePortalBudget & { categoryLabel?: string; payments?: CustomerPayment[] | null };
+
+/** Quota do DARF do imposto como o portal devolve em `/portal/overview`. */
+export interface PortalDarf {
+  id: string;
+  exerciseYear: number;
+  quotaNumber: number;
+  dueDate: string;
+  /** Valor cadastrado; nas quotas geradas a partir da 2ª é só o principal (veja `amount`). */
+  valueCents: number;
+  /** Valor com os juros até o vencimento, quando o cadastro guarda só o principal. */
+  amount: { totalCents: number | null; note: string | null } | null;
+  status: 'open' | 'paid' | 'overdue';
+  paidAt: string | null;
+  hasFile: boolean;
+}
+type PortalOverview = BasePortalOverview & { darfs?: PortalDarf[] };
+
+const DARF_STATUS: Record<PortalDarf['status'], { label: string; tone: Tone }> = {
+  open: { label: 'Em aberto', tone: 'warning' },
+  paid: { label: 'Paga', tone: 'success' },
+  overdue: { label: 'Vencida', tone: 'danger' },
+};
 
 interface PortalCtx {
   session: PortalSession;
@@ -53,6 +80,14 @@ export function PortalLayout() {
     enabled: Boolean(client),
     refetchInterval: 60_000,
   });
+  // contato do escritório no rodapé: o cliente sempre tem a quem recorrer
+  const me = useQuery({
+    queryKey: ['portal', 'me'],
+    queryFn: () => client!.get<{ office: OfficeContact }>('/portal/me'),
+    enabled: Boolean(client),
+    staleTime: 10 * 60_000,
+    retry: false,
+  });
 
   if (!session || !client) {
     return (
@@ -74,6 +109,7 @@ export function PortalLayout() {
     <PublicFrame
       officeName={session.officeName}
       subtitle="Portal do cliente"
+      contact={me.data?.office}
       right={
         <Button kind="tertiary" size="sm" icon={<LogOut />} onClick={() => logout()}>
           Sair
@@ -214,21 +250,30 @@ export function PortalHome() {
     retry: false,
   });
   const [deciding, setDeciding] = useState<{ budget: PortalBudget; action: 'approve' | 'reject' } | null>(null);
+  const [reason, setReason] = useState('');
   const decide = useMutation({
-    mutationFn: (v: { id: string; action: 'approve' | 'reject' }) => client.post(`/portal/budgets/${v.id}/${v.action}`),
+    mutationFn: (v: { id: string; action: 'approve' | 'reject'; reason?: string }) => client.post(`/portal/budgets/${v.id}/${v.action}`, v.action === 'reject' && v.reason ? { reason: v.reason } : {}),
     onSuccess: (_r, v) => {
       toast.success(v.action === 'approve' ? 'Orçamento aprovado. Obrigado!' : 'Orçamento recusado. O escritório foi avisado.');
       setDeciding(null);
+      setReason('');
       void qc.invalidateQueries({ queryKey: ['portal'] });
+      // a cobrança é emitida logo depois da aprovação: busca de novo para o link de pagamento aparecer
+      if (v.action === 'approve') for (const ms of [4000, 12_000, 30_000]) setTimeout(() => void qc.invalidateQueries({ queryKey: ['portal', 'budgets'] }), ms);
     },
     onError: (e) => toast.error(errorMessage(e)),
   });
   const download = (d: { id: string; filename: string }) => client.open(`/portal/documents/${d.id}`, d.filename, false).catch((e) => toast.error(errorMessage(e)));
+  const downloadDarf = (d: PortalDarf) => client.open(`/portal/darfs/${d.id}/file`, `darf-${d.exerciseYear}-quota-${d.quotaNumber}.pdf`, false).catch((e) => toast.error(errorMessage(e)));
 
   if (overview.isLoading) return <Loading />;
   if (!overview.data) return <Alert tone="danger">{errorMessage(overview.error)}</Alert>;
   const o = overview.data;
   const pendingBudgets = (budgets.data ?? []).filter((b) => !b.status || b.status === 'sent');
+  // aprovados continuam no portal, com as parcelas e o link para pagar
+  const billedBudgets = (budgets.data ?? []).filter((b) => b.status === 'approved' && b.payments?.length);
+  const darfs = o.darfs ?? [];
+  const budgetTitle = (b: PortalBudget) => b.categoryLabel || BUDGET_CATEGORIES[b.category as keyof typeof BUDGET_CATEGORIES] || 'Honorários';
   const [current, previous] = o.declarations;
 
   return (
@@ -323,6 +368,56 @@ export function PortalHome() {
         </Card>
       )}
 
+      {billedBudgets.length > 0 && (
+        <Card title="Pagamentos">
+          {billedBudgets.map((b) => (
+            <section key={b.id} className="ck-budget" aria-label={`Pagamentos de ${budgetTitle(b)}`}>
+              <span className="vf-stack" style={{ '--gap': '2px' } as CSSProperties}>
+                <strong>
+                  {budgetTitle(b)}
+                  {b.exerciseYear ? ` · IR ${b.exerciseYear}` : ''}
+                </strong>
+                <span className="vf-muted vf-text-sm">Honorários de {formatMoney(b.totalCents ?? b.amountCents ?? 0)}</span>
+              </span>
+              <CustomerPayments payments={b.payments ?? []} />
+            </section>
+          ))}
+        </Card>
+      )}
+
+      {darfs.length > 0 && (
+        <Card title="DARF do imposto">
+          <ul className="ck-list">
+            {darfs.map((d) => (
+              <li key={d.id} style={{ flexWrap: 'wrap' }}>
+                <span className="ck-darf">
+                  <strong>
+                    {d.quotaNumber}ª quota · IR {d.exerciseYear}
+                  </strong>
+                  <span className="vf-text-sm">
+                    {formatMoney(d.amount?.totalCents ?? d.valueCents)} · {d.status === 'paid' && d.paidAt ? `paga em ${formatDate(d.paidAt)}` : `vencimento em ${formatDate(d.dueDate)}`}
+                  </span>
+                  {d.amount?.note && d.status !== 'paid' && <span className="vf-muted vf-text-xs">{d.amount.note}</span>}
+                </span>
+                <span className="ck-actions" style={{ alignItems: 'center' }}>
+                  <Tag tone={DARF_STATUS[d.status].tone}>{DARF_STATUS[d.status].label}</Tag>
+                  {d.hasFile ? (
+                    <Button size="sm" kind="secondary" icon={<Download />} aria-label={`Baixar a guia da ${d.quotaNumber}ª quota de ${d.exerciseYear}`} onClick={() => void downloadDarf(d)}>
+                      Baixar guia
+                    </Button>
+                  ) : (
+                    d.status !== 'paid' && <span className="vf-muted vf-text-xs">O escritório vai enviar a guia</span>
+                  )}
+                </span>
+              </li>
+            ))}
+          </ul>
+          <p className="vf-muted vf-text-xs" style={{ marginTop: 12 }}>
+            O DARF é pago no seu banco, com o código de barras ou o Pix da guia. Vale sempre o valor que está na guia.
+          </p>
+        </Card>
+      )}
+
       <Card title="Documentos do escritório">
         {o.documents.length ? (
           <ul className="ck-list">
@@ -359,23 +454,39 @@ export function PortalHome() {
       </Card>
 
       <ConfirmDialog
-        open={Boolean(deciding)}
-        danger={deciding?.action === 'reject'}
-        title={deciding?.action === 'approve' ? 'Aprovar este orçamento?' : 'Recusar este orçamento?'}
+        open={deciding?.action === 'approve'}
+        title="Aprovar este orçamento?"
         message={
-          deciding?.action === 'approve' ? (
-            <span className="vf-inline">
-              <ReceiptText size={16} /> Ao aprovar, o escritório começa o trabalho e a cobrança é gerada.
-            </span>
-          ) : (
-            'O escritório será avisado. Se quiser, explique o motivo nas mensagens.'
-          )
+          <span className="vf-inline">
+            <ReceiptText size={16} /> Ao aprovar, o escritório começa o trabalho e a cobrança é gerada.
+          </span>
         }
-        confirmLabel={deciding?.action === 'approve' ? 'Aprovar' : 'Recusar'}
+        confirmLabel="Aprovar"
         loading={decide.isPending}
-        onConfirm={() => deciding && decide.mutate({ id: deciding.budget.id, action: deciding.action })}
+        onConfirm={() => deciding && decide.mutate({ id: deciding.budget.id, action: 'approve' })}
         onClose={() => setDeciding(null)}
       />
+      <Modal
+        open={deciding?.action === 'reject'}
+        title="Recusar este orçamento?"
+        onClose={() => setDeciding(null)}
+        width={460}
+        footer={
+          <>
+            <Button kind="secondary" onClick={() => setDeciding(null)}>
+              Voltar
+            </Button>
+            <Button kind="danger" loading={decide.isPending} onClick={() => deciding && decide.mutate({ id: deciding.budget.id, action: 'reject', reason: reason.trim() || undefined })}>
+              Recusar
+            </Button>
+          </>
+        }
+      >
+        <div className="vf-stack">
+          <span className="vf-muted">O escritório será avisado.</span>
+          <Textarea label="Quer contar o motivo? (opcional)" value={reason} onChange={(e) => setReason(e.target.value)} rows={3} maxLength={1000} />
+        </div>
+      </Modal>
     </div>
   );
 }

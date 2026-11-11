@@ -395,29 +395,119 @@ describe('Omie', () => {
     expect(r.body.integration.status).toBe('error');
   });
 
-  it('conta a receber lançada no Omie: o escritório altera e baixa pelo Omie, e a consulta periódica atualiza a parcela (INT-10)', async () => {
+  it('conta a receber lançada no Omie: alterar, baixar, desfazer e cancelar vão primeiro ao Omie; se ele recusa, nada muda', async () => {
     const { api, officeId } = await registerOffice(env);
     await api.put('/api/integrations/omie', omieConfig);
-    const { installments: list } = await setupBilling(officeId, api, 'omie', VALID_CPFS[4]);
-    await env.ctx.db.update(installments).set({ externalId: '9101' }).where(eq(installments.id, list[0].id));
-    await env.ctx.db.update(installments).set({ externalId: '9102' }).where(eq(installments.id, list[1].id));
+    const { installments: list, customerId, billing } = await setupBilling(officeId, api, 'omie', VALID_CPFS[4], [15050, 14950, 10000]);
+    for (const [i, row] of list.entries()) await env.ctx.db.update(installments).set({ externalId: `910${i + 1}` }).where(eq(installments.id, row.id));
+    const [a, b, c] = list;
 
-    const due = await api.put(`/api/finance/installments/${list[0].id}`, { dueDate: '2031-01-10' });
-    expect(due.status).toBe(409);
-    expect(due.body.error).toContain('cobrança emitida no Omie');
-    const recv = await api.post(`/api/finance/installments/${list[1].id}/receive`, {});
-    expect(recv.status).toBe(409);
-    expect(recv.body.error).toContain('baixe ou cancele a conta a receber');
+    // sem o código do cliente no Omie não dá para montar a alteração: recusa sem chamar nada
+    const idle = mockFetch(() => ({ status: 500, json: { faultstring: 'inesperado' } }));
+    env.providers.fetch = idle.fn;
+    const noCode = await api.put(`/api/finance/installments/${a.id}`, { dueDate: '2031-01-10' });
+    expect(noCode.status).toBe(409);
+    expect(noCode.body.error).toContain('não tem o código do Omie');
+    expect(idle.calls).toHaveLength(0);
+    await env.ctx.db.update(customers).set({ externalRefs: { omieId: '777' } }).where(eq(customers.id, customerId));
 
-    env.providers.fetch = mockFetch((c) =>
-      c.body.param[0].codigo_lancamento_integracao === list[0].id
-        ? { json: { status_titulo: 'RECEBIDO', recebimento: [{ valor: 150.5, data: '15/01/2030' }] } }
-        : { json: { status_titulo: 'A VENCER' } },
+    // estado do Omie simulado: baixas por título
+    const baixas = new Map<string, { valor: number; data: string; codigo_baixa?: number }[]>();
+    let fault: string | null = null;
+    const m = mockFetch((call) => {
+      const p = call.body.param[0];
+      if (fault) return { status: 500, json: { faultstring: fault, faultcode: 'SOAP-ENV:Client-102' } };
+      switch (call.body.call) {
+        case 'AlterarContaReceber':
+        case 'ExcluirContaReceber':
+          return { json: { codigo_lancamento_integracao: p.codigo_lancamento_integracao, codigo_status: '0', descricao_status: 'ok' } };
+        case 'LancarRecebimento':
+          baixas.set(p.codigo_lancamento_integracao, [{ valor: p.valor, data: p.data, codigo_baixa: 5550 + baixas.size }]);
+          return { json: { codigo_baixa: 5550, liquidado: 'S', codigo_status: '0' } };
+        case 'ConsultarContaReceber': {
+          const r = baixas.get(p.codigo_lancamento_integracao) ?? [];
+          return { json: { status_titulo: r.length ? 'RECEBIDO' : 'A VENCER', recebimento: r } };
+        }
+        case 'CancelarRecebimento':
+          for (const [k, v] of baixas) if (v.some((x) => x.codigo_baixa === p.codigo_baixa)) baixas.delete(k);
+          return { json: { codigo_baixa: p.codigo_baixa, codigo_status: '0' } };
+        default:
+          return { status: 500, json: { faultstring: 'chamada inesperada' } };
+      }
+    });
+    env.providers.fetch = m.fn;
+    const last = () => ({ url: m.calls.at(-1)!.url, call: m.calls.at(-1)!.body.call, param: m.calls.at(-1)!.body.param[0] });
+
+    // alterar vencimento e valor: AlterarContaReceber com o mesmo corpo da inclusão
+    const edit = await api.put(`/api/finance/installments/${a.id}`, { dueDate: '2031-01-10', amountCents: 16000 });
+    expect(edit.body).toEqual({ ok: true, provider: 'omie' });
+    expect(last()).toEqual({
+      url: 'https://app.omie.com.br/api/v1/financas/contareceber/',
+      call: 'AlterarContaReceber',
+      param: {
+        codigo_lancamento_integracao: a.id,
+        codigo_cliente_fornecedor: 777,
+        data_vencimento: '10/01/2031',
+        data_previsao: '10/01/2031',
+        valor_documento: 160,
+        codigo_categoria: '1.01.02',
+        id_conta_corrente: 4242,
+        numero_documento: `VF-${billing.id.slice(0, 8)}-1`,
+        observacao: expect.stringContaining('(parcela 1/3)'),
+      },
+    });
+    expect(await getInstallment(a.id)).toMatchObject({ dueDate: '2031-01-10', amountCents: 16000 });
+
+    // o Omie recusa (faultstring): 409 com a mensagem dele e nada muda
+    fault = 'ERROR: Não é possível alterar um lançamento já baixado.';
+    const refused = await api.put(`/api/finance/installments/${a.id}`, { amountCents: 17000 });
+    expect(refused.status).toBe(409);
+    expect(refused.body.error).toBe('Omie (AlterarContaReceber): ERROR: Não é possível alterar um lançamento já baixado. Nada foi alterado no Verifco.');
+    expect((await getInstallment(a.id))!.amountCents).toBe(16000);
+    expect((await api.post(`/api/finance/installments/${b.id}/receive`, {})).status).toBe(409);
+    expect((await getInstallment(b.id))!.status).toBe('open');
+    expect((await api.post(`/api/finance/installments/${c.id}/cancel`, {})).status).toBe(409);
+    expect((await getInstallment(c.id))!.status).toBe('open');
+    fault = null;
+
+    // baixa manual: LancarRecebimento na conta corrente da integração
+    const recv = await api.post(`/api/finance/installments/${b.id}/receive`, { paidAt: '2026-01-15', paidAmountCents: 14000 });
+    expect(recv.body).toEqual({ ok: true, provider: 'omie' });
+    expect(last()).toMatchObject({
+      call: 'LancarRecebimento',
+      param: { codigo_lancamento_integracao: b.id, codigo_conta_corrente: 4242, valor: 140, data: '15/01/2026', observacao: 'Recebimento registrado no Verifco' },
+    });
+    expect(await getInstallment(b.id)).toMatchObject({ status: 'paid', paidAt: '2026-01-15', paidAmountCents: 14000 });
+
+    // desfazer: consulta o título e cancela a baixa pelo código dela
+    const mark = m.calls.length;
+    const undo = await api.post(`/api/finance/installments/${b.id}/reopen`);
+    expect(undo.body).toEqual({ ok: true, provider: 'omie' });
+    expect(m.calls.slice(mark).map((x) => x.body.call)).toEqual(['ConsultarContaReceber', 'CancelarRecebimento']);
+    expect(last().param).toEqual({ codigo_baixa: 5550 });
+    expect(await getInstallment(b.id)).toMatchObject({ status: 'open', paidAt: null });
+
+    // baixa sem código na consulta: não dá para desfazer daqui; a parcela continua paga
+    await api.post(`/api/finance/installments/${b.id}/receive`, {});
+    baixas.set(b.id, [{ valor: 149.5, data: '15/01/2026' }]);
+    const blind = await api.post(`/api/finance/installments/${b.id}/reopen`);
+    expect(blind.status).toBe(409);
+    expect(blind.body.error).toContain('Cancele o recebimento na conta a receber do Omie');
+    expect(m.calls.at(-1)!.body.call).toBe('ConsultarContaReceber');
+    expect((await getInstallment(b.id))!.status).toBe('paid');
+
+    // cancelar: ExcluirContaReceber
+    const cancel = await api.post(`/api/finance/installments/${c.id}/cancel`, { reason: 'Serviço não prestado' });
+    expect(cancel.body).toEqual({ ok: true, provider: 'omie' });
+    expect(last()).toMatchObject({ call: 'ExcluirContaReceber', param: { codigo_lancamento_integracao: c.id } });
+    expect(await getInstallment(c.id)).toMatchObject({ status: 'canceled', cancelReason: 'Serviço não prestado' });
+
+    // a consulta periódica segue valendo para o que é feito direto no Omie
+    env.providers.fetch = mockFetch((call) =>
+      call.body.param[0].codigo_lancamento_integracao === a.id ? { json: { status_titulo: 'RECEBIDO', recebimento: [{ valor: 160, data: '15/01/2030' }] } } : { json: { status_titulo: 'A VENCER' } },
     ).fn;
-    expect(await pollOmiePayments(env.ctx, officeId)).toMatchObject({ checked: 2, paid: 1 });
-    expect(await getInstallment(list[0].id)).toMatchObject({ status: 'paid', paidAt: '2030-01-15', paidAmountCents: 15050, dueDate: '2030-01-10' });
-    expect((await api.post(`/api/finance/installments/${list[0].id}/reopen`)).status).toBe(409);
-    expect((await getInstallment(list[0].id))!.status).toBe('paid');
+    expect(await pollOmiePayments(env.ctx, officeId)).toMatchObject({ checked: 1, paid: 1 });
+    expect(await getInstallment(a.id)).toMatchObject({ status: 'paid', paidAt: '2030-01-15', paidAmountCents: 16000 });
   });
 });
 

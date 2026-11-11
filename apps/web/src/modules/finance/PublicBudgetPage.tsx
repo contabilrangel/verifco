@@ -5,6 +5,7 @@ import { CalendarClock, CheckCircle2, Clock, Mail, Phone, XCircle } from 'lucide
 import { Alert, Button, ConfirmDialog, Loading, Modal, Textarea } from '../../ds';
 import { ApiError, api } from '../../lib/api';
 import { formatDate, formatMoney, formatPhone } from '../../lib/format';
+import { CustomerPayments } from './CustomerPayments';
 import type { PublicBudget } from './types';
 import { formatNumber } from './ui';
 
@@ -21,10 +22,12 @@ export function PublicBudgetPage() {
   const [reason, setReason] = useState('');
   const decide = useMutation<{ budget: PublicBudget['budget'] }, ApiError, 'approve' | 'reject'>({
     mutationFn: (kind) => api.post(`/public/budgets/${token}/${kind}`, kind === 'reject' ? { reason } : {}, { token: '' }),
-    onSuccess: (r) => {
+    onSuccess: (r, kind) => {
       qc.setQueryData<PublicBudget>(key, (old) => (old ? { ...old, budget: r.budget } : old));
       setConfirmApprove(false);
       setRejecting(false);
+      // a cobrança é emitida logo depois da aprovação: busca de novo para o link de pagamento aparecer
+      if (kind === 'approve') for (const ms of [4000, 12_000, 30_000]) setTimeout(() => void qc.invalidateQueries({ queryKey: key }), ms);
     },
   });
 
@@ -49,7 +52,10 @@ export function PublicBudgetPage() {
   }
 
   const { office, customer, budget: b, expiresAt } = q.data;
-  const plan = b.plan;
+  // aprovada e faturada: valem as parcelas de verdade (com o link de pagamento), não mais o plano
+  const payments = b.status === 'approved' && b.payments?.length ? b.payments : null;
+  const plan = payments ? null : b.plan;
+  const toPay = payments?.some((p) => p.status === 'open' || p.status === 'overdue') ?? false;
   const sameAmounts = new Set(b.installmentAmounts).size === 1;
 
   return (
@@ -110,9 +116,18 @@ export function PublicBudgetPage() {
       </div>
 
       {b.status === 'approved' ? (
-        <Alert tone="success" title="Proposta aprovada">
-          Obrigado! {office.name} já foi avisado{b.approvedAt ? ` (aprovada em ${formatDate(b.approvedAt)})` : ''}. As cobranças seguem a forma de pagamento acima.
-        </Alert>
+        <>
+          <Alert tone="success" title="Proposta aprovada">
+            Obrigado! {office.name} já foi avisado{b.approvedAt ? ` (aprovada em ${formatDate(b.approvedAt)})` : ''}.{' '}
+            {payments ? (toPay ? 'Pague por aqui, no botão de cada parcela.' : 'Não há pagamento em aberto.') : 'As cobranças seguem a forma de pagamento acima.'}
+          </Alert>
+          {payments && (
+            <section className="vf-fin-public__section" aria-label="Pagamentos">
+              <h2 className="vf-text-md-bold">Pagamentos</h2>
+              <CustomerPayments payments={payments} />
+            </section>
+          )}
+        </>
       ) : b.status === 'rejected' ? (
         <Alert tone="warning" title="Proposta recusada">
           Avisamos o escritório. Se mudar de ideia, peça um novo envio da proposta.

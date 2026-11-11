@@ -38,6 +38,9 @@ export async function webhooksRoutes(app: FastifyInstance) {
   /**
    * Asaas: eventos de cobrança (https://docs.asaas.com/docs/webhook-para-cobrancas).
    * Responde 200 rápido para eventos tratados ou ignorados (o Asaas pausa a fila em erros).
+   * Pagamento, vencimento, remoção, estorno e restauração mudam a parcela; recebimento em dinheiro
+   * desfeito reabre a parcela sem recibo; contestação (chargeback) só avisa o escritório. Se o
+   * webhook falhar, a conciliação periódica (`asaas.reconcile_payments`) aplica a mesma regra.
    */
   app.post('/webhooks/asaas/:token', async (req, reply) => {
     const token = String((req.params as { token?: string }).token ?? '');

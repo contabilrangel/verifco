@@ -1,10 +1,12 @@
 /** Orçamentos do cliente (etapa IRPF), faturamento, recibos e autorização. */
-import { and, desc, eq } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
+import { and, asc, desc, eq, inArray } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { BUDGET_CATEGORIES, INTEGRATION_PROVIDERS, computeBudgetAmount, escapeHtml, todayIso, type BudgetCategory } from '@verifco/shared';
-import { budgets, declarations, installments, priceTables } from '../../db/schema';
-import { badRequest, conflict, forbidden, notFound } from '../../lib/errors';
+import { BUDGET_CATEGORIES, computeBudgetAmount, escapeHtml, todayIso, type BudgetCategory } from '@verifco/shared';
+import { billings, budgets, customers, declarations, installments, priceTables } from '../../db/schema';
+import { hasPayLink, queueChargeLink } from '../../integrations/billing-sync';
+import { HttpError, badRequest, conflict, forbidden, notFound } from '../../lib/errors';
 import { audit, can, centsSchema, dateStr, guard, optionalText, parse, requireUser, uuidParam, yearSchema } from '../../lib/http';
 import { getCustomerForUser } from '../../services/customers';
 import { getOrCreateDeclaration } from '../../services/declarations';
@@ -13,6 +15,7 @@ import { getOfficeSettings } from '../../services/settings';
 import { billingProvidersReady } from '../integrations/jobs';
 import { withExternalSync } from './billing-routes';
 import { buildAuthorizationPdf, generateReceipt, receiptValues } from './pdfs';
+import { PROVIDER_UNCHANGED_NOTE, pushInstallmentCancel, pushInstallmentChange, pushInstallmentReceipt, pushInstallmentReopen } from './provider';
 import {
   applyStatus,
   approveBudget,
@@ -31,9 +34,7 @@ import {
   serializeBudget,
   serializeBudgets,
   userName,
-  type BillingRow,
   type Channel,
-  type InstallmentRow,
 } from './service';
 
 const categories = Object.keys(BUDGET_CATEGORIES) as [BudgetCategory, ...BudgetCategory[]];
@@ -234,46 +235,118 @@ export async function budgetRoutes(app: FastifyInstance) {
     return serializeBudget(ctx, row);
   });
 
-  // ------------------------------------------------------------ parcelas
-  /**
-   * Parcela com cobrança emitida no Asaas/Omie (`externalId`) e a integração ativa: o Verifco não
-   * altera, baixa nem estorna a cobrança no provedor, então trocar vencimento ou valor, dar baixa
-   * manual ou desfazer o recebimento só aqui deixaria a cobrança do provedor de pé (o cliente
-   * pagaria em dobro ou o boleto ficaria com outro vencimento). Essas mudanças são feitas no
-   * provedor, e o aviso do Asaas (webhook) ou a consulta periódica do Omie atualizam a parcela;
-   * esses caminhos gravam direto no banco e não passam por aqui. Com a integração desativada ou
-   * removida, o Verifco deixa de acompanhar a cobrança e o controle volta a ser manual (o escritório
-   * não fica preso). Parcela ainda sem cobrança (emissão pendente ou que falhou) segue livre.
-   */
-  const assertNotIssuedAtProvider = async (inst: InstallmentRow, billing: BillingRow, action: string) => {
-    if (!inst.externalId || (billing.provider !== 'asaas' && billing.provider !== 'omie')) return;
-    if (!(await billingProvidersReady(ctx, billing.officeId))[billing.provider]) return;
-    const name = INTEGRATION_PROVIDERS[billing.provider];
-    const how =
-      billing.provider === 'asaas'
-        ? 'No Asaas, altere a cobrança, use "Confirmar recebimento em dinheiro" ou estorne por lá; o Verifco atualiza a parcela pelo aviso (webhook) do Asaas.'
-        : 'No Omie, altere, baixe ou cancele a conta a receber; o Verifco confere os pagamentos do Omie periodicamente.';
-    throw conflict(`Esta parcela tem cobrança emitida no ${name}: ${action} pelo ${name}, para o cliente não ser cobrado em dobro. ${how}`);
+  type InstallmentData = Awaited<ReturnType<typeof getInstallmentForUser>>;
+
+  /** Cancela a parcela em aberto: no provedor primeiro, depois aqui (não recalcula o total do faturamento). */
+  const cancelInstallment = async (data: Pick<InstallmentData, 'inst' | 'billing'> & { budget?: InstallmentData['budget'] | null; customer?: InstallmentData['customer'] | null }, reason: string | null) => {
+    const provider = await pushInstallmentCancel(ctx, data);
+    await db
+      .update(installments)
+      .set({ status: 'canceled', canceledAt: new Date(), cancelReason: reason })
+      .where(eq(installments.id, data.inst.id));
+    return provider;
   };
 
+  /**
+   * Cancela um orçamento APROVADO: cada parcela em aberto é cancelada (no Asaas/Omie primeiro, depois
+   * aqui) e o orçamento passa a "cancelado". As parcelas pagas ficam como histórico. Se o provedor
+   * recusar uma parcela, para ali: as já canceladas continuam canceladas, o orçamento segue aprovado
+   * e a resposta diz quais foram, para o escritório tentar de novo.
+   */
+  app.post('/finance/budgets/:id/cancel', { preHandler: guard('budget.approve') }, async (req) => {
+    const user = requireUser(req);
+    const { id } = parse(uuidParam, req.params);
+    const body = parse(z.object({ reason: optionalText }), req.body ?? {});
+    const row = await getBudgetForUser(ctx, user, id);
+    if (row.status === 'canceled') throw conflict('Este orçamento já está cancelado.');
+    if (row.status !== 'approved') throw conflict('Só o orçamento aprovado é cancelado por aqui. Para os demais, edite o orçamento e mude o status para "Cancelado".');
+    const billing = await db.query.billings.findFirst({ where: eq(billings.budgetId, row.id) });
+    const customer = await db.query.customers.findFirst({ where: eq(customers.id, row.customerId) });
+    const list = billing
+      ? await db.query.installments.findMany({ where: and(eq(installments.billingId, billing.id), inArray(installments.status, ['open', 'overdue'])), orderBy: asc(installments.number) })
+      : [];
+    const canceled: number[] = [];
+    for (const inst of list) {
+      try {
+        await cancelInstallment({ inst, billing: billing!, budget: row, customer }, body.reason ?? 'Orçamento cancelado');
+      } catch (err) {
+        if (!(err instanceof HttpError)) throw err;
+        if (canceled.length) await refreshBillingTotal(ctx, billing!.id);
+        await audit(req, 'cancel_partial', 'budget', row.id, { canceled, failed: inst.number, error: err.message });
+        const done = canceled.length ? `Parcela(s) ${canceled.join(', ')} cancelada(s). ` : '';
+        const why = err.message.replace(PROVIDER_UNCHANGED_NOTE, '').trim();
+        throw new HttpError(err.statusCode, `${done}A parcela ${inst.number} não foi cancelada: ${why} O orçamento continua aprovado; tente de novo.`, { canceled, failed: inst.number });
+      }
+      canceled.push(inst.number);
+    }
+    if (billing && canceled.length) await refreshBillingTotal(ctx, billing.id);
+    const [updated] = await db.update(budgets).set({ status: 'canceled', updatedAt: new Date() }).where(eq(budgets.id, row.id)).returning();
+    await audit(req, 'cancel', 'budget', row.id, { canceledInstallments: canceled, reason: body.reason ?? null });
+    return { ...(await serializeBudget(ctx, updated)), canceledInstallments: canceled };
+  });
+
+  // ------------------------------------------------------------ parcelas
+  /**
+   * Parcela com cobrança emitida no Asaas/Omie (`externalId`) e a integração ativa: a mudança vai
+   * primeiro ao provedor (`./provider`) e só depois é gravada aqui, para a cobrança que o cliente
+   * recebeu nunca ficar diferente da parcela (pagar em dobro, boleto com outro vencimento). Se o
+   * provedor recusar ou não responder, a rota devolve o erro dele e nada muda. O aviso do Asaas
+   * (webhook), a conciliação e a consulta periódica do Omie gravam direto no banco e não passam por
+   * aqui. Com a integração desativada ou removida, o Verifco deixa de acompanhar a cobrança e o
+   * controle volta a ser manual (o escritório não fica preso). Parcela ainda sem cobrança (emissão
+   * pendente ou que falhou) também é só local.
+   */
   app.put('/finance/installments/:id', { preHandler: guard('billing.edit') }, async (req) => {
     const user = requireUser(req);
     const { id } = parse(uuidParam, req.params);
     const body = parse(z.object({ dueDate: dateStr.optional(), amountCents: centsSchema.refine((v) => v > 0, 'Informe o valor').optional() }), req.body);
-    const { inst, billing } = await getInstallmentForUser(ctx, user, id);
+    const { inst, billing, budget, customer } = await getInstallmentForUser(ctx, user, id);
     if (inst.status === 'paid') throw conflict('Parcela paga não pode ser alterada. Desfaça o recebimento antes.');
     if (inst.status === 'canceled') throw conflict('Parcela cancelada não pode ser alterada.');
-    const changesDue = body.dueDate !== undefined && body.dueDate !== inst.dueDate;
-    const changesAmount = body.amountCents !== undefined && body.amountCents !== inst.amountCents;
-    if (changesDue || changesAmount) await assertNotIssuedAtProvider(inst, billing, 'o vencimento e o valor só podem ser alterados');
-    const [row] = await db
-      .update(installments)
-      .set({ ...(body.dueDate ? { dueDate: body.dueDate } : {}), ...(body.amountCents !== undefined ? { amountCents: body.amountCents } : {}) })
-      .where(eq(installments.id, inst.id))
-      .returning();
+    const next = { dueDate: body.dueDate ?? inst.dueDate, amountCents: body.amountCents ?? inst.amountCents };
+    const changed = next.dueDate !== inst.dueDate || next.amountCents !== inst.amountCents;
+    // o mesmo vencimento e valor (a tela manda os dois): nada a levar ao provedor
+    const provider = changed ? await pushInstallmentChange(ctx, { inst, billing, budget, customer }, next) : null;
+    const [row] = await db.update(installments).set(next).where(eq(installments.id, inst.id)).returning();
     await refreshBillingTotal(ctx, billing.id);
-    await audit(req, 'update', 'installment', row.id, { from: { dueDate: inst.dueDate, amountCents: inst.amountCents }, to: body });
-    return { ok: true };
+    await audit(req, 'update', 'installment', row.id, { from: { dueDate: inst.dueDate, amountCents: inst.amountCents }, to: body, provider });
+    return { ok: true, provider };
+  });
+
+  /** Cancela a parcela em aberto (e a cobrança no Asaas/Omie). Parcela paga não é cancelada: desfaça o recebimento ou estorne. */
+  app.post('/finance/installments/:id/cancel', { preHandler: guard('billing.edit') }, async (req) => {
+    const user = requireUser(req);
+    const { id } = parse(uuidParam, req.params);
+    const body = parse(z.object({ reason: optionalText }), req.body ?? {});
+    const data = await getInstallmentForUser(ctx, user, id);
+    if (data.inst.status === 'paid') throw conflict('Parcela paga não pode ser cancelada. Desfaça o recebimento antes.');
+    if (data.inst.status === 'canceled') throw conflict('Esta parcela já está cancelada.');
+    const provider = await cancelInstallment(data, body.reason ?? null);
+    await refreshBillingTotal(ctx, data.billing.id);
+    await audit(req, 'cancel', 'installment', data.inst.id, { reason: body.reason ?? null, provider, externalId: data.inst.externalId });
+    return { ok: true, provider };
+  });
+
+  /** Envia (ou reenvia) ao cliente o link de pagamento da parcela em aberto, por e-mail ou WhatsApp. */
+  app.post('/finance/installments/:id/charge/send', { preHandler: guard('budget.send') }, async (req) => {
+    const user = requireUser(req);
+    const { id } = parse(uuidParam, req.params);
+    const body = parse(z.object({ channel: channelSchema }), req.body);
+    const data = await getInstallmentForUser(ctx, user, id);
+    if (data.inst.status === 'paid') throw conflict('Esta parcela já está paga.');
+    if (data.inst.status === 'canceled') throw conflict('Parcela cancelada não tem cobrança para enviar.');
+    if (!hasPayLink(data.inst)) throw conflict('Esta parcela ainda não tem link de pagamento. Emita a cobrança antes de enviar.');
+    assertContacts(data.customer, [body.channel]);
+    const delivery = await queueChargeLink(ctx, {
+      inst: data.inst,
+      billing: data.billing,
+      budget: data.budget,
+      channel: body.channel,
+      idempotencyKey: `charge:${data.inst.id}:${body.channel}:${randomUUID()}`,
+      userId: user.userId,
+    });
+    await audit(req, 'charge_send', 'installment', data.inst.id, { channel: body.channel });
+    return { ok: true, deliveryId: delivery.id };
   });
 
   app.post('/finance/installments/:id/receive', { preHandler: guard('billing.receive') }, async (req) => {
@@ -283,28 +356,30 @@ export async function budgetRoutes(app: FastifyInstance) {
     const { inst, billing } = await getInstallmentForUser(ctx, user, id);
     if (inst.status === 'paid') throw conflict('Esta parcela já está paga.');
     if (inst.status === 'canceled') throw conflict('Parcela cancelada não pode ser recebida.');
-    await assertNotIssuedAtProvider(inst, billing, 'o recebimento só pode ser registrado');
     const paidAt = body.paidAt ?? todayIso();
     if (paidAt > todayIso()) throw badRequest('A data do recebimento não pode estar no futuro.');
-    await db
-      .update(installments)
-      .set({ status: 'paid', paidAt, paidAmountCents: body.paidAmountCents ?? inst.amountCents })
-      .where(eq(installments.id, inst.id));
-    await audit(req, 'receive', 'installment', inst.id, { paidAt, paidAmountCents: body.paidAmountCents ?? inst.amountCents });
-    return { ok: true };
+    const paidAmountCents = body.paidAmountCents ?? inst.amountCents;
+    // Asaas: recebimento em dinheiro (a cobrança deixa de aceitar pagamento); Omie: baixa do título
+    const provider = await pushInstallmentReceipt(ctx, { inst, billing }, { paidAt, paidAmountCents });
+    await db.update(installments).set({ status: 'paid', paidAt, paidAmountCents }).where(eq(installments.id, inst.id));
+    await audit(req, 'receive', 'installment', inst.id, { paidAt, paidAmountCents, provider });
+    return { ok: true, provider };
   });
 
-  /** Desfaz um recebimento lançado por engano (só antes de emitir o recibo). */
+  /**
+   * Desfaz um recebimento lançado por engano (só antes de emitir o recibo). Pagamento feito pelo
+   * Asaas (boleto, Pix, cartão) não se desfaz aqui: é estorno, feito no Asaas.
+   */
   app.post('/finance/installments/:id/reopen', { preHandler: guard('billing.receive') }, async (req) => {
     const user = requireUser(req);
     const { id } = parse(uuidParam, req.params);
     const { inst, billing } = await getInstallmentForUser(ctx, user, id);
     if (inst.status !== 'paid') throw conflict('A parcela não está paga.');
     if (inst.receiptNumber) throw conflict('Já existe recibo emitido para esta parcela.');
-    await assertNotIssuedAtProvider(inst, billing, 'o recebimento só pode ser desfeito');
+    const provider = await pushInstallmentReopen(ctx, { inst, billing });
     await db.update(installments).set({ status: 'open', paidAt: null, paidAmountCents: null }).where(eq(installments.id, inst.id));
-    await audit(req, 'reopen', 'installment', inst.id);
-    return { ok: true };
+    await audit(req, 'reopen', 'installment', inst.id, { provider });
+    return { ok: true, provider };
   });
 
   app.post('/finance/installments/:id/receipt', { preHandler: guard('billing.receipt_generate') }, async (req) => {

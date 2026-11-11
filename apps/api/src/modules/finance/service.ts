@@ -87,7 +87,31 @@ export function serializeInstallment(i: InstallmentRow, today = todayIso()) {
     receiptSentAt: i.receiptSentAt,
     externalId: i.externalId,
     externalUrl: i.externalUrl,
+    chargeSentAt: i.chargeSentAt,
+    canceledAt: i.canceledAt,
+    cancelReason: i.cancelReason,
   };
+}
+
+/**
+ * Parcelas como o cliente vê (link público e portal): vencimento, valor, situação e o link de
+ * pagamento do provedor enquanto a parcela está em aberto. Sem ids internos nem dados do recibo.
+ */
+export function customerPayments(list: InstallmentRow[], today = todayIso()) {
+  return list
+    .slice()
+    .sort((a, b) => a.number - b.number)
+    .map((i) => {
+      const status = effectiveInstallmentStatus(i.status, i.dueDate, today);
+      return {
+        number: i.number,
+        dueDate: i.dueDate,
+        amountCents: i.amountCents,
+        status,
+        paidAt: i.paidAt,
+        payUrl: status === 'open' || status === 'overdue' ? (i.externalUrl ?? null) : null,
+      };
+    });
 }
 
 export type SerializedInstallment = ReturnType<typeof serializeInstallment>;

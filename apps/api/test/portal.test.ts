@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { currentExerciseYear } from '@verifco/shared';
-import { backlogs, customers, declarations, documents, messages } from '../src/db/schema';
+import { backlogs, customers, darfs, declarations, documents, messages } from '../src/db/schema';
 import { sha256 } from '../src/lib/crypto';
 import { getOrCreateDeclaration } from '../src/services/declarations';
 import { VALID_CPFS, client, createEmployee, createTestEnv, registerOffice, type TestEnv } from './helpers';
@@ -150,6 +150,66 @@ describe('início do portal', () => {
     expect((await env.app.inject({ method: 'GET', url: '/api/portal/overview' })).statusCode).toBe(401);
     // token de usuário do escritório não serve no portal
     expect((await a.api.get('/api/portal/overview')).status).toBe(401);
+  });
+});
+
+describe('DARF do imposto no portal', () => {
+  it('lista as quotas dos exercícios do portal, com o valor atualizado e a guia para baixar, só do próprio cliente', async () => {
+    const a = await withPortal(VALID_CPFS[5], 'Ana DARF');
+    const b = await withPortal(VALID_CPFS[6], 'Bruno DARF');
+    const cur = await getOrCreateDeclaration(env.ctx.db, a.officeId, a.customerId, YEAR);
+    const prev = await getOrCreateDeclaration(env.ctx.db, a.officeId, a.customerId, YEAR - 1);
+    const old = await getOrCreateDeclaration(env.ctx.db, a.officeId, a.customerId, YEAR - 2);
+    const guide = await env.ctx.files.save({ officeId: a.officeId, data: PDF, filename: 'darf-quota-1.pdf', mimeType: 'application/pdf' });
+    const base = { officeId: a.officeId, customerId: a.customerId };
+    const [q1, q2, paid, , bDarf] = await env.ctx.db
+      .insert(darfs)
+      .values([
+        { ...base, declarationId: cur.id, quotaNumber: 1, valueCents: 50_000, dueDate: `${YEAR + 4}-05-29`, source: 'generated', fileId: guide.id },
+        // gerada a partir da 2ª: guarda o principal; o portal mostra o valor com juros (1% no mês do vencimento)
+        { ...base, declarationId: cur.id, quotaNumber: 2, valueCents: 50_000, dueDate: `${YEAR + 4}-06-30`, source: 'generated' },
+        { ...base, declarationId: prev.id, quotaNumber: 1, valueCents: 12_345, dueDate: `${YEAR - 1}-05-30`, source: 'manual', status: 'paid', paidAt: `${YEAR - 1}-05-20` },
+        // exercício fora do portal: não aparece
+        { ...base, declarationId: old.id, quotaNumber: 1, valueCents: 9_999, dueDate: `${YEAR - 2}-05-30`, source: 'manual' },
+        // de outro cliente (outro escritório), com guia
+        { officeId: b.officeId, customerId: b.customerId, declarationId: (await getOrCreateDeclaration(env.ctx.db, b.officeId, b.customerId, YEAR)).id, quotaNumber: 1, valueCents: 77_700, dueDate: `${YEAR + 4}-05-29`, source: 'manual', fileId: (await env.ctx.files.save({ officeId: b.officeId, data: PDF, filename: 'darf-do-bruno.pdf', mimeType: 'application/pdf' })).id },
+      ])
+      .returning();
+
+    const ov = await a.portal.get('/api/portal/overview');
+    expect(ov.status).toBe(200);
+    expect(ov.body.darfs).toEqual([
+      { id: q1.id, exerciseYear: YEAR, quotaNumber: 1, dueDate: `${YEAR + 4}-05-29`, valueCents: 50_000, amount: null, status: 'open', paidAt: null, hasFile: true },
+      { id: q2.id, exerciseYear: YEAR, quotaNumber: 2, dueDate: `${YEAR + 4}-06-30`, valueCents: 50_000, amount: { totalCents: 50_500, note: expect.stringContaining('juros de 1,00%') }, status: 'open', paidAt: null, hasFile: false },
+      { id: paid.id, exerciseYear: YEAR - 1, quotaNumber: 1, dueDate: `${YEAR - 1}-05-30`, valueCents: 12_345, amount: null, status: 'paid', paidAt: `${YEAR - 1}-05-20`, hasFile: false },
+    ]);
+    // vencida sem pagamento
+    await env.ctx.db.update(darfs).set({ dueDate: `${YEAR - 1}-06-30` }).where(eq(darfs.id, q2.id));
+    expect((await a.portal.get('/api/portal/overview')).body.darfs[1]).toMatchObject({ id: q2.id, status: 'overdue' });
+
+    // guia: baixa a própria; quota sem guia, de outro cliente ou sem login não
+    const dl = await env.app.inject({ method: 'GET', url: `/api/portal/darfs/${q1.id}/file`, headers: { authorization: `Bearer ${a.portalToken}` } });
+    expect(dl.statusCode).toBe(200);
+    expect(dl.headers['content-type']).toContain('application/pdf');
+    expect(dl.headers['content-disposition']).toContain('darf-quota-1.pdf');
+    expect(dl.rawPayload.subarray(0, 4).toString()).toBe('%PDF');
+    expect((await a.portal.get(`/api/portal/darfs/${q2.id}/file`)).status).toBe(404);
+    expect((await a.portal.get(`/api/portal/darfs/${bDarf.id}/file`)).status).toBe(404);
+    expect((await b.portal.get(`/api/portal/darfs/${q1.id}/file`)).status).toBe(404);
+    expect((await env.app.inject({ method: 'GET', url: `/api/portal/darfs/${q1.id}/file` })).statusCode).toBe(401);
+    expect((await a.api.get(`/api/portal/darfs/${q1.id}/file`)).status).toBe(401);
+    expect((await a.portal.get('/api/portal/darfs/nao-e-uuid/file')).status).toBe(400);
+
+    // o outro cliente só vê as próprias quotas
+    const ovB = await b.portal.get('/api/portal/overview');
+    expect(ovB.body.darfs.map((d: { id: string }) => d.id)).toEqual([bDarf.id]);
+    // outro cliente do MESMO escritório também não alcança a guia
+    const c = await a.api.post('/api/customers', { name: 'Carla Vizinha', cpfCnpj: VALID_CPFS[7], email: 'carla@cliente.com' });
+    const access = await a.api.post(`/api/customers/${c.body.id}/portal-access`);
+    const loginC = await portalLogin(VALID_CPFS[7], access.body.code);
+    const portalC = client(env, loginC.body.token);
+    expect((await portalC.get('/api/portal/overview')).body.darfs).toEqual([]);
+    expect((await portalC.get(`/api/portal/darfs/${q1.id}/file`)).status).toBe(404);
   });
 });
 

@@ -7,11 +7,13 @@
  *   (chave de integração `codigo_cliente_integracao`; resposta `codigo_cliente_omie`).
  * - Contas a receber: https://app.omie.com.br/api/v1/financas/contareceber/ — UpsertContaReceber
  *   (inclusão idempotente pelo `codigo_lancamento_integracao`) e ConsultarContaReceber (`status_titulo`
- *   e `recebimento` com a baixa). Datas no formato dd/mm/aaaa.
+ *   e `recebimento` com a baixa). Datas no formato dd/mm/aaaa. AlterarContaReceber, ExcluirContaReceber,
+ *   LancarRecebimento e CancelarRecebimento levam ao Omie o que o escritório muda na parcela; cada
+ *   chamada fica num método do `OmieClient`, com o corpo exato num só lugar.
  * - Limites: até 240 requisições/min, sem inclusões simultâneas e bloqueio de requisições idênticas
  *   repetidas em 60 s (https://ajuda.omie.com.br/pt-BR/articles/8001888-tratando-os-erros-de-api).
  */
-import { and, asc, eq, inArray, isNotNull } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import { formatCpfCnpj, formatMoney, onlyDigits } from '@verifco/shared';
 import type { AppContext } from '../context';
 import { auditLogs, billings, customers, installments, jobs } from '../db/schema';
@@ -82,6 +84,40 @@ export class OmieClient {
       codigo_lancamento_integracao: codigoIntegracao,
     });
   }
+
+  /** Omie: AlterarContaReceber. Mesmo corpo da inclusão (`omieContaBody`), localizado pelo `codigo_lancamento_integracao`. */
+  alterarContaReceber(conta: Record<string, unknown>) {
+    return this.call<{ codigo_lancamento_omie?: number; codigo_lancamento_integracao?: string }>('financas/contareceber', 'AlterarContaReceber', conta);
+  }
+
+  /** Omie: ExcluirContaReceber. Remove a conta a receber (título ainda sem baixa). */
+  excluirContaReceber(codigoIntegracao: string) {
+    return this.call<{ codigo_lancamento_omie?: number; codigo_lancamento_integracao?: string }>('financas/contareceber', 'ExcluirContaReceber', {
+      codigo_lancamento_integracao: codigoIntegracao,
+    });
+  }
+
+  /** Omie: LancarRecebimento. Baixa manual do título na conta corrente da integração. */
+  lancarRecebimento(input: { codigoIntegracao: string; contaCorrente: number; valueCents: number; date: string; note: string }) {
+    return this.call<{ codigo_baixa?: number; codigo_lancamento?: number; liquidado?: string }>('financas/contareceber', 'LancarRecebimento', {
+      codigo_lancamento_integracao: input.codigoIntegracao,
+      codigo_conta_corrente: input.contaCorrente,
+      valor: centsToDecimal(input.valueCents),
+      data: toOmieDate(input.date),
+      observacao: input.note,
+    });
+  }
+
+  /** Omie: CancelarRecebimento. Desfaz uma baixa pelo código dela (`codigo_baixa` da consulta do título). */
+  cancelarRecebimento(codigoBaixa: number | string) {
+    return this.call<{ codigo_baixa?: number }>('financas/contareceber', 'CancelarRecebimento', { codigo_baixa: codigoBaixa });
+  }
+}
+
+export interface OmieRecebimento {
+  valor?: number;
+  data?: string;
+  codigo_baixa?: number | string;
 }
 
 export interface OmieContaReceber {
@@ -89,7 +125,25 @@ export interface OmieContaReceber {
   codigo_lancamento_integracao?: string;
   status_titulo?: string;
   valor_documento?: number;
-  recebimento?: { valor?: number; data?: string }[] | { valor?: number; data?: string };
+  recebimento?: OmieRecebimento[] | OmieRecebimento;
+}
+
+/** Baixas do título devolvidas pela consulta (o Omie manda lista ou um objeto só). */
+export const omieReceipts = (conta: OmieContaReceber): OmieRecebimento[] => (Array.isArray(conta.recebimento) ? conta.recebimento : conta.recebimento ? [conta.recebimento] : []);
+
+const normalizeStatus = (s: unknown) =>
+  String(s ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/[^A-Z]/g, '');
+
+/** Situação do título no Omie (`status_titulo`: A VENCER, ATRASADO, RECEBIDO, LIQUIDADO, CANCELADO...). */
+export function omieContaState(conta: OmieContaReceber): 'paid' | 'canceled' | 'overdue' | 'open' {
+  const status = normalizeStatus(conta.status_titulo);
+  if (status.includes('RECEBIDO') || status.includes('LIQUIDADO') || status === 'PAGO') return 'paid';
+  if (status.includes('CANCELADO')) return 'canceled';
+  return status.includes('ATRASADO') ? 'overdue' : 'open';
 }
 
 export function omieClientFrom(ctx: AppContext, loaded: LoadedIntegration<OmieConfig, OmieSecrets>) {
@@ -139,6 +193,34 @@ export async function upsertOmieCustomer(ctx: AppContext, client: OmieClient, cu
   return r.codigo_cliente_omie;
 }
 
+/** Conta corrente e categoria da integração, conferidas (as contas a receber não saem sem elas). */
+export function omieAccount(config: OmieConfig) {
+  const accountId = Number(config.bankAccountId);
+  if (!config.categoryCode || !Number.isFinite(accountId)) {
+    throw new IntegrationError('omie', 'Informe a categoria de receita e a conta corrente do Omie em Administração › Integrações.');
+  }
+  return { accountId, categoryCode: config.categoryCode };
+}
+
+/** Corpo da conta a receber de uma parcela (UpsertContaReceber e AlterarContaReceber usam o mesmo). */
+export function omieContaBody(
+  inst: Pick<InstallmentRow, 'id' | 'billingId' | 'number' | 'dueDate' | 'amountCents'>,
+  ref: { omieCustomerId: number; categoryCode: string; accountId: number; description: string; totalInstallments: number },
+) {
+  const due = toOmieDate(inst.dueDate);
+  return {
+    codigo_lancamento_integracao: inst.id,
+    codigo_cliente_fornecedor: ref.omieCustomerId,
+    data_vencimento: due,
+    data_previsao: due,
+    valor_documento: centsToDecimal(inst.amountCents),
+    codigo_categoria: ref.categoryCode,
+    id_conta_corrente: ref.accountId,
+    numero_documento: `VF-${inst.billingId.slice(0, 8)}-${inst.number}`.slice(0, 20),
+    observacao: `${ref.description} (parcela ${inst.number}/${ref.totalInstallments})`,
+  };
+}
+
 /** Inclui uma conta a receber por parcela pendente e grava o código do Omie em `externalId`. */
 export async function createOmieReceivables(
   ctx: AppContext,
@@ -146,26 +228,14 @@ export async function createOmieReceivables(
   input: { customer: CustomerRow; pending: InstallmentRow[]; totalInstallments: number; description: string; progress?: (pct: number) => Promise<void> },
 ) {
   const client = omieClientFrom(ctx, loaded);
-  const accountId = Number(loaded.config.bankAccountId);
-  if (!loaded.config.categoryCode || !Number.isFinite(accountId)) {
-    throw new IntegrationError('omie', 'Informe a categoria de receita e a conta corrente do Omie em Administração › Integrações.');
-  }
+  const { accountId } = omieAccount(loaded.config);
   const omieCustomerId = await upsertOmieCustomer(ctx, client, input.customer);
   let created = 0;
   // chamadas em sequência: o Omie não aceita inclusões simultâneas
   for (const [i, inst] of input.pending.entries()) {
-    const due = toOmieDate(inst.dueDate);
-    const r = await client.upsertContaReceber({
-      codigo_lancamento_integracao: inst.id,
-      codigo_cliente_fornecedor: omieCustomerId,
-      data_vencimento: due,
-      data_previsao: due,
-      valor_documento: centsToDecimal(inst.amountCents),
-      codigo_categoria: loaded.config.categoryCode,
-      id_conta_corrente: accountId,
-      numero_documento: `VF-${inst.billingId.slice(0, 8)}-${inst.number}`.slice(0, 20),
-      observacao: `${input.description} (parcela ${inst.number}/${input.totalInstallments})`,
-    });
+    const r = await client.upsertContaReceber(
+      omieContaBody(inst, { omieCustomerId, categoryCode: loaded.config.categoryCode, accountId, description: input.description, totalInstallments: input.totalInstallments }),
+    );
     await ctx.db
       .update(installments)
       .set({ externalId: String(r.codigo_lancamento_omie) })
@@ -198,18 +268,16 @@ export async function scheduleOmiePoll(ctx: AppContext, officeId: string, cfg: P
   const interval = pollIntervalMs(cfg);
   const runAt = new Date(Date.now() + (delayMs ?? interval));
   const slot = Math.floor(runAt.getTime() / interval);
-  return ctx.jobs.enqueue(OMIE_POLL_JOB, { officeId }, { officeId, runAt, idempotencyKey: `${officeId}:${interval}:${slot}` });
+  const job = await ctx.jobs.enqueue(OMIE_POLL_JOB, { officeId }, { officeId, runAt, idempotencyKey: `${officeId}:${interval}:${slot}` });
+  // a chave desta janela é de uma consulta que já terminou ou está rodando (executada fora de hora): recomeça a cadeia
+  if (job.status === 'queued') return job;
+  return ctx.jobs.enqueue(OMIE_POLL_JOB, { officeId }, { officeId, runAt, idempotencyKey: `${officeId}:${interval}:${slot}:${runAt.getTime()}` });
 }
 
-const normalizeStatus = (s: unknown) =>
-  String(s ?? '')
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .toUpperCase()
-    .replace(/[^A-Z]/g, '');
-
 /**
- * Consulta no Omie as parcelas em aberto lançadas lá e marca as pagas.
+ * Consulta no Omie as parcelas em aberto lançadas lá e marca as pagas. Até 60 por rodada, em
+ * rodízio: as conferidas há mais tempo primeiro (`externalCheckedAt`), para as parcelas com
+ * vencimento distante também serem consultadas quando há mais de 60 em aberto.
  * Agenda a próxima rodada antes de começar, para a cadeia não parar se esta falhar.
  */
 export async function pollOmiePayments(ctx: AppContext, officeId: string) {
@@ -230,12 +298,13 @@ export async function pollOmiePayments(ctx: AppContext, officeId: string) {
         inArray(installments.status, ['open', 'overdue']),
       ),
     )
-    .orderBy(asc(installments.dueDate))
+    .orderBy(sql`${installments.externalCheckedAt} asc nulls first`, asc(installments.dueDate), asc(installments.id))
     .limit(POLL_BATCH);
   if (!rows.length) return { checked: 0, paid: 0 };
 
   const client = omieClientFrom(ctx, loaded);
   const today = todayIso();
+  let checked = 0;
   let paid = 0;
   let canceled = 0;
   const errors: string[] = [];
@@ -246,17 +315,24 @@ export async function pollOmiePayments(ctx: AppContext, officeId: string) {
       conta = r.conta_receber_cadastro ?? r;
     } catch (err) {
       errors.push(`parcela ${inst.number}: ${errorMessage(err)}`);
+      // credencial recusada ou Omie fora do ar: as demais falhariam igual e ficam para a próxima rodada
+      if (errorMessage(err).startsWith('Credenciais recusadas') || !(err instanceof IntegrationError) || err.status === undefined) break;
+      // erro só deste título: marca como conferido para não travar o rodízio
+      await db.update(installments).set({ externalCheckedAt: new Date() }).where(eq(installments.id, inst.id));
+      checked += 1;
       continue;
     }
-    const status = normalizeStatus(conta.status_titulo);
-    if (status.includes('RECEBIDO') || status.includes('LIQUIDADO') || status === 'PAGO') {
-      const receipts = Array.isArray(conta.recebimento) ? conta.recebimento : conta.recebimento ? [conta.recebimento] : [];
+    checked += 1;
+    const checkedAt = { externalCheckedAt: new Date() };
+    const state = omieContaState(conta);
+    if (state === 'paid') {
+      const receipts = omieReceipts(conta);
       const total = receipts.reduce((s, r) => s + (Number(r.valor) || 0), 0);
       const lastDate = receipts.map((r) => fromOmieDate(r.data)).filter(Boolean).sort().pop();
       const paidAmountCents = total > 0 ? decimalToCents(total) : inst.amountCents;
       await db
         .update(installments)
-        .set({ status: 'paid', paidAt: lastDate ?? today, paidAmountCents })
+        .set({ status: 'paid', paidAt: lastDate ?? today, paidAmountCents, ...checkedAt })
         .where(and(eq(installments.id, inst.id), inArray(installments.status, ['open', 'overdue'])));
       await db.insert(auditLogs).values({ officeId, userId: null, action: 'installment.omie_paid', entity: 'installment', entityId: inst.id, data: { status: conta.status_titulo } });
       const customer = await db.query.customers.findFirst({ where: eq(customers.id, customerId) });
@@ -268,12 +344,18 @@ export async function pollOmiePayments(ctx: AppContext, officeId: string) {
         link: `/clientes/${customerId}`,
       });
       paid += 1;
-    } else if (status.includes('CANCELADO')) {
-      await db.update(installments).set({ status: 'canceled' }).where(eq(installments.id, inst.id));
+    } else if (state === 'canceled') {
+      await db
+        .update(installments)
+        .set({ status: 'canceled', canceledAt: new Date(), cancelReason: 'Conta a receber cancelada no Omie', ...checkedAt })
+        .where(eq(installments.id, inst.id));
       canceled += 1;
-    } else if (status.includes('ATRASADO') && inst.status === 'open') {
-      await db.update(installments).set({ status: 'overdue' }).where(eq(installments.id, inst.id));
+    } else {
+      await db
+        .update(installments)
+        .set({ ...(state === 'overdue' && inst.status === 'open' ? { status: 'overdue' } : {}), ...checkedAt })
+        .where(eq(installments.id, inst.id));
     }
   }
-  return { checked: rows.length, paid, canceled, errors };
+  return { checked, paid, canceled, errors };
 }

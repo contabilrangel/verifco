@@ -27,7 +27,16 @@
 .ck-login__icon svg { width: 24px; height: 24px; }
 .ck-code-input:not(:placeholder-shown) { letter-spacing: 0.3em; font-variant-numeric: tabular-nums; }
 .ck-footer { text-align: center; color: var(--color-text-low); font: var(--text-xs-regular); padding: var(--size-spacing-05) 0 0; letter-spacing: 0; }
+.ck-contact { display: flex; flex-direction: column; align-items: center; gap: var(--size-spacing-01); padding: var(--size-spacing-05) 0 0; font: var(--text-xs-regular); font-style: normal; letter-spacing: 0; color: var(--color-text-low); text-align: center; }
+.ck-contact + .ck-footer { padding-top: var(--size-spacing-02); }
+.ck-contact__title { font: var(--text-xs-bold); color: var(--color-text-medium); }
+.ck-contact__items { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--size-spacing-01) var(--size-spacing-04); }
+.ck-contact__items a { color: var(--color-interactive); overflow-wrap: anywhere; }
 .ck-hello { font: var(--text-lg-bold); }
+.ck-budget { display: flex; flex-direction: column; gap: var(--size-spacing-03); padding: var(--size-spacing-04) 0; border-top: 1px solid var(--color-border); }
+.ck-budget:first-child { border-top: 0; padding-top: 0; }
+.ck-budget:last-child { padding-bottom: 0; }
+.ck-darf { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-variant-numeric: tabular-nums; }
 
 /* ---------- Status (portal) ---------- */
 .ck-status { display: flex; gap: var(--size-spacing-03); align-items: flex-start; }

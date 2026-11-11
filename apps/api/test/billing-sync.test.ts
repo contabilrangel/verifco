@@ -247,54 +247,55 @@ describe('relatório de faturamento: "Cobrança não emitida"', () => {
 describe('parcela com cobrança emitida no provedor (INT-10)', () => {
   const inst = async (id: string) => (await env.ctx.db.query.installments.findFirst({ where: eq(installments.id, id) }))!;
 
-  it('vencimento, valor, baixa manual e desfazer recebimento só pelo provedor; o aviso do Asaas segue atualizando a parcela', async () => {
+  // a propagação de cada ação ao Asaas (e a recusa dele) está em billing-provider.test.ts
+  it('mudança na parcela emitida vai ao Asaas antes de valer aqui; o aviso do Asaas segue atualizando a parcela', async () => {
     const o = await setup('Escritório Parcelas Asaas');
     const saved = await o.api.put('/api/integrations/asaas', ASAAS_ON);
     const hook = new URL(saved.body.webhookUrl).pathname;
     const webhook = (event: string, paymentId: string, extra: Record<string, unknown> = {}) =>
       env.app.inject({ method: 'POST', url: hook, payload: { id: `evt_${event}_${paymentId}`, event, payment: { id: paymentId, value: 300, ...extra } } }).then((r) => r.json());
-    env.providers.fetch = asaasOk().fn;
+    // este Asaas só sabe emitir: qualquer outra chamada responde 404
+    const asaas = asaasOk();
+    env.providers.fetch = asaas.fn;
     const billingId = await approved(o.api, o.customerId, o.methodId);
     await env.ctx.jobs.drain();
     const [i1, i2] = (await panel(o.api, o.customerId)).data[0].billing.installments as { id: string; dueDate: string; amountCents: number; externalId: string }[];
     expect([i1.externalId, i2.externalId]).toEqual(['pay_1', 'pay_2']);
 
-    // troca de vencimento ou valor: recusada com a orientação de fazer no Asaas
+    // o Asaas não aceitou: a rota devolve o erro dele e a parcela fica como estava (nada só no Verifco)
     const due = await o.api.put(`/api/finance/installments/${i1.id}`, { dueDate: '2031-01-10' });
     expect(due.status).toBe(409);
-    expect(due.body.error).toContain('cobrança emitida no Asaas');
-    expect(due.body.error).toContain('cobrado em dobro');
-    expect((await o.api.put(`/api/finance/installments/${i1.id}`, { amountCents: 100 })).status).toBe(409);
-    // o mesmo vencimento e valor (a tela manda os dois) não muda nada e passa
+    expect(due.body.error).toContain('Asaas respondeu com erro (HTTP 404)');
+    expect(due.body.error).toContain('Nada foi alterado no Verifco');
+    expect(asaas.calls.at(-1)).toMatchObject({ method: 'GET', url: expect.stringContaining('/payments/pay_1') });
+    // o mesmo vencimento e valor (a tela manda os dois) não muda nada e passa sem chamar o Asaas
+    const before = asaas.calls.length;
     expect((await o.api.put(`/api/finance/installments/${i1.id}`, { dueDate: i1.dueDate, amountCents: i1.amountCents })).status).toBe(200);
+    expect(asaas.calls).toHaveLength(before);
     expect(await inst(i1.id)).toMatchObject({ dueDate: i1.dueDate, amountCents: i1.amountCents });
-
-    // baixa manual: recusada, a parcela continua em aberto
     const recv = await o.api.post(`/api/finance/installments/${i1.id}/receive`, {});
     expect(recv.status).toBe(409);
-    expect(recv.body.error).toContain('Confirmar recebimento em dinheiro');
+    expect(asaas.calls.at(-1)).toMatchObject({ method: 'POST', url: expect.stringContaining('/payments/pay_1/receiveInCash') });
     expect((await inst(i1.id)).status).toBe('open');
 
     // o aviso do Asaas continua valendo: vencida, paga e estornada
     expect(await webhook('PAYMENT_OVERDUE', 'pay_1')).toMatchObject({ matched: true, action: 'overdue' });
     expect((await inst(i1.id)).status).toBe('overdue');
-    expect((await o.api.post(`/api/finance/installments/${i1.id}/receive`, {})).status).toBe(409);
     expect(await webhook('PAYMENT_RECEIVED', 'pay_2', { paymentDate: '2030-01-05' })).toMatchObject({ matched: true, action: 'paid' });
     expect(await inst(i2.id)).toMatchObject({ status: 'paid', paidAt: '2030-01-05', paidAmountCents: 30_000 });
-
-    // desfazer o recebimento que veio do Asaas: só lá (estorno), senão a parcela reabre e é cobrada de novo
-    const reopen = await o.api.post(`/api/finance/installments/${i2.id}/reopen`);
-    expect(reopen.status).toBe(409);
-    expect(reopen.body.error).toContain('desfeito pelo Asaas');
+    // desfazer sem conseguir conferir a cobrança no Asaas: a parcela continua paga
+    expect((await o.api.post(`/api/finance/installments/${i2.id}/reopen`)).status).toBe(409);
     expect((await inst(i2.id)).status).toBe('paid');
     expect(await webhook('PAYMENT_REFUNDED', 'pay_2')).toMatchObject({ action: 'canceled' });
-    expect((await inst(i2.id)).status).toBe('canceled');
+    expect(await inst(i2.id)).toMatchObject({ status: 'canceled', cancelReason: 'Pagamento estornado no Asaas' });
 
     // integração desativada: o Verifco deixa de acompanhar a cobrança e o controle volta a ser manual
     await o.api.put('/api/integrations/asaas', { enabled: false });
+    const idle = asaas.calls.length;
     expect((await o.api.put(`/api/finance/installments/${i1.id}`, { dueDate: '2031-01-10' })).status).toBe(200);
     expect((await o.api.post(`/api/finance/installments/${i1.id}/receive`, {})).status).toBe(200);
     expect((await o.api.post(`/api/finance/installments/${i1.id}/reopen`)).status).toBe(200);
+    expect(asaas.calls).toHaveLength(idle);
     expect(await inst(i1.id)).toMatchObject({ status: 'open', dueDate: '2031-01-10', paidAt: null });
     expect((await env.ctx.db.select().from(installments).where(eq(installments.billingId, billingId))).every((i) => i.externalId)).toBe(true);
   });
