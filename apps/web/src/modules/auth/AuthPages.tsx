@@ -65,6 +65,9 @@ export function LoginPage() {
   const clearToasts = useToast().clear;
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  // a conta tem verificação em duas etapas: a senha foi aceita e falta o código
+  const [needsCode, setNeedsCode] = useState(false);
+  const [code, setCode] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const config = useAuthConfig();
@@ -79,11 +82,21 @@ export function LoginPage() {
     setError(null);
     setLoading(true);
     try {
-      await login(email, password);
+      await login(email, password, needsCode ? code : undefined);
       // volta para a página que pediu o login (sessão expirada, link direto); sem ela, ao início
       navigate(returnPath(location.state) ?? '/', { replace: true });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Não foi possível entrar.');
+      const twoFactor = err instanceof ApiError && (err.details as { code?: string } | undefined)?.code === 'two_factor_required';
+      if (twoFactor && !needsCode) {
+        // primeira etapa aceita: mostra o campo do código, sem tratar como erro
+        setNeedsCode(true);
+      } else {
+        setError(err instanceof Error ? err.message : 'Não foi possível entrar.');
+        if (!twoFactor) {
+          setNeedsCode(false);
+          setCode('');
+        }
+      }
     } finally {
       setLoading(false);
     }
@@ -102,8 +115,21 @@ export function LoginPage() {
             <PasswordInput label="Senha" autoComplete="current-password" required icon={<Lock />} value={password} onChange={(e) => setPassword(e.target.value)} />
             <Link to="/esqueci-senha" className="auth-page__forgot">Esqueci minha senha</Link>
           </div>
+          {needsCode && (
+            <Input
+              label="Código do aplicativo autenticador"
+              help="6 dígitos. Sem o celular? Use um dos seus códigos de recuperação."
+              autoComplete="one-time-code"
+              inputMode="text"
+              required
+              autoFocus
+              icon={<KeyRound />}
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+            />
+          )}
         </div>
-        <Button type="submit" block loading={loading}>Entrar</Button>
+        <Button type="submit" block loading={loading}>{needsCode ? 'Confirmar código' : 'Entrar'}</Button>
         <AuthFooter>
           {config?.signupEnabled === false ? (
             <span>
@@ -334,6 +360,46 @@ export function ResetPasswordPage() {
           <BackToLogin />
         </AuthFooter>
       </form>
+    </AuthLayout>
+  );
+}
+
+/** Página do link de confirmação de e-mail (cadastro novo ou troca do e-mail de acesso). */
+export function ConfirmEmailPage() {
+  const [params] = useSearchParams();
+  const token = params.get('token') ?? '';
+  const [state, setState] = useState<{ status: 'loading' | 'ok' | 'error'; message?: string; changed?: boolean; email?: string }>({ status: 'loading' });
+  useEffect(() => {
+    let live = true;
+    if (!token) {
+      setState({ status: 'error', message: 'Link inválido ou expirado.' });
+      return;
+    }
+    api
+      .post<{ changed: boolean; email: string }>('/auth/confirm-email', { token })
+      .then((r) => live && setState({ status: 'ok', changed: r.changed, email: r.email }))
+      .catch((err) => live && setState({ status: 'error', message: err instanceof Error ? err.message : 'Link inválido ou expirado.' }));
+    return () => {
+      live = false;
+    };
+  }, [token]);
+  return (
+    <AuthLayout>
+      <div className="auth-page__form">
+        <AuthHeading icon={<MailCheck />} title={state.status === 'ok' ? 'E-mail confirmado' : 'Confirmação de e-mail'} />
+        {state.status === 'loading' && <Loading />}
+        {state.status === 'ok' && (
+          <Alert tone="success">
+            {state.changed ? `A partir de agora o acesso ao Verifco é por ${state.email}. As sessões abertas foram encerradas: entre de novo com o novo e-mail.` : `O endereço ${state.email} está confirmado.`}
+          </Alert>
+        )}
+        {state.status === 'error' && <Alert tone="danger">{state.message} Peça um novo link em Minha conta.</Alert>}
+        <AuthFooter>
+          <Link to="/" className="auth-page__back">
+            <ArrowLeft aria-hidden /> Ir para o Verifco
+          </Link>
+        </AuthFooter>
+      </div>
     </AuthLayout>
   );
 }

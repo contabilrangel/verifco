@@ -113,6 +113,13 @@
       "when": 1794360277967,
       "tag": "0015_operacao_completa",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1794364624067,
+      "tag": "0016_confirmacao_de_email",
+      "breakpoints": true
     }
   ]
 }

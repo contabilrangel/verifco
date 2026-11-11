@@ -1,10 +1,11 @@
-import { IdCard, MapPin } from 'lucide-react';
+import { History, IdCard, MapPin } from 'lucide-react';
 import type { VerifcoModule } from '../../app/modules';
 import { lazyPage } from '../../lib/lazy';
 import './customers.css';
 
 const AddressTab = lazyPage(() => import('./CadastroTabs'), 'AddressTab');
 const IdentificationTab = lazyPage(() => import('./CadastroTabs'), 'IdentificationTab');
+const HistoryTab = lazyPage(() => import('./HistoryTab'), 'HistoryTab');
 const CustomersPage = lazyPage(() => import('./CustomersPage'), 'CustomersPage');
 
 export const module: VerifcoModule = {
@@ -12,5 +13,6 @@ export const module: VerifcoModule = {
   profileTabs: [
     { path: 'identificacao', label: 'Identificação', icon: IdCard, element: IdentificationTab, order: 60 },
     { path: 'endereco', label: 'Endereço', icon: MapPin, element: AddressTab, order: 70 },
+    { path: 'historico', label: 'Histórico', icon: History, element: HistoryTab, order: 95 },
   ],
 };

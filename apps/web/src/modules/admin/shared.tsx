@@ -47,6 +47,8 @@ export interface RoleRow {
 export interface EmployeeRow {
   id: string;
   name: string;
+  /** Verificação em duas etapas ativa (só vem para quem lista os colaboradores com permissão). */
+  twoFactorEnabled?: boolean;
   email: string;
   roleId: string | null;
   roleName: string | null;

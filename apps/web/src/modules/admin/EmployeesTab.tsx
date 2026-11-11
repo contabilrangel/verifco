@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Copy, Mail, Pencil, Power, Trash2, UserPlus, Users } from 'lucide-react';
+import { Copy, Mail, Pencil, Power, ShieldOff, Trash2, UserPlus, Users } from 'lucide-react';
 import { isValidEmail } from '@verifco/shared';
 import { Alert, Avatar, Button, Card, ConfirmDialog, EmptyState, Input, Loading, MenuItem, Modal, Select, Tag, useToast } from '../../ds';
 import { api } from '../../lib/api';
@@ -9,7 +9,7 @@ import { formatDateTime } from '../../lib/format';
 import { RowMenu, SearchBox, matches, type EmployeeRow, type RoleRow } from './shared';
 
 type StatusFilter = '' | 'active' | 'inactive' | 'pending';
-type Confirm = { kind: 'toggle' | 'delete' | 'invite'; employee: EmployeeRow } | null;
+type Confirm = { kind: 'toggle' | 'delete' | 'invite' | 'reset2fa'; employee: EmployeeRow } | null;
 /** Resposta do convite: sem e-mail (`emailSent: false`), vem o link para entregar por outro meio. */
 interface InviteResult {
   emailSent?: boolean;
@@ -57,6 +57,12 @@ export function EmployeesTab() {
       if (r.emailSent === false && r.inviteLink) setManualInvite({ name: e.name, link: r.inviteLink });
       else toast.success('Convite reenviado por e-mail.');
     },
+  });
+
+  const reset2fa = useAction((e: EmployeeRow) => api.post(`/employees/${e.id}/reset-2fa`), {
+    success: 'Verificação em duas etapas desligada. A pessoa entra só com a senha e pode ativar de novo.',
+    invalidate: [['employees']],
+    onSuccess: () => setConfirm(null),
   });
 
   const canInvite = can('employee.create', 'employee.edit');
@@ -142,10 +148,11 @@ export function EmployeesTab() {
                       <td>{e.roleName ?? <span className="vf-muted">Sem função</span>}</td>
                       <td>
                         {!e.isActive ? <Tag tone="danger">Inativo</Tag> : e.invitePending ? <Tag tone="warning">Convite pendente</Tag> : <Tag tone="success">Ativo</Tag>}
+                        {e.twoFactorEnabled && <Tag tone="primary">Duas etapas</Tag>}
                       </td>
                       <td className="vf-muted">{e.lastLoginAt ? formatDateTime(e.lastLoginAt) : 'Nunca acessou'}</td>
                       <td className="actions">
-                        {(can('employee.edit') || canDelete || (canInvite && e.invitePending)) && (
+                        {(can('employee.edit') || canDelete || (canInvite && e.invitePending) || (me?.user.isOwner && e.twoFactorEnabled)) && (
                           <RowMenu label={`Ações de ${e.name}`}>
                             {(close) => (
                               <>
@@ -157,6 +164,11 @@ export function EmployeesTab() {
                                 {canInvite && e.invitePending && e.isActive && (
                                   <MenuItem icon={<Mail />} onClick={() => (close(), setConfirm({ kind: 'invite', employee: e }))}>
                                     Reenviar convite
+                                  </MenuItem>
+                                )}
+                                {me?.user.isOwner && e.twoFactorEnabled && e.id !== me.user.id && (
+                                  <MenuItem icon={<ShieldOff />} onClick={() => (close(), setConfirm({ kind: 'reset2fa', employee: e }))}>
+                                    Desligar duas etapas
                                   </MenuItem>
                                 )}
                                 {canToggle && (
@@ -233,6 +245,16 @@ export function EmployeesTab() {
         confirmLabel="Excluir"
         loading={remove.isPending}
         onConfirm={() => confirm && remove.mutate(confirm.employee)}
+        onClose={() => setConfirm(null)}
+      />
+      <ConfirmDialog
+        open={confirm?.kind === 'reset2fa'}
+        title="Desligar a verificação em duas etapas"
+        message={`Use quando ${confirm?.employee.name ?? 'a pessoa'} perdeu o celular e os códigos de recuperação. As sessões abertas dela são encerradas e o login volta a pedir só a senha.`}
+        confirmLabel="Desligar"
+        danger
+        loading={reset2fa.isPending}
+        onConfirm={() => confirm && reset2fa.mutate(confirm.employee)}
         onClose={() => setConfirm(null)}
       />
       <ConfirmDialog

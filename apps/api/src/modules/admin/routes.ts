@@ -1,10 +1,11 @@
 import { effectiveSettings } from '../../services/platform-settings';
-import { and, asc, count, eq, isNull, ne, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, isNull, lte, ne, sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { DECLARATION_SUBSTATUS, PERMISSION_CATEGORIES, escapeHtml, isPermission, isValidCpfCnpj, isValidEmail, onlyDigits, type DeclarationSubstatus } from '@verifco/shared';
 import type { AuthUser } from '../../context';
-import { contracts, customerGroupMembers, customerGroups, customers, offices, passwordResets, roles, users } from '../../db/schema';
+import { auditLogs, contracts, customerGroupMembers, customerGroups, customers, offices, passwordResets, roles, users } from '../../db/schema';
+import { DISABLED } from '../../services/two-factor';
 import { randomToken, sha256 } from '../../lib/crypto';
 import { badRequest, conflict, forbidden, notFound } from '../../lib/errors';
 import { exposeDevSecrets } from '../../config';
@@ -263,6 +264,7 @@ export async function adminRoutes(app: FastifyInstance) {
         isActive: users.isActive,
         lastLoginAt: users.lastLoginAt,
         invitePending: sql<boolean>`${users.passwordHash} is null`,
+        twoFactorEnabled: sql<boolean>`${users.totpEnabledAt} is not null`,
       })
       .from(users)
       .leftJoin(roles, eq(roles.id, users.roleId))
@@ -359,6 +361,8 @@ export async function adminRoutes(app: FastifyInstance) {
         roleId: body.roleId,
         isActive: body.isActive ?? target.isActive,
         tokenVersion: resetSessions ? target.tokenVersion + 1 : target.tokenVersion,
+        // endereço trocado por outra pessoa: o dono do endereço novo ainda não confirmou que é dele
+        ...(emailChanged ? { emailVerifiedAt: null, pendingEmail: null, pendingEmailTokenHash: null, pendingEmailExpiresAt: null } : {}),
         updatedAt: new Date(),
       })
       .where(eq(users.id, id))
@@ -369,6 +373,63 @@ export async function adminRoutes(app: FastifyInstance) {
     }
     await audit(req, 'update', 'employee', id, emailChanged ? { emailChanged: true, from: target.email, to: email } : undefined);
     return { id: row.id, name: row.name, email: row.email, roleId: row.roleId, isActive: row.isActive };
+  });
+
+  /**
+   * Desliga a verificação em duas etapas de um colaborador que perdeu o celular e os códigos de
+   * recuperação. Só o dono da conta do escritório faz isso; as sessões do colaborador caem.
+   */
+  app.post('/employees/:id/reset-2fa', async (req) => {
+    const user = requireUser(req);
+    if (!user.isOwner) throw forbidden('Só o dono da conta do escritório desliga a verificação em duas etapas de outra pessoa.');
+    const { id } = parse(uuidParam, req.params);
+    if (id === user.userId) throw badRequest('Para a sua conta, use Minha conta › Segurança (com um código de recuperação, se perdeu o celular).');
+    const target = await db.query.users.findFirst({ where: and(eq(users.id, id), eq(users.officeId, user.officeId)) });
+    if (!target) throw notFound('Colaborador');
+    await db.update(users).set({ ...DISABLED, tokenVersion: target.tokenVersion + 1 }).where(eq(users.id, id));
+    await audit(req, 'reset', 'two_factor', id, { name: target.name });
+    return { ok: true };
+  });
+
+  // ---------------------------------------------------------------- auditoria
+  /**
+   * Registro do que foi feito no escritório: quem, quando, o quê. Só leitura; quem edita as
+   * configurações do escritório pode consultar.
+   */
+  app.get('/audit', { preHandler: guard('settings.edit') }, async (req) => {
+    const user = requireUser(req);
+    const q = parse(
+      z.object({
+        page: z.coerce.number().int().min(1).default(1),
+        pageSize: z.coerce.number().int().min(1).max(200).default(50),
+        entity: z.string().trim().max(60).optional(),
+        action: z.string().trim().max(60).optional(),
+        userId: z.uuid().optional(),
+        from: z.iso.date().optional(),
+        to: z.iso.date().optional(),
+      }),
+      req.query,
+    );
+    const where = and(
+      eq(auditLogs.officeId, user.officeId),
+      q.entity ? eq(auditLogs.entity, q.entity) : undefined,
+      q.action ? eq(auditLogs.action, q.action) : undefined,
+      q.userId ? eq(auditLogs.userId, q.userId) : undefined,
+      // dias no fuso de Brasília
+      q.from ? gte(auditLogs.createdAt, new Date(`${q.from}T00:00:00-03:00`)) : undefined,
+      q.to ? lte(auditLogs.createdAt, new Date(`${q.to}T23:59:59.999-03:00`)) : undefined,
+    );
+    const [{ total }] = await db.select({ total: count() }).from(auditLogs).where(where);
+    const rows = await db
+      .select({ id: auditLogs.id, createdAt: auditLogs.createdAt, userId: auditLogs.userId, userName: users.name, action: auditLogs.action, entity: auditLogs.entity, entityId: auditLogs.entityId, data: auditLogs.data })
+      .from(auditLogs)
+      .leftJoin(users, eq(users.id, auditLogs.userId))
+      .where(where)
+      .orderBy(desc(auditLogs.createdAt), desc(auditLogs.id))
+      .limit(q.pageSize)
+      .offset((q.page - 1) * q.pageSize);
+    const entities = await db.selectDistinct({ entity: auditLogs.entity }).from(auditLogs).where(eq(auditLogs.officeId, user.officeId)).orderBy(asc(auditLogs.entity));
+    return { data: rows, total, page: q.page, pageSize: q.pageSize, entities: entities.map((e) => e.entity) };
   });
 
   app.delete('/employees/:id', { preHandler: guard('employee.delete') }, async (req) => {

@@ -7,6 +7,7 @@ import { Ban, CheckCircle2, RefreshCw, Send, Trash2, TriangleAlert } from 'lucid
 import { CONTRACT_STATUS, formatCpfCnpj, formatDateTimeBr } from '@verifco/shared';
 import { Alert, Button, Card, Input, Loading, PasswordInput, Select, Tag, Textarea } from '../../ds';
 import { errorMessage } from '../../lib/api';
+import { TwoFactorCard } from '../../app/TwoFactorCard';
 import { platformRequest as request, savePlatformToken } from './client';
 
 export type PageProps = {
@@ -383,7 +384,7 @@ export function SettingsPage(p: PageProps) {
 }
 
 // ---------------------------------------------------------------- minha conta
-export function AccountPage({ p, me, onToken }: { p: PageProps; me: { name: string; email: string; role: string }; onToken: (token: string) => void }) {
+export function AccountPage({ p, me, onToken, onChange }: { p: PageProps; me: { name: string; email: string; role: string; twoFactorEnabled?: boolean }; onToken: (token: string) => void; onChange: () => void }) {
   const [form, setForm] = useState({ currentPassword: '', newPassword: '', repeat: '' });
   const mismatch = Boolean(form.repeat) && form.repeat !== form.newPassword;
   return (
@@ -422,6 +423,7 @@ export function AccountPage({ p, me, onToken }: { p: PageProps; me: { name: stri
           <p className="vf-muted">Esqueceu a senha e não consegue entrar? Quem tem acesso ao servidor redefine com o comando deploy/reset-platform-password.sh.</p>
         </form>
       </Card>
+      <TwoFactorCard enabled={Boolean(me.twoFactorEnabled)} post={(path, body) => request(path, 'POST', body)} onChange={onChange} />
     </>
   );
 }
@@ -449,6 +451,8 @@ export function OfficeDetailCard({ id, p, onClose }: { id: string; p: PageProps;
   const { data, error } = useData<OfficeDetail>(`/offices/${id}`, p.revision);
   const [reason, setReason] = useState('');
   const [blocking, setBlocking] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [typed, setTyped] = useState('');
   return (
     <Card
       title={data?.name ?? 'Escritório'}
@@ -496,7 +500,23 @@ export function OfficeDetailCard({ id, p, onClose }: { id: string; p: PageProps;
               <h3 className="vf-platform-subtitle">Responsáveis pela conta</h3>
               {data.owners.map((o) => (
                 <p key={o.email}>
-                  {o.name} · {o.email} <span className="vf-muted">· último acesso: {when(o.lastLoginAt)}</span>
+                  {o.name} · {o.email} <span className="vf-muted">· último acesso: {when(o.lastLoginAt)}</span>{' '}
+                  {p.owner && (
+                    <Button
+                      kind="tertiary"
+                      size="sm"
+                      disabled={p.busy}
+                      onClick={() =>
+                        p.confirm(
+                          `Desligar a verificação em duas etapas de ${o.name}? Use só a pedido do próprio dono, que perdeu o celular e os códigos de recuperação.`,
+                          () => request(`/offices/${id}/reset-2fa`, 'POST', { email: o.email }),
+                          'Duas etapas desligadas. A pessoa entra com a senha.',
+                        )
+                      }
+                    >
+                      Desligar duas etapas
+                    </Button>
+                  )}
                 </p>
               ))}
               <p className="vf-muted">{data.termsAcceptedAt ? `Termos aceitos em ${formatDateTimeBr(data.termsAcceptedAt)} (${data.termsVersion ?? 'versão não registrada'}).` : 'Sem aceite de termos registrado (cadastro anterior aos termos ou termos não publicados).'}</p>
@@ -547,6 +567,43 @@ export function OfficeDetailCard({ id, p, onClose }: { id: string; p: PageProps;
                   </Button>
                 </div>
               ))}
+            {p.owner && data.blockedAt && (
+              <div className="vf-stack">
+                <h3 className="vf-platform-subtitle">Excluir o escritório</h3>
+                {deleting ? (
+                  <form
+                    className="vf-stack"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void p.action(async () => {
+                        await request(`/offices/${id}`, 'DELETE', { confirmName: typed });
+                        onClose();
+                      }, 'Escritório excluído em definitivo.');
+                    }}
+                  >
+                    <Alert tone="danger" title="Esta ação não tem volta">
+                      Apaga clientes, declarações, cobranças, colaboradores e todos os arquivos de {data.name}. Antes, confirme que o escritório recebeu a cópia dos dados (o backup é gerado por ele em Backup).
+                    </Alert>
+                    <Input label={`Digite o nome do escritório para confirmar: ${data.name}`} value={typed} onChange={(e) => setTyped(e.target.value)} />
+                    <div className="vf-inline">
+                      <Button type="submit" kind="danger" loading={p.busy} disabled={typed.trim().toLowerCase() !== data.name.trim().toLowerCase()}>
+                        Excluir em definitivo
+                      </Button>
+                      <Button kind="tertiary" onClick={() => setDeleting(false)}>
+                        Cancelar
+                      </Button>
+                    </div>
+                  </form>
+                ) : (
+                  <div className="vf-inline">
+                    <span className="vf-muted">Encerramento de contrato ou pedido de eliminação dos dados.</span>
+                    <Button kind="tertiary" icon={<Trash2 size={16} />} onClick={() => setDeleting(true)}>
+                      Excluir escritório
+                    </Button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
       </DataState>

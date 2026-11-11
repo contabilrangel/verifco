@@ -378,6 +378,42 @@ export async function customerRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
+  /**
+   * Histórico do cliente: o que foi feito no cadastro, nas declarações, documentos, cobranças e
+   * envios dele, com quem fez. Vem do registro de auditoria (só leitura).
+   */
+  app.get('/customers/:id/events', { preHandler: guard('customer.list') }, async (req) => {
+    const user = requireUser(req);
+    const { id } = parse(uuidParam, req.params);
+    const c = await getCustomerForUser(app.ctx, user, id);
+    const rows = await db
+      .select({ id: auditLogs.id, createdAt: auditLogs.createdAt, userName: users.name, action: auditLogs.action, entity: auditLogs.entity, entityId: auditLogs.entityId, data: auditLogs.data })
+      .from(auditLogs)
+      .leftJoin(users, eq(users.id, auditLogs.userId))
+      .where(
+        and(
+          eq(auditLogs.officeId, user.officeId),
+          or(
+            and(sql`${auditLogs.entity} like 'customer%'`, eq(auditLogs.entityId, c.id)),
+            sql`${auditLogs.data}->>'customerId' = ${c.id}`,
+            // ações sobre o que pertence ao cliente (o registro guarda o id da declaração, do documento...)
+            sql`${auditLogs.entityId} in (
+              select id::text from declarations where customer_id = ${c.id}
+              union all select id::text from documents where customer_id = ${c.id}
+              union all select id::text from budgets where customer_id = ${c.id}
+              union all select id::text from billings where customer_id = ${c.id}
+              union all select i.id::text from installments i join billings b on b.id = i.billing_id where b.customer_id = ${c.id}
+              union all select id::text from darfs where customer_id = ${c.id}
+              union all select id::text from ecac_records where customer_id = ${c.id}
+            )`,
+          ),
+        ),
+      )
+      .orderBy(desc(auditLogs.createdAt), desc(auditLogs.id))
+      .limit(300);
+    return rows;
+  });
+
   // ---------------------------------------------------------------- lixeira
   /**
    * Clientes excluídos, ainda recuperáveis: ficam guardados pelo prazo de retenção e depois são

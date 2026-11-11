@@ -10,7 +10,7 @@ import { platformRequest as request, platformToken, savePlatformToken } from './
 import { AccountPage, DataState, HealthAlerts, OfficeDetailCard, OperationPage, SettingsPage, useData, type OverviewData, type PageProps } from './PlatformOps';
 import './platform.css';
 
-interface Account { id: string; name: string; email: string; role: 'owner' | 'developer'; isActive?: boolean; lastLoginAt?: string | null; twoFactor?: boolean }
+interface Account { id: string; name: string; email: string; role: 'owner' | 'developer'; isActive?: boolean; lastLoginAt?: string | null; twoFactor?: boolean; twoFactorEnabled?: boolean }
 interface Office { id: string; name: string; email: string | null; city: string | null; state: string | null; customers: number; collaborators: number; blockedAt?: string | null; lastLoginAt?: string | null; contractExpiresAt?: string | null }
 interface Connection { id: string; provider: AiProviderKey; name: string; model: string; baseUrl: string; enabled: boolean; keyConfigured: boolean; supportsImages: boolean; pdf: boolean; status: string; lastTestAt: string | null }
 interface AiData { connections: Connection[]; defaultAiId: string | null; environmentConfigured: boolean }
@@ -33,7 +33,7 @@ export function PlatformPanel() {
   }, [token]);
   if (loading) return <Loading label="Abrindo a administração do sistema..." />;
   if (!me) return <PlatformLogin error={error} onLogin={(value) => { savePlatformToken(value); setToken(value); }} />;
-  return <PlatformShell me={me} onToken={setToken} logout={async () => {
+  return <PlatformShell me={me} onToken={setToken} onChange={() => void request<Account>('/me').then(setMe).catch(() => {})} logout={async () => {
     // encerra a sessão local mesmo se o POST falhar (máquina compartilhada): o token sai daqui
     try { await request('/logout', 'POST', {}); }
     catch { /* a sessão local é encerrada de qualquer forma */ }
@@ -43,10 +43,16 @@ export function PlatformPanel() {
 
 function PlatformLogin({ onLogin, error }: { onLogin: (token: string) => void; error: string }) {
   const [email, setEmail] = useState(''); const [password, setPassword] = useState(''); const [failure, setFailure] = useState(''); const [busy, setBusy] = useState(false);
+  // conta com verificação em duas etapas: a senha foi aceita e falta o código
+  const [needsCode, setNeedsCode] = useState(false); const [code, setCode] = useState('');
   async function submit(event: FormEvent) {
     event.preventDefault(); setBusy(true); setFailure('');
-    try { onLogin((await request<{ token: string }>('/login', 'POST', { email, password })).token); }
-    catch (e) { setFailure(errorMessage(e)); } finally { setBusy(false); }
+    try { onLogin((await request<{ token: string }>('/login', 'POST', { email, password, ...(needsCode ? { code } : {}) })).token); }
+    catch (e) {
+      const twoFactor = e instanceof ApiError && (e.details as { code?: string } | undefined)?.code === 'two_factor_required';
+      if (twoFactor && !needsCode) setNeedsCode(true);
+      else { setFailure(errorMessage(e)); if (!twoFactor) { setNeedsCode(false); setCode(''); } }
+    } finally { setBusy(false); }
   }
   return <AuthLayout
     variant="system"
@@ -66,8 +72,9 @@ function PlatformLogin({ onLogin, error }: { onLogin: (token: string) => void; e
       <div className="auth-page__fields">
         <Input label="E-mail do sistema" type="email" autoComplete="username" required icon={<Mail />} value={email} onChange={(e) => setEmail(e.target.value)} />
         <PasswordInput label="Senha" autoComplete="current-password" required icon={<Lock />} value={password} onChange={(e) => setPassword(e.target.value)} />
+        {needsCode && <Input label="Código do aplicativo autenticador" help="6 dígitos, ou um dos seus códigos de recuperação." autoComplete="one-time-code" required autoFocus icon={<KeyRound />} value={code} onChange={(e) => setCode(e.target.value)} />}
       </div>
-      <Button type="submit" loading={busy} block>Entrar no sistema</Button>
+      <Button type="submit" loading={busy} block>{needsCode ? 'Confirmar código' : 'Entrar no sistema'}</Button>
       <AuthFooter><span>É do escritório? <Link to="/entrar">Acessar o painel do contador</Link></span></AuthFooter>
     </form>
   </AuthLayout>;
@@ -90,7 +97,7 @@ const SUBTITLES: Record<string, string> = {
   configuracoes: 'Cadastro de novos escritórios, avaliação gratuita, suporte e termos de uso.',
   conta: 'Sua senha de acesso ao painel do sistema.',
 };
-function PlatformShell({ me, logout, error, onToken }: { me: Account; logout: () => Promise<void>; error: string; onToken: (token: string) => void }) {
+function PlatformShell({ me, logout, error, onToken, onChange }: { me: Account; logout: () => Promise<void>; error: string; onToken: (token: string) => void; onChange: () => void }) {
   const location = useLocation(); const tab = location.pathname.replace(/^\/sistema\/?/, '').replace(/\/$/, '');
   const owner = me.role === 'owner'; const [revision, setRevision] = useState(0);
   const [busy, setBusy] = useState(false); const [notice, setNotice] = useState<{ error: boolean; text: string } | null>(null);
@@ -117,7 +124,7 @@ function PlatformShell({ me, logout, error, onToken }: { me: Account; logout: ()
         {notice && <Alert tone={notice.error ? 'danger' : 'success'} title={notice.text} />}
         {!selected ? <Alert tone="warning" title="Esta página não está disponível para sua conta." />
           : tab === 'ia' ? <AiPage {...props} /> : tab === 'escritorios' ? <OfficesPage {...props} /> : tab === 'contratos' ? <ContractsPage {...props} />
-          : tab === 'operacao' ? <OperationPage {...props} /> : tab === 'configuracoes' ? <SettingsPage {...props} /> : tab === 'conta' ? <AccountPage p={props} me={me} onToken={onToken} />
+          : tab === 'operacao' ? <OperationPage {...props} /> : tab === 'configuracoes' ? <SettingsPage {...props} /> : tab === 'conta' ? <AccountPage p={props} me={me} onToken={onToken} onChange={onChange} />
           : tab === 'equipe' ? <TeamPage {...props} me={me} /> : tab === 'auditoria' ? <AuditPage revision={revision} /> : <Overview revision={revision} />}
       </main>
     </div>
@@ -288,6 +295,8 @@ function AuditPage({ revision }: { revision: number }) {
   const labels: Record<string, string> = { 'platform.login': 'Entrou no sistema', 'platform.logout': 'Saiu do sistema', 'platform.bootstrap': 'Criou a administração', 'office.update': 'Alterou escritório', 'contract.create': 'Criou contrato', 'contract.update': 'Alterou contrato', 'ai.create': 'Criou conexão de IA', 'ai.update': 'Alterou conexão de IA', 'ai.default': 'Escolheu a IA padrão', 'ai.test': 'Testou conexão de IA', 'ai.delete': 'Excluiu conexão de IA', 'platform.user.create': 'Criou conta do sistema', 'platform.user.active': 'Alterou acesso de conta',
     'platform.user.update': 'Alterou nome ou perfil de conta', 'platform.user.password': 'Redefiniu a senha de outra conta', 'platform.password.change': 'Trocou a própria senha', 'platform.password.cli': 'Senha redefinida pelo servidor',
     'office.block': 'Suspendeu o acesso de um escritório', 'office.unblock': 'Liberou o acesso de um escritório', 'job.retry': 'Recolocou uma tarefa na fila', 'job.dismiss': 'Dispensou tarefas com falha',
-    'settings.update': 'Alterou as configurações do sistema', 'email.test': 'Testou o e-mail do sistema' };
+    'settings.update': 'Alterou as configurações do sistema', 'email.test': 'Testou o e-mail do sistema',
+    'platform.2fa.enable': 'Ativou a verificação em duas etapas', 'platform.2fa.disable': 'Desativou a verificação em duas etapas',
+    'office.user.reset_2fa': 'Desligou as duas etapas de uma conta de escritório', 'office.delete': 'Excluiu um escritório em definitivo' };
   return <DataState error={error} loading={!data}><Card title="Últimas 200 ações"><div className="vf-platform-audit">{data?.map((item) => <div key={item.id}><History size={17} /><div><strong>{labels[item.action] ?? item.action}</strong><p className="vf-muted">{item.actor} · {formatDateTimeBr(item.createdAt)}</p></div></div>)}</div></Card></DataState>;
 }

@@ -12,6 +12,9 @@ export const LOCKOUT_NOTICE_JOB = 'auth.lockout_notice';
 /** Aviso ao endereço antigo de que o e-mail de acesso da conta foi trocado por outra pessoa. */
 export const EMAIL_CHANGED_JOB = 'auth.email_changed';
 
+/** Link de confirmação enviado ao endereço pendente (cadastro novo ou troca de e-mail). */
+export const VERIFY_EMAIL_JOB = 'auth.verify_email';
+
 export interface EmailChangedPayload extends Record<string, unknown> {
   userId: string;
   /** Endereço que deixou de valer (é para ele que o aviso vai). */
@@ -68,6 +71,26 @@ export function registerJobs(ctx: AppContext) {
     });
     return { sent: true };
   }, { onFailed: (job, error) => mailFailed(job, error, 'o aviso de tentativas de acesso bloqueadas') });
+
+  ctx.jobs.register(VERIFY_EMAIL_JOB, async (job) => {
+    const user = await ctx.db.query.users.findFirst({ where: eq(users.id, String(job.payload.userId)) });
+    const sealed = job.payload.token;
+    // a troca pode ter sido refeita ou confirmada enquanto o job esperava
+    if (!user?.isActive || !user.pendingEmail || typeof sealed !== 'string') return { skipped: true };
+    const link = `${ctx.config.WEB_URL}/confirmar-email?token=${ctx.secrets.decrypt(sealed)}`;
+    const changing = user.pendingEmail.toLowerCase() !== user.email.toLowerCase();
+    await ctx.providers.email.send(user.officeId, {
+      to: user.pendingEmail,
+      toName: user.name,
+      system: true,
+      subject: changing ? 'Confirme o novo e-mail de acesso — Verifco' : 'Confirme seu e-mail — Verifco',
+      html: changing
+        ? `<p>Olá, ${escapeHtml(user.name)}.</p><p>Para passar a entrar no Verifco com este endereço, confirme em: <a href="${link}">${link}</a></p><p>O link vale por 24 horas. Enquanto não confirmar, o acesso continua pelo e-mail anterior. Se não foi você, ignore este e-mail.</p>`
+        : `<p>Olá, ${escapeHtml(user.name)}.</p><p>Confirme que este e-mail é seu: <a href="${link}">${link}</a></p><p>O link vale por 24 horas. É por este endereço que chegam a redefinição de senha e os avisos de segurança da conta.</p>`,
+    });
+    await ctx.db.update(jobs).set({ payload: { userId: user.id } }).where(eq(jobs.id, job.id));
+    return { sent: true };
+  }, { onFailed: (job, error) => mailFailed(job, error, 'o link de confirmação de e-mail') });
 
   ctx.jobs.register(EMAIL_CHANGED_JOB, async (job) => {
     const p = job.payload as Partial<EmailChangedPayload>;

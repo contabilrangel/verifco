@@ -2,12 +2,13 @@ import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { Bell, BellOff, KeyRound, LogOut, Save, ShieldCheck, Trash2, Upload } from 'lucide-react';
 import { formatCpfCnpj, type PermissionCategory } from '@verifco/shared';
-import { Alert, Avatar, Button, Card, ConfirmDialog, DropFile, Input, Loading, Select, Switch, Tag, useToast } from '../../ds';
+import { Alert, Avatar, Button, Card, ConfirmDialog, DropFile, Input, Loading, Modal, PasswordInput, Select, Switch, Tag, useToast } from '../../ds';
 import { PageHeader } from '../../app/Shell';
 import { api, setToken } from '../../lib/api';
 import { useAuth, type Me } from '../../lib/auth';
 import { browserNotificationsSupported, getDeviceId } from '../../lib/deviceNotifications';
 import { useAction, useApi } from '../../lib/hooks';
+import { TwoFactorCard } from '../../app/TwoFactorCard';
 import { formatDate } from '../../lib/format';
 import { AUTH_TYPES, SettingLabel, type ProcuratorRow } from './shared';
 
@@ -27,6 +28,7 @@ export function AccountPage() {
         </div>
         <div className="vf-stack" style={{ '--gap': '24px' } as React.CSSProperties}>
           <PasswordCard />
+          <SecurityCard me={me} />
           <ProcuratorCard />
           <SessionsCard />
         </div>
@@ -53,8 +55,14 @@ function ProfileCard({ me }: { me: Me }) {
         </div>
         <div className="vf-grid" style={{ '--cols': 2 } as React.CSSProperties}>
           <Input label="Nome" value={name} onChange={(e) => setName(e.target.value)} maxLength={200} error={name.trim().length < 2 ? 'Informe o nome' : undefined} />
-          <Input label="E-mail de acesso" value={me.user.email} disabled help="Para trocar o e-mail, peça a quem administra os colaboradores." />
+          <Input
+            label="E-mail de acesso"
+            value={me.user.email}
+            disabled
+            help={me.user.emailVerified === false ? 'Ainda não confirmado: veja o link enviado a este endereço.' : undefined}
+          />
         </div>
+        <EmailChange me={me} />
         <div className="vf-inline vf-end">
           <Button icon={<Save />} disabled={!changed} loading={save.isPending} onClick={() => save.mutate(undefined)}>
             Salvar
@@ -63,6 +71,71 @@ function ProfileCard({ me }: { me: Me }) {
       </div>
     </Card>
   );
+}
+
+/** Troca do próprio e-mail de acesso: só vale depois do clique no link enviado ao endereço novo. */
+function EmailChange({ me }: { me: Me }) {
+  const { refresh } = useAuth();
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({ newEmail: '', password: '' });
+  const ask = useAction(() => api.post<{ pendingEmail: string }>('/auth/change-email', form), {
+    success: (r) => `Enviamos um link de confirmação para ${r.pendingEmail}.`,
+    onSuccess: () => {
+      setOpen(false);
+      setForm({ newEmail: '', password: '' });
+      void refresh();
+    },
+  });
+  const cancel = useAction(() => api.post('/auth/change-email/cancel'), { success: 'Troca de e-mail cancelada.', onSuccess: () => void refresh() });
+  return (
+    <>
+      {me.user.pendingEmail ? (
+        <Alert tone="warning" title="Troca de e-mail aguardando confirmação">
+          <span className="vf-inline">
+            <span>
+              Abra o link enviado para <strong>{me.user.pendingEmail}</strong> (vale 24 horas). Até lá o acesso continua por {me.user.email}.
+            </span>
+            <Button kind="tertiary" size="sm" loading={cancel.isPending} onClick={() => cancel.mutate(undefined)}>
+              Cancelar a troca
+            </Button>
+          </span>
+        </Alert>
+      ) : (
+        <div className="vf-inline">
+          <Button kind="tertiary" size="sm" onClick={() => setOpen(true)}>
+            Trocar o e-mail de acesso
+          </Button>
+        </div>
+      )}
+      <Modal
+        open={open}
+        title="Trocar o e-mail de acesso"
+        onClose={() => setOpen(false)}
+        width={480}
+        footer={
+          <>
+            <Button kind="secondary" onClick={() => setOpen(false)}>
+              Cancelar
+            </Button>
+            <Button loading={ask.isPending} disabled={!form.newEmail.includes('@') || !form.password} onClick={() => ask.mutate(undefined)}>
+              Enviar link de confirmação
+            </Button>
+          </>
+        }
+      >
+        <div className="vf-stack">
+          <span className="vf-muted">O endereço novo recebe um link. Quando você abrir o link, o login passa a ser por ele, as sessões abertas são encerradas e o endereço antigo é avisado.</span>
+          <Input label="Novo e-mail" type="email" autoComplete="email" autoFocus value={form.newEmail} onChange={(e) => setForm({ ...form, newEmail: e.target.value })} />
+          <PasswordInput label="Senha atual" autoComplete="current-password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+        </div>
+      </Modal>
+    </>
+  );
+}
+
+function SecurityCard({ me }: { me: Me }) {
+  const { refresh } = useAuth();
+  return <TwoFactorCard enabled={Boolean(me.user.twoFactorEnabled)} post={(path, body) => api.post(`/auth${path}`, body)} onChange={() => void refresh()} />;
 }
 
 function PermissionsCard({ me }: { me: Me }) {

@@ -144,6 +144,8 @@ export const users = pgTable(
     pendingEmail: text('pending_email'),
     pendingEmailTokenHash: text('pending_email_token_hash'),
     pendingEmailExpiresAt: ts('pending_email_expires_at'),
+    /** Quando o dono do endereço confirmou o e-mail (link de confirmação, convite ou redefinição de senha). */
+    emailVerifiedAt: ts('email_verified_at'),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

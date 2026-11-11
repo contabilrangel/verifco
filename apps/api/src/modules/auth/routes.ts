@@ -3,14 +3,15 @@ import bcrypt from 'bcryptjs';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { ADMIN_ROLE_NAME, ALL_PERMISSIONS, DEFAULT_OPERATOR_PERMISSIONS, addDaysIso, isValidCpfCnpj, onlyDigits, todayIso } from '@verifco/shared';
-import { contracts, offices, passwordResets, roles, userFavorites, users } from '../../db/schema';
+import { auditLogs, contracts, offices, passwordResets, roles, userFavorites, users } from '../../db/schema';
 import { randomToken, sha256 } from '../../lib/crypto';
-import { badRequest, conflict, forbidden, unauthorized } from '../../lib/errors';
+import { HttpError, badRequest, conflict, forbidden, unauthorized } from '../../lib/errors';
 import { OFFICE_BLOCKED_MESSAGE, parse, requireUser } from '../../lib/http';
 import { effectiveSettings, termsVersionOf } from '../../services/platform-settings';
 import { signUserToken } from '../../plugins/auth';
 import { FORGOT_PER_ACCOUNT_RULE, LOGIN_EMAIL_RULE, allow, check, fail, resetLimit } from '../../services/rate-limit';
-import { LOCKOUT_NOTICE_JOB, PASSWORD_RESET_JOB } from './jobs';
+import { DISABLED, TWO_FACTOR_INVALID, TWO_FACTOR_MESSAGE, TWO_FACTOR_REQUIRED, beginSetup, checkSecondFactor, finishSetup } from '../../services/two-factor';
+import { EMAIL_CHANGED_JOB, LOCKOUT_NOTICE_JOB, PASSWORD_RESET_JOB, VERIFY_EMAIL_JOB, type EmailChangedPayload } from './jobs';
 import { seedOfficeDefaults } from './seed-office';
 
 const password = z.string().min(8, 'A senha precisa ter ao menos 8 caracteres').max(200);
@@ -27,7 +28,17 @@ export async function serializeMe(app: FastifyInstance, userId: string) {
   // as preferências do escritório só para quem pode vê-las (Administração › Preferências)
   const canSeeSettings = permissions.includes('settings.view') || permissions.includes('settings.edit');
   return {
-    user: { id: user.id, name: user.name, email: user.email, isOwner: user.isOwner, notificationPrefs: user.notificationPrefs },
+    user: {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      isOwner: user.isOwner,
+      notificationPrefs: user.notificationPrefs,
+      twoFactorEnabled: Boolean(user.totpEnabledAt),
+      emailVerified: Boolean(user.emailVerifiedAt),
+      // troca de e-mail aguardando o clique no link (não conta a confirmação do próprio endereço)
+      pendingEmail: user.pendingEmail && user.pendingEmail.toLowerCase() !== user.email.toLowerCase() && (user.pendingEmailExpiresAt?.getTime() ?? 0) > Date.now() ? user.pendingEmail : null,
+    },
     office: office && { id: office.id, name: office.name, logoFileId: office.logoFileId, settings: canSeeSettings ? office.settings : {} },
     role: role && { id: role.id, name: role.name },
     permissions,
@@ -35,8 +46,21 @@ export async function serializeMe(app: FastifyInstance, userId: string) {
   };
 }
 
+/** Validade do link de confirmação de e-mail. */
+const EMAIL_LINK_MS = 24 * 3600_000;
+
 export async function authRoutes(app: FastifyInstance) {
   const { db } = app.ctx;
+
+  /** Guarda o endereço pendente com um token novo e manda o link de confirmação para ele. */
+  async function sendEmailConfirmation(user: { id: string; officeId: string }, address: string) {
+    const token = randomToken();
+    await db
+      .update(users)
+      .set({ pendingEmail: address, pendingEmailTokenHash: sha256(token), pendingEmailExpiresAt: new Date(Date.now() + EMAIL_LINK_MS) })
+      .where(eq(users.id, user.id));
+    await app.ctx.jobs.enqueue(VERIFY_EMAIL_JOB, { userId: user.id, token: app.ctx.secrets.encrypt(token) }, { officeId: user.officeId });
+  }
 
   /**
    * O que a tela de entrada precisa saber antes do login: se o cadastro está aberto, o contato do
@@ -95,6 +119,8 @@ export async function authRoutes(app: FastifyInstance) {
           email: body.email.toLowerCase(),
           passwordHash: await bcrypt.hash(body.password, 10),
           isOwner: true,
+          // sem e-mail do sistema não há como mandar o link: o endereço vale como informado
+          emailVerifiedAt: app.ctx.config.SMTP_URL ? null : new Date(),
         })
         .returning();
       // avaliação contada no dia de Brasília (services/plan.ts aplica o limite e a validade);
@@ -112,6 +138,7 @@ export async function authRoutes(app: FastifyInstance) {
       return { office, user };
     });
     await seedOfficeDefaults(db, result.office.id);
+    if (!result.user.emailVerifiedAt) await sendEmailConfirmation(result.user, result.user.email);
     const token = signUserToken(app, result.user);
     reply.status(201);
     return { token, ...(await serializeMe(app, result.user.id)) };
@@ -122,7 +149,10 @@ export async function authRoutes(app: FastifyInstance) {
    * o e-mail fica bloqueado até a janela acabar, e o dono da conta recebe um aviso.
    */
   app.post('/auth/login', async (req) => {
-    const body = parse(z.object({ email: z.email('Informe um e-mail válido.'), password: z.string().min(1, 'Informe a senha.') }), req.body);
+    const body = parse(
+      z.object({ email: z.email('Informe um e-mail válido.'), password: z.string().min(1, 'Informe a senha.'), code: z.string().trim().max(40).optional() }),
+      req.body,
+    );
     const email = body.email.toLowerCase();
     const emailKey = `login-email:${email}`;
     await check(app.ctx, emailKey, LOGIN_EMAIL_RULE, 'Muitas tentativas sem sucesso para este e-mail. Aguarde alguns minutos ou use “Esqueci minha senha”.');
@@ -135,10 +165,30 @@ export async function authRoutes(app: FastifyInstance) {
       }
       throw unauthorized('E-mail ou senha incorretos.');
     }
+    // segunda etapa: sem código, a tela pede o código (não conta como tentativa errada); código errado conta
+    const second = checkSecondFactor(app.ctx.secrets, user, body.code || undefined);
+    if (!second.ok) {
+      if (!body.code) throw new HttpError(401, TWO_FACTOR_MESSAGE, { code: TWO_FACTOR_REQUIRED });
+      const failures = await fail(app.ctx, emailKey, LOGIN_EMAIL_RULE);
+      if (failures === LOGIN_EMAIL_RULE.max) await app.ctx.jobs.enqueue(LOCKOUT_NOTICE_JOB, { userId: user.id }, { officeId: user.officeId });
+      throw new HttpError(401, TWO_FACTOR_INVALID, { code: TWO_FACTOR_REQUIRED });
+    }
     await resetLimit(app.ctx, emailKey);
     const office = await db.query.offices.findFirst({ where: eq(offices.id, user.officeId) });
     if (office?.blockedAt) throw forbidden(OFFICE_BLOCKED_MESSAGE);
-    await db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id));
+    await db
+      .update(users)
+      .set({ lastLoginAt: new Date(), ...(second.remaining ? { totpRecoveryHashes: second.remaining } : {}) })
+      .where(eq(users.id, user.id));
+    // quem entrou, quando e de onde: aparece em Meu escritório › Auditoria
+    await db.insert(auditLogs).values({
+      officeId: user.officeId,
+      userId: user.id,
+      action: 'login',
+      entity: 'session',
+      entityId: user.id,
+      data: { ip: req.ip, twoFactor: Boolean(user.totpEnabledAt), ...(second.remaining ? { recoveryCode: true, recoveryCodesLeft: second.remaining.length } : {}) },
+    });
     return { token: signUserToken(app, user), ...(await serializeMe(app, user.id)) };
   });
 
@@ -189,10 +239,124 @@ export async function authRoutes(app: FastifyInstance) {
       await tx.update(passwordResets).set({ usedAt: new Date() }).where(eq(passwordResets.id, reset.id));
       await tx
         .update(users)
-        .set({ passwordHash: await bcrypt.hash(body.password, 10), tokenVersion: user.tokenVersion + 1 })
+        // o link chegou por e-mail: quem o usou controla o endereço
+        .set({ passwordHash: await bcrypt.hash(body.password, 10), tokenVersion: user.tokenVersion + 1, emailVerifiedAt: user.emailVerifiedAt ?? new Date() })
         .where(eq(users.id, user.id));
     });
     return { ok: true };
+  });
+
+  // ---------------------------------------------------------------- verificação em duas etapas
+  /** Senha atual conferida antes de qualquer mudança na segunda etapa. */
+  async function userWithPassword(req: Parameters<typeof requireUser>[0], password: string) {
+    const auth = requireUser(req);
+    const user = await db.query.users.findFirst({ where: eq(users.id, auth.userId) });
+    if (!user?.passwordHash || !(await bcrypt.compare(password, user.passwordHash))) throw badRequest('Senha atual incorreta.');
+    return user;
+  }
+  const passwordBody = z.object({ password: z.string().min(1, 'Informe a senha atual.').max(200) });
+
+  /** Começa a ativação: devolve a chave e o endereço para o aplicativo (QR code). Só vale depois do código. */
+  app.post('/auth/2fa/setup', async (req) => {
+    const user = await userWithPassword(req, parse(passwordBody, req.body).password);
+    if (user.totpEnabledAt) throw badRequest('A verificação em duas etapas já está ativa. Desative antes de configurar outro aplicativo.');
+    const setup = beginSetup(app.ctx.secrets, user.email, 'Verifco');
+    await db.update(users).set(setup.set).where(eq(users.id, user.id));
+    return { secret: setup.secret, otpauthUrl: setup.otpauthUrl };
+  });
+
+  /** Conclui com o código do aplicativo e mostra, uma única vez, os códigos de recuperação. */
+  app.post('/auth/2fa/enable', async (req) => {
+    const auth = requireUser(req);
+    const { code } = parse(z.object({ code: z.string().trim().min(6).max(12) }), req.body);
+    const user = await db.query.users.findFirst({ where: eq(users.id, auth.userId) });
+    if (!user) throw unauthorized();
+    const done = finishSetup(app.ctx.secrets, user, code);
+    await db.update(users).set(done.set).where(eq(users.id, user.id));
+    await db.insert(auditLogs).values({ officeId: user.officeId, userId: user.id, action: 'enable', entity: 'two_factor', entityId: user.id });
+    return { recoveryCodes: done.recoveryCodes };
+  });
+
+  /** Desativa: senha e um código (do aplicativo ou de recuperação). */
+  app.post('/auth/2fa/disable', async (req) => {
+    const body = parse(passwordBody.extend({ code: z.string().trim().min(6).max(40) }), req.body);
+    const user = await userWithPassword(req, body.password);
+    if (!user.totpEnabledAt) return { ok: true };
+    await check(app.ctx, `2fa:${user.id}`, LOGIN_EMAIL_RULE, 'Muitas tentativas sem sucesso. Aguarde alguns minutos.');
+    if (!checkSecondFactor(app.ctx.secrets, user, body.code).ok) {
+      await fail(app.ctx, `2fa:${user.id}`, LOGIN_EMAIL_RULE);
+      throw badRequest(TWO_FACTOR_INVALID);
+    }
+    await resetLimit(app.ctx, `2fa:${user.id}`);
+    await db.update(users).set(DISABLED).where(eq(users.id, user.id));
+    await db.insert(auditLogs).values({ officeId: user.officeId, userId: user.id, action: 'disable', entity: 'two_factor', entityId: user.id });
+    return { ok: true };
+  });
+
+  // ---------------------------------------------------------------- e-mail de acesso
+  /**
+   * Troca do próprio e-mail: o endereço novo só passa a valer depois do clique no link enviado
+   * a ele (24 horas). Até lá o acesso continua pelo e-mail atual.
+   */
+  app.post('/auth/change-email', async (req) => {
+    const body = parse(passwordBody.extend({ newEmail: z.email('Informe um e-mail válido.').max(320) }), req.body);
+    const user = await userWithPassword(req, body.password);
+    const address = body.newEmail.toLowerCase();
+    if (address === user.email.toLowerCase()) throw badRequest('Este já é o seu e-mail de acesso.');
+    const taken = await db.query.users.findFirst({ where: sql`lower(${users.email}) = ${address}` });
+    if (taken) throw conflict('Já existe uma conta com este e-mail.');
+    await sendEmailConfirmation(user, address);
+    return { ok: true, pendingEmail: address };
+  });
+
+  /** Desiste da troca pendente. */
+  app.post('/auth/change-email/cancel', async (req) => {
+    const auth = requireUser(req);
+    await db.update(users).set({ pendingEmail: null, pendingEmailTokenHash: null, pendingEmailExpiresAt: null }).where(eq(users.id, auth.userId));
+    return { ok: true };
+  });
+
+  /** Manda de novo o link para confirmar o e-mail atual (quem ainda não confirmou). */
+  app.post('/auth/verify-email/resend', async (req) => {
+    const auth = requireUser(req);
+    const user = await db.query.users.findFirst({ where: eq(users.id, auth.userId) });
+    if (!user) throw unauthorized();
+    if (user.emailVerifiedAt) return { ok: true, alreadyVerified: true };
+    if (!(await allow(app.ctx, `verify-email:${user.id}`, FORGOT_PER_ACCOUNT_RULE))) throw new HttpError(429, 'O link acabou de ser enviado. Confira a caixa de entrada e o spam, ou aguarde alguns minutos para pedir de novo.');
+    await sendEmailConfirmation(user, user.email);
+    return { ok: true, alreadyVerified: false };
+  });
+
+  /** O clique no link (sem login): confirma o endereço e, se for troca, passa a valer o novo. */
+  app.post('/auth/confirm-email', async (req) => {
+    const { token } = parse(z.object({ token: z.string({ error: 'Link inválido ou expirado.' }).min(10, 'Link inválido ou expirado.').max(200) }), req.body);
+    const user = await db.query.users.findFirst({ where: and(eq(users.pendingEmailTokenHash, sha256(token)), gt(users.pendingEmailExpiresAt, new Date())) });
+    if (!user?.pendingEmail) throw badRequest('Link inválido ou expirado. Peça um novo em Minha conta.');
+    const address = user.pendingEmail.toLowerCase();
+    const changing = address !== user.email.toLowerCase();
+    if (changing) {
+      const taken = await db.query.users.findFirst({ where: sql`lower(${users.email}) = ${address}` });
+      if (taken) throw conflict('Já existe uma conta com este e-mail.');
+    }
+    await db
+      .update(users)
+      .set({
+        email: address,
+        emailVerifiedAt: new Date(),
+        pendingEmail: null,
+        pendingEmailTokenHash: null,
+        pendingEmailExpiresAt: null,
+        updatedAt: new Date(),
+        // trocou o endereço de acesso: as sessões abertas caem e o login passa a ser pelo novo
+        ...(changing ? { tokenVersion: user.tokenVersion + 1 } : {}),
+      })
+      .where(eq(users.id, user.id));
+    if (changing) {
+      const payload: EmailChangedPayload = { userId: user.id, oldEmail: user.email, newEmail: address, changedBy: user.name };
+      await app.ctx.jobs.enqueue(EMAIL_CHANGED_JOB, payload, { officeId: user.officeId, userId: user.id });
+      await db.insert(auditLogs).values({ officeId: user.officeId, userId: user.id, action: 'change_email', entity: 'employee', entityId: user.id, data: { from: user.email, to: address } });
+    }
+    return { ok: true, changed: changing, email: address };
   });
 
   /** Encerra todas as sessões do usuário (invalida tokens emitidos). */

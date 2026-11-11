@@ -1,10 +1,11 @@
-import { Building2, FileText, Folders, KeyRound, ShieldCheck, SlidersHorizontal, Users } from 'lucide-react';
+import { Building2, FileText, Folders, History, KeyRound, ShieldCheck, SlidersHorizontal, Users } from 'lucide-react';
 import type { VerifcoModule } from '../../app/modules';
 import { lazyPage } from '../../lib/lazy';
 import './admin.css';
 
 const AccountPage = lazyPage(() => import('./AccountPages'), 'AccountPage');
 const AccountPreferencesPage = lazyPage(() => import('./AccountPages'), 'AccountPreferencesPage');
+const AuditTab = lazyPage(() => import('./AuditTab'), 'AuditTab');
 const ContractsTab = lazyPage(() => import('./ContractsTab'), 'ContractsTab');
 const EmployeesTab = lazyPage(() => import('./EmployeesTab'), 'EmployeesTab');
 const GroupsTab = lazyPage(() => import('./GroupsTab'), 'GroupsTab');
@@ -44,5 +45,6 @@ export const module: VerifcoModule = {
       order: 60,
     },
     { path: 'contratos', label: 'Contratos', icon: FileText, element: ContractsTab, perms: ['contracts.view'], order: 70 },
+    { path: 'auditoria', label: 'Auditoria', icon: History, element: AuditTab, perms: ['settings.edit'], order: 95 },
   ],
 };

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router';
-import { SESSION_EXPIRED_MESSAGE } from '../../lib/api';
+import { ApiError, SESSION_EXPIRED_MESSAGE } from '../../lib/api';
 import { ToastProvider, useToast } from '../../ds';
 import { LoginPage } from './AuthPages';
 
@@ -84,7 +84,26 @@ describe('LoginPage', () => {
     renderLogin({ from: '/clientes?busca=ana&pagina=2' });
     submit();
     await waitFor(() => expect(screen.getByTestId('where').textContent).toBe('/clientes?busca=ana&pagina=2'));
-    expect(auth.login).toHaveBeenCalledWith('ana@exemplo.com.br', 'senha-forte');
+    // sem verificação em duas etapas, o código não é enviado
+    expect(auth.login).toHaveBeenCalledWith('ana@exemplo.com.br', 'senha-forte', undefined);
+  });
+
+  it('conta com duas etapas: depois da senha pede o código e só então entra; código errado mostra o erro', async () => {
+    const needs = () => new ApiError(401, 'Informe o código do aplicativo autenticador.', { code: 'two_factor_required' });
+    auth.login.mockRejectedValueOnce(needs());
+    renderLogin();
+    submit();
+    const codeField = await screen.findByLabelText(/Código do aplicativo autenticador/);
+    // pedir o código não é um erro na tela
+    expect(screen.queryByRole('alert')).toBeNull();
+    auth.login.mockRejectedValueOnce(new ApiError(401, 'Código inválido. Confira o aplicativo autenticador ou use um código de recuperação.', { code: 'two_factor_required' }));
+    fireEvent.change(codeField, { target: { value: '000000' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar código' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('Código inválido');
+    fireEvent.change(screen.getByLabelText(/Código do aplicativo autenticador/), { target: { value: '123456' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar código' }));
+    await waitFor(() => expect(screen.getByTestId('where').textContent).toBe('/'));
+    expect(auth.login.mock.calls.map((c: unknown[]) => c[2])).toEqual([undefined, '000000', '123456']);
   });
 
   it('sem página guardada, ou com endereço de outro site, vai ao início', async () => {

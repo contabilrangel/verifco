@@ -1,7 +1,7 @@
 import { Navigate, Outlet, RouterProvider, createBrowserRouter, useLocation } from 'react-router';
 import { Loading } from '../ds';
 import { returnPath, useAuth } from '../lib/auth';
-import { ForgotPasswordPage, LoginPage, RegisterPage, ResetPasswordPage } from '../modules/auth/AuthPages';
+import { ConfirmEmailPage, ForgotPasswordPage, LoginPage, RegisterPage, ResetPasswordPage } from '../modules/auth/AuthPages';
 import { RouteError } from './ErrorBoundary';
 import { NotFound } from './NotFound';
 import { Shell } from './Shell';
@@ -61,6 +61,7 @@ const router = createBrowserRouter([
         ],
       },
       { path: '/redefinir-senha', element: <ResetPasswordPage /> },
+      { path: '/confirmar-email', element: <ConfirmEmailPage /> },
       ...PUBLIC_ROUTES,
       {
         element: <RequireAuth />,

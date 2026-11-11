@@ -20,7 +20,7 @@ export async function platformRequest<T>(path: string, method = 'GET', body?: un
   }
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new ApiError(res.status, data.error ?? 'Não foi possível concluir esta ação.');
+    throw new ApiError(res.status, data.error ?? 'Não foi possível concluir esta ação.', data.details);
   }
   return res.status === 204 ? undefined as T : res.json() as Promise<T>;
 }

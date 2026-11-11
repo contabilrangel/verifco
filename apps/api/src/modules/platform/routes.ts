@@ -3,9 +3,9 @@ import { and, asc, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { AI_PROVIDERS, CONTRACT_STATUS_KEYS, aiProviderDef, todayIso } from '@verifco/shared';
-import { contracts, jobs, offices, users } from '../../db/schema';
+import { contracts, files, jobs, offices, users } from '../../db/schema';
 import { platformUsers, platformSettings, platformAiConnections, platformAuditLogs } from '../../db/platform-schema';
-import { badRequest, conflict, forbidden, notFound, unauthorized } from '../../lib/errors';
+import { HttpError, badRequest, conflict, forbidden, notFound, unauthorized } from '../../lib/errors';
 import { guard, parse } from '../../lib/http';
 import { PLATFORM_LOGIN_EMAIL_RULE, PLATFORM_LOGIN_RULE, check, consume, fail, resetLimit } from '../../services/rate-limit';
 import { unsafeBaseUrlReason } from '../../integrations/ssrf';
@@ -14,11 +14,12 @@ import { completeConnection, connectionFetch } from '../../integrations/multi-ai
 import { platformSmtpInfo, testPlatformSmtp } from '../../integrations/email';
 import { IntegrationError } from '../../integrations/http';
 import { effectiveSettings } from '../../services/platform-settings';
+import { DISABLED, TWO_FACTOR_INVALID, TWO_FACTOR_MESSAGE, TWO_FACTOR_REQUIRED, beginSetup, checkSecondFactor, finishSetup } from '../../services/two-factor';
 
 const idParam = z.object({ id: z.uuid() });
 const pageQuery = z.object({ offset: z.coerce.number().int().min(0).default(0), limit: z.coerce.number().int().min(1).max(500).default(100),
   search: z.string().trim().max(100).default('') });
-const loginBody = z.object({ email: z.email().max(320).transform((s) => s.toLowerCase()), password: z.string().min(1).max(200) });
+const loginBody = z.object({ email: z.email().max(320).transform((s) => s.toLowerCase()), password: z.string().min(1).max(200), code: z.string().trim().max(40).optional() });
 const aiBody = z.object({
   provider: z.enum(AI_PROVIDERS.map((p) => p.key) as [string, ...string[]]),
   name: z.string().trim().min(1).max(100), model: z.string().trim().min(1).max(200),
@@ -81,12 +82,58 @@ export default async function platformRoutes(app: FastifyInstance) {
       await fail(rateCtx, emailKey, PLATFORM_LOGIN_EMAIL_RULE);
       throw unauthorized('E-mail ou senha inválidos.');
     }
+    // segunda etapa: sem código a tela pede o código; código errado conta como tentativa
+    const second = checkSecondFactor(ctx.secrets, user, body.code || undefined);
+    if (!second.ok) {
+      if (!body.code) throw new HttpError(401, TWO_FACTOR_MESSAGE, { code: TWO_FACTOR_REQUIRED });
+      await fail(rateCtx, ipKey, PLATFORM_LOGIN_RULE);
+      await fail(rateCtx, emailKey, PLATFORM_LOGIN_EMAIL_RULE);
+      throw new HttpError(401, TWO_FACTOR_INVALID, { code: TWO_FACTOR_REQUIRED });
+    }
     await resetLimit(rateCtx, ipKey);
-    await platformDb.update(platformUsers).set({ lastLoginAt: new Date() }).where(eq(platformUsers.id, user.id));
-    await platformDb.insert(platformAuditLogs).values({ actorId: user.id, action: 'platform.login' });
+    await platformDb.update(platformUsers).set({ lastLoginAt: new Date(), ...(second.remaining ? { totpRecoveryHashes: second.remaining } : {}) }).where(eq(platformUsers.id, user.id));
+    await platformDb.insert(platformAuditLogs).values({ actorId: user.id, action: 'platform.login', details: second.remaining ? { recoveryCode: true, recoveryCodesLeft: second.remaining.length } : {} });
     return { token: app.jwt.sign({ typ: 'platform', sub: user.id, tv: user.tokenVersion }, { expiresIn: '1h' }) };
   });
-  app.get('/platform/me', read, async (req) => platformUser(req));
+  app.get('/platform/me', read, async (req) => {
+    const me = platformUser(req);
+    const row = await platformDb.query.platformUsers.findFirst({ where: eq(platformUsers.id, me.id) });
+    return { ...me, twoFactorEnabled: Boolean(row?.totpEnabledAt) };
+  });
+  // ---------------------------------------------------------------- verificação em duas etapas
+  async function meWithPassword(req: FastifyRequest, password: string) {
+    const me = platformUser(req);
+    const row = await platformDb.query.platformUsers.findFirst({ where: eq(platformUsers.id, me.id) });
+    if (!row || !(await bcrypt.compare(password, row.passwordHash))) throw badRequest('Senha atual incorreta.');
+    return row;
+  }
+  app.post('/platform/2fa/setup', read, async (req) => {
+    const row = await meWithPassword(req, parse(z.object({ password: z.string().min(1).max(200) }), req.body).password);
+    if (row.totpEnabledAt) throw badRequest('A verificação em duas etapas já está ativa. Desative antes de configurar outro aplicativo.');
+    const setup = beginSetup(ctx.secrets, row.email, 'Verifco Sistema');
+    await platformDb.update(platformUsers).set(setup.set).where(eq(platformUsers.id, row.id));
+    return { secret: setup.secret, otpauthUrl: setup.otpauthUrl };
+  });
+  app.post('/platform/2fa/enable', read, async (req) => {
+    const me = platformUser(req);
+    const { code } = parse(z.object({ code: z.string().trim().min(6).max(12) }), req.body);
+    const row = await platformDb.query.platformUsers.findFirst({ where: eq(platformUsers.id, me.id) });
+    if (!row) throw unauthorized();
+    const done = finishSetup(ctx.secrets, row, code);
+    await platformDb.update(platformUsers).set(done.set).where(eq(platformUsers.id, row.id));
+    await audit(req, 'platform.2fa.enable');
+    return { recoveryCodes: done.recoveryCodes };
+  });
+  app.post('/platform/2fa/disable', read, async (req) => {
+    const body = parse(z.object({ password: z.string().min(1).max(200), code: z.string().trim().min(6).max(40) }), req.body);
+    const row = await meWithPassword(req, body.password);
+    if (!row.totpEnabledAt) return { ok: true };
+    await consume(rateCtx, `platform-2fa:${row.id}`, { max: 10, windowSec: 900 });
+    if (!checkSecondFactor(ctx.secrets, row, body.code).ok) throw badRequest(TWO_FACTOR_INVALID);
+    await platformDb.update(platformUsers).set(DISABLED).where(eq(platformUsers.id, row.id));
+    await audit(req, 'platform.2fa.disable');
+    return { ok: true };
+  });
   app.post('/platform/logout', read, async (req) => {
     const user = platformUser(req);
     await platformDb.update(platformUsers).set({ tokenVersion: sql`${platformUsers.tokenVersion} + 1` }).where(eq(platformUsers.id, user.id));
@@ -192,6 +239,42 @@ export default async function platformRoutes(app: FastifyInstance) {
     const [saved] = await db.update(offices).set(body).where(eq(offices.id, id)).returning({ id: offices.id });
     if (!saved) throw notFound('Escritório');
     await audit(req, 'office.update', id); return saved;
+  });
+  /**
+   * Suporte: desliga a verificação em duas etapas de uma conta do escritório cujo dono perdeu o
+   * celular e os códigos de recuperação. As sessões da conta caem; a senha não muda.
+   */
+  app.post('/platform/offices/:id/reset-2fa', write, async (req) => {
+    const { id } = parse(idParam, req.params);
+    const { email } = parse(z.object({ email: z.email().max(320).transform((v) => v.toLowerCase()) }), req.body);
+    const [saved] = await db.update(users)
+      .set({ ...DISABLED, tokenVersion: sql`${users.tokenVersion} + 1` })
+      .where(and(eq(users.officeId, id), sql`lower(${users.email}) = ${email}`)).returning({ id: users.id });
+    if (!saved) throw notFound('Conta deste escritório com esse e-mail');
+    await audit(req, 'office.user.reset_2fa', id, { userId: saved.id }); return { ok: true };
+  });
+  /**
+   * Exclusão definitiva do escritório (encerramento de contrato, pedido de eliminação): apaga
+   * clientes, declarações, cobranças, colaboradores e o conteúdo de todos os arquivos. Exige o
+   * acesso já suspenso e o nome digitado. Não tem volta.
+   */
+  app.delete('/platform/offices/:id', write, async (req) => {
+    const { id } = parse(idParam, req.params);
+    const { confirmName } = parse(z.object({ confirmName: z.string().trim().min(1).max(200) }), req.body);
+    const office = await db.query.offices.findFirst({ where: eq(offices.id, id) });
+    if (!office) throw notFound('Escritório');
+    if (!office.blockedAt) throw badRequest('Suspenda o acesso do escritório antes de excluir.');
+    if (confirmName.toLowerCase() !== office.name.trim().toLowerCase()) throw badRequest('O nome digitado não confere com o do escritório.');
+    // primeiro o conteúdo no armazenamento (em lotes), depois as linhas (a exclusão do escritório leva o resto em cascata)
+    let removedFiles = 0;
+    for (;;) {
+      const batch = await db.select({ id: files.id }).from(files).where(eq(files.officeId, id)).limit(500);
+      if (!batch.length) break;
+      for (const f of batch) { await ctx.files.remove(id, f.id); removedFiles += 1; }
+    }
+    await db.delete(offices).where(eq(offices.id, id));
+    await audit(req, 'office.delete', id, { name: office.name, files: removedFiles });
+    return { ok: true, files: removedFiles };
   });
   app.get('/platform/contracts', read, async (req) => {
     const page = parse(pageQuery.extend({ officeId: z.uuid().optional() }), req.query);

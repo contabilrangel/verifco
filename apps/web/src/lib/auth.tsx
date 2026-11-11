@@ -3,7 +3,18 @@ import { useQueryClient } from '@tanstack/react-query';
 import { api, getToken, setToken, setUnauthorizedHandler } from './api';
 
 export interface Me {
-  user: { id: string; name: string; email: string; isOwner: boolean; notificationPrefs: { enabled?: boolean; devices?: string[] } };
+  user: {
+    id: string;
+    name: string;
+    email: string;
+    isOwner: boolean;
+    notificationPrefs: { enabled?: boolean; devices?: string[] };
+    twoFactorEnabled?: boolean;
+    /** `false` só quando o servidor pediu a confirmação do e-mail e ela ainda não veio. */
+    emailVerified?: boolean;
+    /** Troca de e-mail aguardando o clique no link enviado ao endereço novo. */
+    pendingEmail?: string | null;
+  };
   office: { id: string; name: string; logoFileId: string | null; settings: Record<string, unknown> } | null;
   role: { id: string; name: string } | null;
   permissions: string[];
@@ -13,7 +24,8 @@ export interface Me {
 interface AuthState {
   me: Me | null;
   loading: boolean;
-  login: (email: string, password: string) => Promise<void>;
+  /** `code`: código do aplicativo autenticador (ou de recuperação) quando a conta tem duas etapas. */
+  login: (email: string, password: string, code?: string) => Promise<void>;
   register: (data: { officeName: string; name: string; email: string; password: string; officeDocument?: string; acceptTerms?: boolean }) => Promise<void>;
   logout: () => void;
   refresh: () => Promise<void>;
@@ -93,8 +105,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       logout,
       refresh,
       sessionExpired,
-      login: async (email, password) => {
-        const res = await api.post<Me & { token: string }>('/auth/login', { email, password });
+      login: async (email, password, code) => {
+        const res = await api.post<Me & { token: string }>('/auth/login', { email, password, ...(code ? { code } : {}) });
         setToken(res.token);
         setSessionExpired(false);
         setMe(res);
