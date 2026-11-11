@@ -263,9 +263,9 @@ function BudgetCard({
             {timeline.length > 0 && <span className="vf-text-xs vf-muted">{timeline.join(' · ')}</span>}
           </div>
           <div className="vf-inline">
-            {sendable && can('budget.send') && (
+            {(sendable || approved) && can('budget.send') && (
               <Button size="sm" kind="secondary" icon={<Send />} onClick={() => onAction('send')} disabled={!contact.email && !contact.mobile} title={!contact.email && !contact.mobile ? 'Cadastre e-mail ou celular do cliente' : undefined}>
-                {b.status === 'sent' ? 'Reenviar' : 'Enviar'}
+                {approved ? 'Enviar cópia' : b.status === 'sent' ? 'Reenviar' : 'Enviar'}
               </Button>
             )}
             {decidable && can('budget.approve') && (
@@ -436,20 +436,22 @@ function SendBudgetModal({
   contact: { email: boolean; mobile: boolean };
   customerId: string;
   onClose: () => void;
-  onSent: (link: string) => void;
+  onSent: (link: string | null) => void;
 }) {
   const [email, setEmail] = useState(true);
   const [wa, setWa] = useState(false);
   const channels = [...(email && contact.email ? ['email'] : []), ...(wa && contact.mobile ? ['whatsapp'] : [])];
-  const send = useAction(() => api.post<{ link: string }>(`/finance/budgets/${budget!.id}/send`, { channels }), {
-    success: 'Orçamento enviado ao cliente.',
+  // orçamento aprovado: vai a cópia da proposta, sem link (não há mais o que aprovar)
+  const copy = budget?.status === 'approved';
+  const send = useAction(() => api.post<{ link: string | null }>(`/finance/budgets/${budget!.id}/send`, { channels }), {
+    success: copy ? 'Cópia da proposta enviada ao cliente.' : 'Orçamento enviado ao cliente.',
     invalidate: [['finance', 'budgets', customerId], ['customer', customerId]],
     onSuccess: (r) => onSent(r.link),
   });
   return (
     <Modal
       open={Boolean(budget)}
-      title="Enviar orçamento ao cliente"
+      title={copy ? 'Enviar cópia da proposta' : 'Enviar orçamento ao cliente'}
       onClose={onClose}
       width={500}
       footer={
@@ -469,7 +471,11 @@ function SendBudgetModal({
         </span>
         <Checkbox label={contact.email ? 'Por e-mail' : 'Por e-mail (cliente sem e-mail cadastrado)'} checked={email && contact.email} disabled={!contact.email} onChange={(e) => setEmail(e.target.checked)} />
         <Checkbox label={contact.mobile ? 'Por WhatsApp' : 'Por WhatsApp (cliente sem celular cadastrado)'} checked={wa && contact.mobile} disabled={!contact.mobile} onChange={(e) => setWa(e.target.checked)} />
-        <Alert tone="primary">O cliente recebe um link para aprovar ou recusar, válido por 30 dias. {budget?.status === 'sent' ? 'O link enviado antes deixa de funcionar.' : ''}</Alert>
+        {copy ? (
+          <Alert tone="primary">O orçamento já está aprovado: o cliente recebe a cópia da proposta, sem link de aprovação. Nada muda no orçamento nem nas cobranças.</Alert>
+        ) : (
+          <Alert tone="primary">O cliente recebe um link para aprovar ou recusar, válido por 30 dias. {budget?.status === 'sent' ? 'O link enviado antes deixa de funcionar.' : ''}</Alert>
+        )}
       </div>
     </Modal>
   );

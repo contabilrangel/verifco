@@ -1,21 +1,28 @@
+import { and, desc, eq, inArray, ne } from 'drizzle-orm';
 import { selicTable } from '../../services/indices';
 import {
   ASSET_GROUPS,
   DARF_STATUS,
   DECLARATION_SUBSTATUS,
   ITEM_KINDS,
+  KIT_ATTACHMENTS_MAX_BYTES,
   darfPayable,
   declarationTotals,
+  documentCategoryLabel,
   fineMeshCheck,
   formatCpfCnpj,
   formatDate,
+  formatFileSize,
   formatMoney,
   type DeclarationSubstatus,
 } from '@verifco/shared';
-import type { AppContext } from '../../context';
+import type { AppContext, AuthUser } from '../../context';
+import { documents, files } from '../../db/schema';
+import { HttpError, badRequest } from '../../lib/errors';
 import type { CustomerRow } from '../../services/customers';
 import type { DeclarationRow } from '../../services/declarations';
 import { PdfBuilder, loadBranding } from '../../services/pdf';
+import { assertCanDownloadFile } from '../files/access';
 import { loadDarfs, loadItems, officeSettings } from './data';
 import { finishPdf, renderPdf, type Block, type Cell, type Section } from './document';
 import { paymentsByNature, runCash, taxationLabel, taxationOf } from './individual';
@@ -259,4 +266,130 @@ export async function buildKitPdf(ctx: AppContext, declaration: DeclarationRow, 
   if (!hasItems) pdf.paragraph('Esta declaração ainda não tem linhas cadastradas; o kit mostra apenas os totais gravados.', { muted: true, size: 9 });
   renderPdf(pdf, brand, sections);
   return { buffer: await finishPdf(pdf), filename: kitFilename(customer, year) };
+}
+
+// ---------------------------------------------------------------------------
+// Anexos do kit: documentos da declaração que vão junto no e-mail
+// ---------------------------------------------------------------------------
+
+export interface KitAttachmentOption {
+  fileId: string;
+  /** De onde vem o arquivo: documento da declaração, guia de uma quota ou pacote da elaboração. */
+  source: 'document' | 'darf' | 'export';
+  label: string;
+  filename: string;
+  size: number;
+  mimeType: string;
+  /** Vem marcado na escolha: recibo de entrega, declaração do programa IRPF e guias DARF em aberto. */
+  suggested: boolean;
+}
+
+/** Categorias de documento sugeridas no kit (as do programa IRPF, só o arquivo mais recente de cada). */
+const SUGGESTED_CATEGORIES = new Set(['receipt', 'darf', 'irpf_receipt', 'irpf_declaration']);
+const LATEST_ONLY = new Set(['irpf_receipt', 'irpf_declaration']);
+
+/**
+ * Arquivos que o usuário pode anexar ao kit desta declaração: os documentos do cliente no
+ * exercício (menos os do copiloto), as guias DARF das quotas e o pacote de conferência da
+ * elaboração. Cada grupo só aparece para quem pode abrir esses arquivos nas telas de origem
+ * (as mesmas regras do download, `assertCanDownloadFile`).
+ */
+export async function listKitAttachments(ctx: AppContext, user: AuthUser, declaration: DeclarationRow): Promise<KitAttachmentOption[]> {
+  const { db } = ctx;
+  const officeId = declaration.officeId;
+  // um arquivo por grupo basta: a permissão é a do tipo de registro e o cliente é o mesmo
+  const allowed = async (fileId: string | undefined) => {
+    if (!fileId) return false;
+    try {
+      await assertCanDownloadFile(ctx, user, fileId);
+      return true;
+    } catch (err) {
+      if (err instanceof HttpError && err.statusCode < 500) return false;
+      throw err;
+    }
+  };
+  const out: KitAttachmentOption[] = [];
+
+  const docs = await db
+    .select({ fileId: files.id, filename: files.filename, size: files.size, mimeType: files.mimeType, category: documents.category })
+    .from(documents)
+    .innerJoin(files, and(eq(files.id, documents.fileId), eq(files.officeId, officeId)))
+    .where(and(eq(documents.officeId, officeId), eq(documents.declarationId, declaration.id), ne(documents.category, 'copilot')))
+    .orderBy(desc(documents.createdAt));
+  if (await allowed(docs[0]?.fileId)) {
+    const seen = new Set<string>();
+    for (const d of docs) {
+      const repeated = seen.has(d.category);
+      seen.add(d.category);
+      out.push({
+        fileId: d.fileId,
+        source: 'document',
+        label: documentCategoryLabel(d.category),
+        filename: d.filename,
+        size: d.size,
+        mimeType: d.mimeType,
+        suggested: SUGGESTED_CATEGORIES.has(d.category) && !(LATEST_ONLY.has(d.category) && repeated),
+      });
+    }
+  }
+
+  const quotas = (await loadDarfs(ctx, declaration)).filter((d) => d.fileId);
+  const quotaFiles = quotas.length
+    ? await db
+        .select({ id: files.id, filename: files.filename, size: files.size, mimeType: files.mimeType })
+        .from(files)
+        .where(and(eq(files.officeId, officeId), inArray(files.id, quotas.map((d) => d.fileId!))))
+    : [];
+  if (await allowed(quotaFiles[0]?.id)) {
+    for (const d of quotas) {
+      const f = quotaFiles.find((x) => x.id === d.fileId);
+      if (!f) continue;
+      const paid = Boolean(d.paidAt) || d.status === 'paid';
+      const quota = d.quotaNumber === 1 && quotas.length === 1 ? 'quota única' : `${d.quotaNumber}ª quota`;
+      out.push({
+        fileId: f.id,
+        source: 'darf',
+        label: `DARF · ${quota} · ${paid ? 'paga' : `vence em ${formatDate(d.dueDate)}`}`,
+        filename: f.filename,
+        size: f.size,
+        mimeType: f.mimeType,
+        // guia já paga não vai marcada: o cliente poderia pagar de novo
+        suggested: !paid,
+      });
+    }
+  }
+
+  if (declaration.exportedFileId && (await allowed(declaration.exportedFileId))) {
+    const [f] = await db
+      .select({ id: files.id, filename: files.filename, size: files.size, mimeType: files.mimeType })
+      .from(files)
+      .where(and(eq(files.officeId, officeId), eq(files.id, declaration.exportedFileId)));
+    // pacote de trabalho do escritório (linhas e todos os documentos): só vai se for escolhido
+    if (f) out.push({ fileId: f.id, source: 'export', label: 'Pacote de conferência da elaboração (.zip)', filename: f.filename, size: f.size, mimeType: f.mimeType, suggested: false });
+  }
+
+  const unique = new Set<string>();
+  return out.filter((o) => !unique.has(o.fileId) && unique.add(o.fileId));
+}
+
+/** Recusa a escolha que não cabe no e-mail: resumo do kit mais anexos acima de {@link KIT_ATTACHMENTS_MAX_BYTES}. */
+export function assertKitSize(attachmentBytes: number, kitBytes = 0) {
+  if (attachmentBytes + kitBytes <= KIT_ATTACHMENTS_MAX_BYTES) return;
+  const limit = formatFileSize(KIT_ATTACHMENTS_MAX_BYTES);
+  throw badRequest(
+    kitBytes
+      ? `O resumo do kit (${formatFileSize(kitBytes)}) e os anexos escolhidos (${formatFileSize(attachmentBytes)}) passam do limite de ${limit} do e-mail. Desmarque algum anexo.`
+      : `Os anexos escolhidos somam ${formatFileSize(attachmentBytes)} e passam do limite de ${limit} do e-mail. Desmarque algum anexo.`,
+  );
+}
+
+/** Nomes dos anexos sem repetição no mesmo e-mail ("darf.pdf", "darf (2).pdf"). */
+export function uniqueFilenames(names: string[]): string[] {
+  const used = new Set<string>();
+  return names.map((name) => {
+    let out = name;
+    for (let n = 2; used.has(out.toLowerCase()); n++) out = name.replace(/(\.[^.]*)?$/, (ext) => ` (${n})${ext}`);
+    used.add(out.toLowerCase());
+    return out;
+  });
 }

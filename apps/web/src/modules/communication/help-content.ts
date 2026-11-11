@@ -43,7 +43,9 @@ export const HELP_SECTIONS: HelpSection[] = [
         q: 'O Verifco lê os arquivos do programa IRPF?',
         a: 'Não. Os arquivos .DEC, .REC e .DBK enviados pelo sincronizador ficam guardados nos documentos do cliente, e o recibo (.REC) marca a declaração como transmitida. Nada é lido de dentro deles: as linhas da declaração são cadastradas na etapa Declaração ou validadas em Elaboração.',
       },
-      { q: 'O que é o kit pós-declaração?', a: 'Um PDF para o cliente com o resumo da declaração transmitida, as quotas do DARF ou a restituição, a evolução do patrimônio e lembretes para o próximo ano. Baixe na etapa Relatórios ou envie em lote pela mala direta.' },
+      { q: 'O que é o kit pós-declaração?', a: 'Um PDF para o cliente com o resumo da declaração transmitida, as quotas do DARF ou a restituição, a evolução do patrimônio e lembretes para o próximo ano. Baixe na etapa Relatórios ou envie dali ao cliente: no envio por e-mail você escolhe documentos da declaração para irem anexados (recibo de entrega, cópia da declaração, guias DARF em aberto), até 20 MB no total. Pela mala direta o kit vai em lote, só com o resumo.' },
+      { q: 'Existe relatório de pensão alimentícia?', a: 'Sim, na etapa Relatórios do cliente: por alimentando, a pensão paga no ano, a parte dedutível e as despesas médicas e de instrução pagas por decisão judicial, com o lembrete das regras. Ele sai das linhas de pensão lançadas na declaração.' },
+      { q: 'Posso colar um template de outro sistema?', a: 'Pode. Além das variáveis do Verifco, o texto aceita {{CUSTOMER_NAME}} e {{Cliente}} (nome do cliente) e {{FORMULARY_URL}} (link), e o nome de qualquer variável em minúsculas ou com acento. Uma variável que o Verifco não conhece aparece destacada ao salvar, em vez de ir vazia para o cliente.' },
     ],
   },
   {

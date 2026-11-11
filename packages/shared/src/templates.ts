@@ -4,6 +4,10 @@
  * Os textos padrão são próprios do Verifco. As variáveis seguem a convenção
  * `{{NOME}}`; cada template declara as que aceita, e `renderTemplate` só substitui
  * as conhecidas (o restante fica visível para o usuário perceber o erro).
+ *
+ * Tags coladas de outros sistemas valem como apelidos das do Verifco
+ * ({@link TEMPLATE_TAG_ALIASES}); as demais continuam desconhecidas e são apontadas por
+ * `unknownVariables`.
  */
 import { escapeHtml } from './html';
 
@@ -95,7 +99,7 @@ export const TEMPLATES: TemplateDef[] = [
   {
     key: 'budget',
     name: 'Orçamento',
-    description: 'Proposta de honorários sem link de aprovação. Os envios do sistema (etapa Orçamento e mala direta) usam o “Orçamento (digital)”, com o link.',
+    description: 'Cópia da proposta de honorários, sem link de aprovação: vai quando o escritório envia ao cliente um orçamento já aprovado. O envio para aprovação (etapa Orçamento e mala direta) usa o “Orçamento (digital)”, com o link.',
     variables: [CLIENTE, ESCRITORIO, CONTADOR, ANO, v('CATEGORIA', 'Categoria do serviço'), v('DESCRICAO', 'Descrição do orçamento'), v('VALOR', 'Valor total')],
     defaultSubject: 'Proposta de serviço — {{CATEGORIA}} {{ANO_EXERCICIO}}',
     defaultBody: wrap('<p>Segue nossa proposta para <strong>{{CATEGORIA}}</strong> ({{ANO_EXERCICIO}}):</p><p>{{DESCRICAO}}</p><p>Valor: <strong>{{VALOR}}</strong></p>'),
@@ -194,8 +198,37 @@ export function getTemplateDef(key: string): TemplateDef | undefined {
 }
 
 /**
+ * Apelidos de tags: nomes que os escritórios trazem de modelos de outros sistemas e a variável
+ * do Verifco equivalente. A chave vem normalizada (maiúsculas, sem acentos). Além destes, o nome
+ * de qualquer variável do Verifco vale em qualquer caixa e com acento (`{{Cliente}}`,
+ * `{{Escritório}}`).
+ */
+export const TEMPLATE_TAG_ALIASES: Record<string, string> = {
+  CUSTOMER_NAME: 'CLIENTE',
+  FORMULARY_URL: 'LINK',
+};
+
+/** Uma tag `{{...}}`: letras (com acento), números e sublinhado, com espaços opcionais em volta. */
+const TAG = /\{\{\s*([\p{L}\p{N}_]+)\s*\}\}/gu;
+
+/**
+ * Nome da variável do Verifco para uma tag como foi escrita: tira os acentos, passa para
+ * maiúsculas e troca o apelido pelo nome oficial. Não diz se a variável existe: quem decide é o
+ * template (`unknownVariables`) e os valores do envio (`renderTemplate`).
+ */
+export function resolveTemplateTag(name: string): string {
+  const key = name
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase();
+  return Object.hasOwn(TEMPLATE_TAG_ALIASES, key) ? TEMPLATE_TAG_ALIASES[key] : key;
+}
+
+/**
  * Substitui `{{VAR}}` pelos valores informados. Valores são escapados para HTML,
  * exceto os listados em `rawHtml` (ex.: PENDENCIAS, que já é uma lista montada pelo sistema).
+ * Apelidos ({@link TEMPLATE_TAG_ALIASES}) e nomes fora da caixa alta são trocados pela variável
+ * equivalente; tag que não corresponde a nenhum valor fica como foi escrita.
  */
 export function renderTemplate(
   text: string,
@@ -203,17 +236,22 @@ export function renderTemplate(
   opts: { html?: boolean; rawHtml?: string[] } = {},
 ): string {
   const { html = true, rawHtml = [] } = opts;
-  return text.replace(/\{\{\s*([A-Z0-9_]+)\s*\}\}/g, (match, name: string) => {
-    if (!(name in values)) return match;
+  return text.replace(TAG, (match, written: string) => {
+    // só valores informados: `{{constructor}}` não pode cair nas propriedades herdadas do objeto
+    const name = Object.hasOwn(values, written) ? written : resolveTemplateTag(written);
+    if (!Object.hasOwn(values, name)) return match;
     const raw = values[name];
     const str = raw === null || raw === undefined ? '' : String(raw);
     return html && !rawHtml.includes(name) ? escapeHtml(str) : str;
   });
 }
 
-/** Lista as variáveis usadas num texto que não pertencem ao template. */
+/**
+ * Lista as tags usadas num texto que não pertencem ao template, como foram escritas (um apelido
+ * de variável que o template não tem também entra: `{{FORMULARY_URL}}` num modelo sem link).
+ */
 export function unknownVariables(text: string, def: TemplateDef): string[] {
   const allowed = new Set(def.variables.map((x) => x.name));
-  const found = [...text.matchAll(/\{\{\s*([A-Z0-9_]+)\s*\}\}/g)].map((m) => m[1]);
-  return [...new Set(found.filter((n) => !allowed.has(n)))];
+  const found = [...text.matchAll(TAG)].map((m) => m[1]);
+  return [...new Set(found.filter((n) => !allowed.has(n) && !allowed.has(resolveTemplateTag(n))))];
 }

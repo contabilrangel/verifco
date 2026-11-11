@@ -1,14 +1,17 @@
 import {
   ASSET_GROUPS,
+  DEPENDENT_RELATIONSHIPS,
   INCOME_NATURES,
   ITEM_KINDS,
   PAYMENT_NATURES,
   TAXATION_TYPES,
+  alimonySummary,
   cashAnalysis,
   compareTaxation,
   dependentName,
   fineMeshCheck,
   formatCpfCnpj,
+  formatMoney,
   getIndividualReport,
   netPayment,
   paymentNature,
@@ -411,6 +414,105 @@ function assetsSection(p: PersonContext, title: string): Section {
   };
 }
 
+/** Regras lembradas no relatório de pensão alimentícia (com ou sem linhas de pensão). */
+const alimonyRules = (educationCapCents: number): string[] => [
+  'É dedutível a pensão paga por decisão judicial, acordo homologado em juízo ou escritura pública (Lei 9.250/1995, art. 8º, II, “f”). O que é pago por acordo informal não é dedutível.',
+  `Despesas médicas e de instrução do alimentando só são dedutíveis quando pagas por determinação da decisão judicial ou do acordo homologado (Lei 9.250/1995, art. 8º, § 3º); a instrução segue o limite anual de ${formatMoney(educationCapCents)} por pessoa.`,
+  'O alimentando não pode ser dependente na mesma declaração.',
+  'A pensão alimentícia recebida é isenta do imposto de renda desde a decisão do STF na ADI 5422: quem recebe informa o valor em Rendimentos isentos e não tributáveis.',
+];
+
+const ALIMONY_LINE_NATURE = { alimony: 'Pensão alimentícia', health: 'Despesa médica', education: 'Instrução' } as const;
+
+/**
+ * Pensão alimentícia paga no ano, por alimentando (`alimonySummary`, as mesmas deduções do
+ * planejamento tributário). Sem linhas de pensão, o relatório diz isso e mantém o lembrete das regras.
+ */
+function alimonySection(p: PersonContext, title: string): Section {
+  const a = alimonySummary(p.items, p.declaration.exerciseYear);
+  const rules: Block = { type: 'bullets', title: 'Regras da pensão alimentícia', items: alimonyRules(a.educationCapCents) };
+  if (!a.recipients.length) {
+    return {
+      key: 'alimony',
+      title,
+      subtitle: personSubtitle(p),
+      blocks: [
+        { type: 'text', text: 'Esta declaração não tem pensão alimentícia paga: nenhuma linha da ficha Pagamentos está com a natureza “Pensão alimentícia”.' },
+        rules,
+      ],
+    };
+  }
+  const who = (name: string) => name || 'Alimentando não identificado';
+  const relationship = (r: string | null) => (r ? ((DEPENDENT_RELATIONSHIPS as Record<string, string>)[r] ?? r) : null);
+  const kind = (g: (typeof a.recipients)[number]) => [relationship(g.relationship), g.codes.length ? `Cód. ${g.codes.join(', ')}` : null].filter(Boolean).join(' · ') || '—';
+  const lineLabel = (l: (typeof a.recipients)[number]['lines'][number]) =>
+    [ALIMONY_LINE_NATURE[l.nature], l.code ? `cód. ${l.code}` : null, l.description, l.payeeName ? `pago a ${l.payeeName}` : null].filter(Boolean).join(' · ');
+  const notes: string[] = [];
+  for (const g of a.recipients) {
+    if (g.alsoDependent) notes.push(`${who(g.name)} consta como alimentando e também na ficha de dependentes desta declaração. Revise antes de transmitir.`);
+    if (!g.cpf) notes.push(`${who(g.name)} está sem CPF nas linhas de pensão. Informe o CPF do alimentando.`);
+    if (g.educationPaidCents > g.educationCents) notes.push(`Instrução de ${who(g.name)}: ${formatMoney(g.educationPaidCents - g.educationCents)} acima do limite anual de ${formatMoney(a.educationCapCents)} por pessoa não são dedutíveis.`);
+  }
+  if (taxationOf(p.declaration) === 'simplified') notes.push('Esta declaração está na tributação simplificada: o desconto padrão substitui as deduções, inclusive a pensão alimentícia.');
+  const blocks: Block[] = [
+    {
+      type: 'stats',
+      items: [
+        { label: 'Pensão paga no ano', value: m(a.alimonyPaidCents) },
+        { label: 'Total dedutível', value: m(a.totalDeductibleCents), tone: 'positive' },
+        { label: 'Pensão não dedutível', value: m(a.alimonyNonDeductibleCents), tone: a.alimonyNonDeductibleCents > 0 ? 'negative' : 'neutral' },
+      ],
+    },
+    {
+      type: 'table',
+      title: 'Pensão paga por alimentando',
+      columns: [
+        { label: 'Alimentando', width: 2.4 },
+        { label: 'CPF', width: 1.5 },
+        { label: 'Parentesco / tipo', width: 1.5 },
+        { label: 'Pago no ano', width: 1.3, align: 'right' },
+        { label: 'Dedutível', width: 1.3, align: 'right' },
+        { label: 'Não dedutível', width: 1.3, align: 'right' },
+      ],
+      rows: a.recipients.map((g) => [who(g.name), g.cpf ? formatCpfCnpj(g.cpf) : '—', kind(g), m(g.alimonyPaidCents), m(g.alimonyDeductibleCents), m(g.alimonyNonDeductibleCents)]),
+      totals: ['Total', '', '', m(a.alimonyPaidCents), m(a.alimonyDeductibleCents), m(a.alimonyNonDeductibleCents)],
+    },
+    {
+      type: 'table',
+      title: 'Total dedutível por alimentando',
+      columns: [
+        { label: 'Alimentando', width: 2.6 },
+        { label: 'Pensão', width: 1.3, align: 'right' },
+        { label: 'Despesas médicas', width: 1.3, align: 'right' },
+        { label: 'Instrução', width: 1.3, align: 'right' },
+        { label: 'Total dedutível', width: 1.4, align: 'right' },
+      ],
+      rows: a.recipients.map((g) => [who(g.name), m(g.alimonyDeductibleCents), m(g.healthCents), m(g.educationCents), m(g.totalDeductibleCents)]),
+      totals: ['Total', m(a.alimonyDeductibleCents), m(a.healthCents), m(a.educationCents), m(a.totalDeductibleCents)],
+    },
+    {
+      type: 'table',
+      title: 'Linhas lançadas',
+      columns: [
+        { label: 'Alimentando', width: 1.8 },
+        { label: 'Lançamento', width: 3.2 },
+        { label: 'Pago', width: 1.3, align: 'right' },
+        { label: 'Não dedutível', width: 1.3, align: 'right' },
+        { label: 'Líquido', width: 1.3, align: 'right' },
+      ],
+      rows: a.recipients.flatMap((g) => g.lines.map((l): Cell[] => [who(g.name), lineLabel(l), m(l.paidCents), m(l.nonDeductibleCents), m(l.netCents)])),
+    },
+    ...notes.map((text): Block => ({ type: 'text', text })),
+    {
+      type: 'text',
+      text: 'A parte não dedutível vem do campo “Parcela não dedutível / reembolsada” de cada linha de pensão (ficha Pagamentos). Despesas médicas e de instrução entram quando a linha indica o alimentando no campo “Paciente, aluno ou alimentando”.',
+      muted: true,
+    },
+    rules,
+  ];
+  return { key: 'alimony', title, subtitle: personSubtitle(p), blocks };
+}
+
 /** Nomes curtos das abas do Excel (limite de 31 caracteres). */
 const SHEET: Record<IndividualReportKey, string> = {
   cash_analysis: 'Análise de caixa',
@@ -420,6 +522,7 @@ const SHEET: Record<IndividualReportKey, string> = {
   fine_mesh: 'Malha fina',
   tax_planning: 'Planejamento',
   assets: 'Bens e direitos',
+  alimony: 'Pensão alimentícia',
 };
 
 function buildOne(key: IndividualReportKey, p: PersonContext, settings: Required<OfficeSettings>, spouse = false): Section {
@@ -440,6 +543,8 @@ function buildOne(key: IndividualReportKey, p: PersonContext, settings: Required
         return taxPlanningSection(p, title);
       case 'assets':
         return assetsSection(p, title);
+      case 'alimony':
+        return alimonySection(p, title);
     }
   })();
   return { ...section, sheet: spouse ? `${SHEET[key]} (cônjuge)` : getIndividualReport(key)!.label };

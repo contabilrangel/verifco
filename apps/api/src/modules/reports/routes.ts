@@ -7,8 +7,10 @@ import {
   INDIVIDUAL_REPORTS,
   INDIVIDUAL_REPORT_KEYS,
   ITEM_KINDS,
+  KIT_ATTACHMENTS_MAX_BYTES,
   formatCpfCnpj,
   getIndividualReport,
+  getMailingType,
   todayIso,
   type DeclarationSubstatus,
   type IndividualReportKey,
@@ -25,7 +27,7 @@ import { buildWorkbook } from '../../services/xlsx';
 import { findSpouse, getDeclarationForUser, loadHistory, loadItems, officeSettings } from './data';
 import { finishPdf, renderPdf, renderXlsx } from './document';
 import { buildIndividualSections, personSubtitle, type PersonContext } from './individual';
-import { buildKitPdf, slug } from './kit';
+import { assertKitSize, buildKitPdf, listKitAttachments, slug, uniqueFilenames } from './kit';
 
 const INDIVIDUAL_PERMS = INDIVIDUAL_REPORTS.map((r) => r.permission);
 const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -207,6 +209,90 @@ export async function reportRoutes(app: FastifyInstance) {
     const { declaration, customer } = await getDeclarationForUser(ctx, user, id);
     const kit = await buildKitPdf(ctx, declaration, customer);
     return sendFile(reply, kit.buffer, kit.filename, 'application/pdf');
+  });
+
+  /** Documentos da declaração que podem ir anexados no e-mail do kit, com os sugeridos já marcados. */
+  app.get('/declarations/:id/kit/attachments', { preHandler: guard('post_declaration.send_kit') }, async (req) => {
+    const user = requireUser(req);
+    const { id } = parse(uuidParam, req.params);
+    const { declaration } = await getDeclarationForUser(ctx, user, id);
+    return { options: await listKitAttachments(ctx, user, declaration), maxBytes: KIT_ATTACHMENTS_MAX_BYTES };
+  });
+
+  /**
+   * Envia o kit a um cliente: o resumo em PDF e, no e-mail, os documentos da declaração escolhidos
+   * (cópias gravadas com o envio: o registro da entrega mostra o que foi anexado mesmo que o
+   * original seja trocado depois). No WhatsApp vai só o resumo. O envio em lote continua na mala direta.
+   */
+  app.post('/declarations/:id/kit/send', { preHandler: guard('post_declaration.send_kit') }, async (req) => {
+    const user = requireUser(req);
+    const { id } = parse(uuidParam, req.params);
+    const body = parse(
+      z.object({
+        channels: z.array(z.enum(['email', 'whatsapp'])).min(1, 'Escolha ao menos um canal.'),
+        attachmentIds: z.array(z.uuid()).max(100).default([]),
+        requestId: z.uuid(),
+      }),
+      req.body,
+    );
+    const { declaration, customer } = await getDeclarationForUser(ctx, user, id);
+    if (!['transmitted', 'finished'].includes(declaration.stage)) throw badRequest('O kit é enviado depois da transmissão da declaração.');
+    const channels = [...new Set(body.channels)];
+    const skipped: { channel: string; reason: string }[] = [];
+    const ready = channels.filter((ch) => {
+      const ok = ch === 'email' ? Boolean(customer.email) : Boolean(customer.mobile);
+      if (!ok) skipped.push({ channel: ch, reason: ch === 'email' ? 'O cliente não tem e-mail cadastrado.' : 'O cliente não tem celular cadastrado.' });
+      return ok;
+    });
+    if (!ready.length) throw badRequest(skipped.map((s) => s.reason).join(' '));
+    const ids = [...new Set(body.attachmentIds)];
+    if (ids.length && !ready.includes('email')) throw badRequest('Os documentos anexos vão só no e-mail do kit. Inclua o envio por e-mail ou desmarque os anexos.');
+    // só o que pertence a esta declaração e o usuário pode abrir; nunca um arquivo qualquer do escritório
+    const options = ids.length ? await listKitAttachments(ctx, user, declaration) : [];
+    const chosen = ids.map((fileId) => options.find((o) => o.fileId === fileId));
+    if (chosen.some((o) => !o)) throw badRequest('Um dos anexos escolhidos não pertence a esta declaração ou não está mais disponível. Atualize a tela e escolha de novo.');
+    const extras = chosen.map((o) => o!);
+    const extraBytes = extras.reduce((a, o) => a + o.size, 0);
+    assertKitSize(extraBytes);
+
+    const keyOf = (ch: string) => `kit:${declaration.id}:${body.requestId}:${ch}`;
+    // repetição da mesma operação: devolve o que já foi enfileirado sem gerar de novo
+    const existing = await Promise.all(ready.map((ch) => db.query.deliveries.findFirst({ where: (d, { and: a, eq: e }) => a(e(d.officeId, user.officeId), e(d.idempotencyKey, keyOf(ch))) })));
+    let queued = 0;
+    let attached: { filename: string; label: string; size: number }[] = [];
+    if (existing.some((e) => !e)) {
+      const kit = await buildKitPdf(ctx, declaration, customer);
+      assertKitSize(extraBytes, kit.buffer.length);
+      const kitFile = await ctx.files.save({ officeId: user.officeId, data: kit.buffer, filename: kit.filename, mimeType: 'application/pdf', userId: user.userId });
+      const summary = { fileId: kitFile.id, filename: kit.filename };
+      const copies: { fileId: string; filename: string }[] = [];
+      if (extras.length && !existing[ready.indexOf('email')]) {
+        const names = uniqueFilenames([kit.filename, ...extras.map((o) => o.filename)]).slice(1);
+        for (const [i, o] of extras.entries()) {
+          const original = await ctx.files.get(user.officeId, o.fileId);
+          const copy = await ctx.files.save({ officeId: user.officeId, data: original.data, filename: names[i], mimeType: o.mimeType, userId: user.userId });
+          copies.push({ fileId: copy.id, filename: names[i] });
+        }
+        attached = extras.map((o, i) => ({ filename: names[i], label: o.label, size: o.size }));
+      }
+      for (const [i, ch] of ready.entries()) {
+        if (existing[i]) continue;
+        await queueDelivery(ctx, {
+          officeId: user.officeId,
+          customerId: customer.id,
+          channel: ch,
+          templateKey: getMailingType('kit')!.templateKey,
+          exerciseYear: declaration.exerciseYear,
+          attachments: ch === 'email' ? [summary, ...copies] : [summary],
+          idempotencyKey: keyOf(ch),
+          userId: user.userId,
+        });
+        queued++;
+      }
+    }
+    // na auditoria, só a origem e o tamanho: os nomes dos arquivos (que podem trazer nome e CPF) ficam no registro da entrega
+    await audit(req, 'send_kit', 'declaration', id, { channels: ready, attachments: extras.map((o) => ({ source: o.source, size: o.size })) });
+    return { queued, alreadyQueued: existing.filter(Boolean).length, skipped, attachments: attached };
   });
 
   // ----------------------------------------------------------- relatórios gerais

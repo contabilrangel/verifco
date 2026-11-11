@@ -20,6 +20,7 @@ import {
   applyStatus,
   approveBudget,
   assertContacts,
+  budgetDigitalValues,
   getBudgetForUser,
   getInstallmentForUser,
   issueApprovalLink,
@@ -197,12 +198,37 @@ export async function budgetRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
-  /** Envia a proposta com o link de aprovação. Um novo envio invalida o link anterior. */
+  /**
+   * Envia a proposta com o link de aprovação (template `budget_digital`). Um novo envio invalida o
+   * link anterior. Orçamento já aprovado não tem o que aprovar: o cliente recebe a cópia da
+   * proposta, sem link (template `budget`), e o orçamento não muda; `requestId` evita o envio em
+   * dobro quando a mesma operação é repetida.
+   */
   app.post('/finance/budgets/:id/send', { preHandler: guard('budget.send') }, async (req) => {
     const user = requireUser(req);
     const { id } = parse(uuidParam, req.params);
-    const body = parse(z.object({ channels: z.array(channelSchema).min(1, 'Escolha ao menos um canal') }), req.body);
+    const body = parse(z.object({ channels: z.array(channelSchema).min(1, 'Escolha ao menos um canal'), requestId: z.uuid().optional() }), req.body);
     const row = await getBudgetForUser(ctx, user, id);
+    if (row.status === 'approved') {
+      const channels = [...new Set(body.channels)];
+      assertContacts(await getCustomerForUser(ctx, user, row.customerId), channels);
+      const { LINK: _noLink, ...values } = budgetDigitalValues(row, '');
+      const requestId = body.requestId ?? randomUUID();
+      for (const channel of channels) {
+        await queueDelivery(ctx, {
+          officeId: row.officeId,
+          customerId: row.customerId,
+          channel,
+          templateKey: 'budget',
+          values,
+          exerciseYear: row.exerciseYear,
+          idempotencyKey: `budget:${row.id}:${channel}:copy:${requestId}`,
+          userId: user.userId,
+        });
+      }
+      await audit(req, 'send', 'budget', row.id, { channels, copy: true });
+      return { ...(await serializeBudget(ctx, row)), link: null };
+    }
     const sent = await sendBudget(ctx, row, [...new Set(body.channels)], user.userId);
     await audit(req, 'send', 'budget', row.id, { channels: body.channels });
     return { ...(await serializeBudget(ctx, sent.budget)), link: sent.link };

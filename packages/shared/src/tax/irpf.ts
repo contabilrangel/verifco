@@ -312,3 +312,198 @@ export function compareTaxation(input: TaxComparisonInput): TaxComparison {
     warnings,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Pensão alimentícia paga (relatório individual)
+// ---------------------------------------------------------------------------
+export interface AlimonyLine {
+  /** Natureza do pagamento: a pensão ou uma despesa do alimentando. */
+  nature: 'alimony' | 'health' | 'education';
+  /** Código da ficha Pagamentos, como lançado (o sistema não presume a tabela de códigos). */
+  code: string | null;
+  description: string | null;
+  /** Quem recebeu o pagamento (pode ser o representante do alimentando, a clínica, a escola). */
+  payeeName: string | null;
+  payeeDoc: string | null;
+  paidCents: number;
+  /** Parcela não dedutível ou reembolsada informada na linha. */
+  nonDeductibleCents: number;
+  /** Valor líquido da linha (antes do limite anual de instrução). */
+  netCents: number;
+}
+
+export interface AlimonyRecipient {
+  name: string;
+  /** CPF do alimentando (só dígitos); vazio quando nenhuma linha traz. */
+  cpf: string;
+  /** Parentesco informado na linha da pensão (`extra.relationship`) ou na ficha de dependentes. */
+  relationship: string | null;
+  /** Códigos das linhas de pensão deste alimentando, sem repetição. */
+  codes: string[];
+  alimonyPaidCents: number;
+  /** Pensão dedutível: o valor líquido, como nas deduções legais (`legalDeductions`). */
+  alimonyDeductibleCents: number;
+  alimonyNonDeductibleCents: number;
+  healthCents: number;
+  educationPaidCents: number;
+  /** Instrução depois do limite anual por pessoa. */
+  educationCents: number;
+  totalDeductibleCents: number;
+  /** O alimentando também está na ficha de dependentes desta declaração. */
+  alsoDependent: boolean;
+  lines: AlimonyLine[];
+}
+
+export interface AlimonySummary {
+  recipients: AlimonyRecipient[];
+  alimonyPaidCents: number;
+  alimonyDeductibleCents: number;
+  alimonyNonDeductibleCents: number;
+  healthCents: number;
+  educationPaidCents: number;
+  educationCents: number;
+  totalDeductibleCents: number;
+  /** Limite anual de instrução por pessoa do exercício. */
+  educationCapCents: number;
+}
+
+const personKey = (name: string) =>
+  name
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+const cpfOf = (v: unknown) => {
+  const d = String(v ?? '').replace(/\D+/g, '');
+  return d.length === 11 ? d : '';
+};
+
+/** Pessoa a quem a linha se refere (paciente, aluno ou alimentando), quando informada. */
+function paymentOwner(p: DeclarationItem): { name: string; cpf: string } | null {
+  const name = String(p.ownerName ?? '').trim();
+  const cpf = cpfOf((typeof p.extra?.beneficiaryCpf === 'string' && p.extra.beneficiaryCpf) || p.ownerCpf);
+  return name || cpf ? { name, cpf } : null;
+}
+
+/**
+ * Pensão alimentícia paga no ano, por alimentando, a partir das linhas de Pagamentos.
+ *
+ * Segue as deduções legais já usadas no planejamento (`legalDeductions`), sem regra nova:
+ * - a pensão (natureza `alimony`) é dedutível pelo valor líquido da linha; a parte não dedutível
+ *   (ex.: paga por acordo informal) é a "Parcela não dedutível / reembolsada" (`extra.reimbursedCents`);
+ * - despesas médicas e de instrução entram quando a linha indica um alimentando (campo "Paciente,
+ *   aluno ou alimentando" ou o CPF dele); a instrução respeita o limite anual por pessoa da tabela
+ *   do exercício (`irpf-annual.ts`).
+ *
+ * O alimentando é a pessoa indicada na linha da pensão; sem ela, quem recebeu o pagamento.
+ * Linhas da mesma pessoa se juntam pelo CPF ou, sem CPF, pelo nome.
+ */
+export function alimonySummary(items: DeclarationItem[], exercise: number): AlimonySummary {
+  const table = annualIrpfTable(exercise);
+  const payments = items.filter((i) => i.kind === 'payment');
+  const alimony = payments.filter((p) => paymentNature(p) === 'alimony');
+
+  const recipientOf = (p: DeclarationItem) => {
+    const owner = paymentOwner(p);
+    const payee = { name: String(p.counterpartyName ?? '').trim(), cpf: cpfOf(p.counterpartyDoc) };
+    if (!owner) return payee;
+    // alimentando informado só pelo nome e igual a quem recebeu: o CPF é o da contraparte
+    return { name: owner.name || payee.name, cpf: owner.cpf || (payee.name && personKey(payee.name) === personKey(owner.name) ? payee.cpf : '') };
+  };
+
+  // o mesmo alimentando pode vir com CPF numa linha e só com o nome em outra
+  const cpfByName = new Map<string, string>();
+  for (const p of alimony) {
+    const r = recipientOf(p);
+    if (r.cpf && r.name && !cpfByName.has(personKey(r.name))) cpfByName.set(personKey(r.name), r.cpf);
+  }
+  const keyOf = (person: { name: string; cpf: string }) => person.cpf || cpfByName.get(personKey(person.name)) || (person.name ? `nome:${personKey(person.name)}` : 'sem-identificacao');
+
+  const dependents = items.filter((i) => i.kind === 'dependent');
+  const groups = new Map<string, AlimonyRecipient>();
+  const line = (p: DeclarationItem, nature: AlimonyLine['nature']): AlimonyLine => {
+    const paid = p.valueCents ?? 0;
+    const net = netPayment(p);
+    return {
+      nature,
+      code: p.code ? String(p.code) : null,
+      description: p.description ?? null,
+      payeeName: p.counterpartyName ?? null,
+      payeeDoc: p.counterpartyDoc ?? null,
+      paidCents: paid,
+      nonDeductibleCents: Math.max(0, paid - net),
+      netCents: net,
+    };
+  };
+
+  for (const p of alimony) {
+    const person = recipientOf(p);
+    const key = keyOf(person);
+    const g =
+      groups.get(key) ??
+      ({
+        name: person.name,
+        cpf: person.cpf || cpfByName.get(personKey(person.name)) || '',
+        relationship: null,
+        codes: [],
+        alimonyPaidCents: 0,
+        alimonyDeductibleCents: 0,
+        alimonyNonDeductibleCents: 0,
+        healthCents: 0,
+        educationPaidCents: 0,
+        educationCents: 0,
+        totalDeductibleCents: 0,
+        alsoDependent: false,
+        lines: [],
+      } satisfies AlimonyRecipient);
+    const l = line(p, 'alimony');
+    if (!g.name && person.name) g.name = person.name;
+    if (!g.relationship && typeof p.extra?.relationship === 'string' && p.extra.relationship) g.relationship = p.extra.relationship;
+    if (l.code && !g.codes.includes(l.code)) g.codes.push(l.code);
+    g.alimonyPaidCents += l.paidCents;
+    g.alimonyDeductibleCents += l.netCents;
+    g.alimonyNonDeductibleCents += l.nonDeductibleCents;
+    g.lines.push(l);
+    groups.set(key, g);
+  }
+
+  // despesas médicas e de instrução lançadas em nome de um alimentando
+  for (const p of payments) {
+    const nature = paymentNature(p);
+    if (nature !== 'health' && nature !== 'education') continue;
+    const owner = paymentOwner(p);
+    if (!owner) continue;
+    const g = groups.get(keyOf(owner));
+    if (!g) continue;
+    const l = line(p, nature);
+    if (nature === 'health') g.healthCents += l.netCents;
+    else g.educationPaidCents += l.netCents;
+    g.lines.push(l);
+  }
+
+  const recipients = [...groups.values()];
+  for (const g of recipients) {
+    g.educationCents = Math.min(g.educationPaidCents, table.educationCapCents);
+    g.totalDeductibleCents = g.alimonyDeductibleCents + g.healthCents + g.educationCents;
+    // pelo CPF quando os dois lados têm; senão, pelo nome
+    const dependent = dependents.find((d) => {
+      const cpf = dependentCpf(d);
+      return g.cpf && cpf ? cpf === g.cpf : Boolean(g.name) && personKey(dependentName(d)) === personKey(g.name);
+    });
+    g.alsoDependent = Boolean(dependent);
+    if (!g.relationship && typeof dependent?.extra?.relationship === 'string' && dependent.extra.relationship) g.relationship = dependent.extra.relationship;
+  }
+  const total = (f: (g: AlimonyRecipient) => number) => recipients.reduce((a, g) => a + f(g), 0);
+  return {
+    recipients,
+    alimonyPaidCents: total((g) => g.alimonyPaidCents),
+    alimonyDeductibleCents: total((g) => g.alimonyDeductibleCents),
+    alimonyNonDeductibleCents: total((g) => g.alimonyNonDeductibleCents),
+    healthCents: total((g) => g.healthCents),
+    educationPaidCents: total((g) => g.educationPaidCents),
+    educationCents: total((g) => g.educationCents),
+    totalDeductibleCents: total((g) => g.totalDeductibleCents),
+    educationCapCents: table.educationCapCents,
+  };
+}

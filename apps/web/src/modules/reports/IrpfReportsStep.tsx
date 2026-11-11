@@ -1,14 +1,15 @@
 import { useEffect, useState } from 'react';
-import { Link, useNavigate } from 'react-router';
-import { Download, FileText, Mail, MessageCircle, Package, Save, Send } from 'lucide-react';
-import { INDIVIDUAL_REPORTS, type IndividualReportKey } from '@verifco/shared';
-import { Alert, Button, Card, Checkbox, ConfirmDialog, Loading, MoneyInput, Switch, Tag, useToast } from '../../ds';
+import { Link } from 'react-router';
+import { Download, FileText, Mail, MessageCircle, Save, Send } from 'lucide-react';
+import { INDIVIDUAL_REPORTS, KIT_ATTACHMENTS_MAX_BYTES, formatFileSize, type IndividualReportKey } from '@verifco/shared';
+import { Alert, Button, Card, Checkbox, ConfirmDialog, Loading, Modal, MoneyInput, Switch, Tag, useToast } from '../../ds';
 import { api } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { useAction, useApi } from '../../lib/hooks';
 import { formatMoney, formatPhone, stageTone, substatusLabel } from '../../lib/format';
 import { useYear } from '../../lib/year';
 import { useCustomer } from '../customers/customerContext';
+import './reports.css';
 
 type OtherExpenses = { annualPaymentCents?: number; principalCents?: number; interestCents?: number; creditCardCents?: number; capitalLossCents?: number };
 
@@ -46,7 +47,6 @@ export function IrpfReportsStep() {
 
 function ReportsStepContent({ ctx }: { ctx: ReportsContext }) {
   const { can } = useAuth();
-  const navigate = useNavigate();
   const toast = useToast();
   const d = ctx.declaration;
   const allowed = ctx.reports.filter((r) => r.allowed).map((r) => r.key);
@@ -57,6 +57,7 @@ function ReportsStepContent({ ctx }: { ctx: ReportsContext }) {
   const [sendTo, setSendTo] = useState<null | 'email' | 'whatsapp'>(null);
   const [requestId, setRequestId] = useState('');
   const [busy, setBusy] = useState(false);
+  const [kitOpen, setKitOpen] = useState(false);
   useEffect(() => setExpenses(d.otherExpenses ?? {}), [d.otherExpenses]);
 
   const hasItems = ctx.itemsCount > 0;
@@ -205,14 +206,16 @@ function ReportsStepContent({ ctx }: { ctx: ReportsContext }) {
                   <Tag tone={stageTone(d.stage)}>{substatusLabel(d.substatus)}</Tag>
                   <Tag tone={d.taxDueCents > 0 ? 'danger' : d.refundCents > 0 ? 'success' : 'neutral'}>{result}</Tag>
                 </div>
-                <span className="vf-text-xs vf-muted">Resumo da declaração, quotas do DARF ou restituição, análise de caixa, evolução do patrimônio e lembretes para o próximo ano, em PDF.</span>
+                <span className="vf-text-xs vf-muted">
+                  Resumo da declaração, quotas do DARF ou restituição, análise de caixa, evolução do patrimônio e lembretes para o próximo ano, em PDF. No envio, você escolhe os documentos da declaração que vão anexados no e-mail (recibo de entrega, declaração, guias DARF).
+                </span>
                 {!transmitted && <Alert tone="warning">O kit é enviado depois da transmissão. Você já pode baixar uma prévia.</Alert>}
                 <div className="vf-inline">
                   <Button kind="secondary" icon={<FileText />} onClick={() => void api.open(`/declarations/${d.id}/kit.pdf`).catch((e: Error) => toast.error(e.message))}>
                     Baixar PDF
                   </Button>
                   {ctx.canSendKit && (
-                    <Button icon={<Send />} disabled={!transmitted} onClick={() => navigate(`/comunicacao/mala-direta?tipo=kit&clientes=${ctx.customer.id}`)}>
+                    <Button icon={<Send />} disabled={!transmitted} onClick={() => setKitOpen(true)}>
                       Enviar ao cliente
                     </Button>
                   )}
@@ -235,6 +238,8 @@ function ReportsStepContent({ ctx }: { ctx: ReportsContext }) {
         </div>
       </div>
 
+      {kitOpen && <KitSendModal declarationId={d.id} customer={ctx.customer} onClose={() => setKitOpen(false)} />}
+
       <ConfirmDialog
         open={sendTo !== null}
         title={sendTo === 'whatsapp' ? 'Enviar por WhatsApp' : 'Enviar por e-mail'}
@@ -251,5 +256,113 @@ function ReportsStepContent({ ctx }: { ctx: ReportsContext }) {
         }
       />
     </div>
+  );
+}
+
+interface KitAttachmentOption {
+  fileId: string;
+  source: 'document' | 'darf' | 'export';
+  label: string;
+  filename: string;
+  size: number;
+  suggested: boolean;
+}
+
+/**
+ * Envio do kit a um cliente: canais e documentos da declaração que vão anexados no e-mail, junto
+ * com o resumo em PDF. O recibo, a declaração do programa IRPF e as guias DARF em aberto vêm marcados.
+ */
+export function KitSendModal({ declarationId, customer, onClose }: { declarationId: string; customer: ReportsContext['customer']; onClose: () => void }) {
+  const list = useApi<{ options: KitAttachmentOption[]; maxBytes: number }>(['reports', 'kit-attachments', declarationId], `/declarations/${declarationId}/kit/attachments`);
+  const [email, setEmail] = useState(Boolean(customer.email));
+  const [whatsapp, setWhatsapp] = useState(false);
+  // a escolha começa pelos sugeridos assim que a lista chega; depois é do usuário
+  const [picked, setPicked] = useState<string[] | null>(null);
+  const [requestId] = useState(() => crypto.randomUUID());
+  const options = list.data?.options ?? [];
+  const maxBytes = list.data?.maxBytes ?? KIT_ATTACHMENTS_MAX_BYTES;
+  const selected = picked ?? options.filter((o) => o.suggested).map((o) => o.fileId);
+  const byEmail = email && Boolean(customer.email);
+  const byWhatsapp = whatsapp && Boolean(customer.mobile);
+  const attachmentIds = byEmail ? options.filter((o) => selected.includes(o.fileId)).map((o) => o.fileId) : [];
+  const totalBytes = options.filter((o) => attachmentIds.includes(o.fileId)).reduce((a, o) => a + o.size, 0);
+  const tooBig = totalBytes > maxBytes;
+  const channels = [...(byEmail ? ['email'] : []), ...(byWhatsapp ? ['whatsapp'] : [])];
+  const toggle = (id: string) => setPicked(selected.includes(id) ? selected.filter((x) => x !== id) : [...selected, id]);
+
+  const send = useAction(() => api.post<{ queued: number; alreadyQueued: number }>(`/declarations/${declarationId}/kit/send`, { channels, attachmentIds, requestId }), {
+    success: (r) => (r.queued ? 'Kit enviado para a fila de envio.' : 'Este envio já estava na fila.'),
+    invalidate: [['deliveries']],
+    onSuccess: onClose,
+  });
+
+  return (
+    <Modal
+      open
+      title="Enviar kit pós-declaração"
+      onClose={onClose}
+      width={560}
+      footer={
+        <>
+          <Button kind="secondary" onClick={onClose}>
+            Cancelar
+          </Button>
+          <Button icon={<Send />} disabled={!channels.length || tooBig || list.isLoading} loading={send.isPending} onClick={() => send.mutate(undefined)}>
+            Enviar
+          </Button>
+        </>
+      }
+    >
+      <div className="vf-stack">
+        <span>
+          O resumo do kit em PDF vai para <strong>{customer.name}</strong>, com o template Documento para o cliente.
+        </span>
+        <Checkbox label={customer.email ? `Por e-mail (${customer.email})` : 'Por e-mail (cliente sem e-mail cadastrado)'} checked={byEmail} disabled={!customer.email} onChange={(e) => setEmail(e.target.checked)} />
+        <Checkbox
+          label={customer.mobile ? `Por WhatsApp (${formatPhone(customer.mobile)})` : 'Por WhatsApp (cliente sem celular cadastrado)'}
+          checked={byWhatsapp}
+          disabled={!customer.mobile}
+          onChange={(e) => setWhatsapp(e.target.checked)}
+        />
+        <span className="vf-text-sm-bold">Documentos anexos no e-mail</span>
+        {list.error ? (
+          <Alert tone="danger">{list.error.message || 'Não foi possível listar os documentos da declaração.'}</Alert>
+        ) : list.isLoading ? (
+          <Loading />
+        ) : options.length === 0 ? (
+          <span className="vf-text-xs vf-muted">Esta declaração não tem recibo, declaração, DARF nem outros documentos guardados como arquivo. O kit vai só com o resumo.</span>
+        ) : (
+          <>
+            <div className="vf-rep-attachments" role="group" aria-label="Documentos anexos no e-mail">
+              {options.map((o) => (
+                <Checkbox
+                  key={o.fileId}
+                  checked={byEmail && selected.includes(o.fileId)}
+                  disabled={!byEmail}
+                  onChange={() => toggle(o.fileId)}
+                  label={
+                    <>
+                      {o.label}
+                      <span className="vf-rep-attachments__file">
+                        {o.filename} · {formatFileSize(o.size)}
+                      </span>
+                    </>
+                  }
+                />
+              ))}
+            </div>
+            <span className="vf-text-xs vf-muted">
+              {attachmentIds.length === 0 ? 'Nenhum anexo escolhido' : `${attachmentIds.length} anexo(s) · ${formatFileSize(totalBytes)}`}. Limite de {formatFileSize(maxBytes)} por e-mail, contando o resumo em PDF.
+            </span>
+          </>
+        )}
+        {tooBig && (
+          <Alert tone="danger">
+            Os anexos escolhidos somam {formatFileSize(totalBytes)} e passam do limite de {formatFileSize(maxBytes)} do e-mail. Desmarque algum anexo.
+          </Alert>
+        )}
+        {byWhatsapp && options.length > 0 && <Alert>Pelo WhatsApp vai só o resumo em PDF. Os documentos anexos vão no e-mail.</Alert>}
+      </div>
+    </Modal>
   );
 }

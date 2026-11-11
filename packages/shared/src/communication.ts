@@ -142,13 +142,27 @@ export const MAILING_MAX_RECIPIENTS = 5000;
 /** Uma mala direta pode ser agendada para até este número de dias à frente. */
 export const MAILING_MAX_SCHEDULE_DAYS = 60;
 
+/**
+ * Kit pós-declaração enviado a um cliente: limite do e-mail, somando o resumo em PDF e os
+ * documentos da declaração escolhidos como anexo.
+ */
+export const KIT_ATTACHMENTS_MAX_BYTES = 20 * 1024 * 1024;
+
+/** Tamanho de arquivo para as telas e mensagens (ex.: "1,5 MB"). */
+export function formatFileSize(bytes: number): string {
+  const n = Math.max(0, bytes);
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  return `${(n / (1024 * 1024)).toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} MB`;
+}
+
 /** Mala direta sem o WhatsApp de atendimento nas preferências: o tutorial do WhatsApp é recusado inteiro. */
 export const MAILING_NO_WHATSAPP_NUMBER = 'Informe o WhatsApp de atendimento em Meu escritório › Preferências antes de enviar o tutorial do WhatsApp.';
 
 // ---------------------------------------------------------------------------
 // Relatórios individuais
 // ---------------------------------------------------------------------------
-export type IndividualReportKey = 'cash_analysis' | 'cash_details' | 'patrimony_history' | 'cash_history' | 'fine_mesh' | 'tax_planning' | 'assets';
+export type IndividualReportKey = 'cash_analysis' | 'cash_details' | 'patrimony_history' | 'cash_history' | 'fine_mesh' | 'tax_planning' | 'assets' | 'alimony';
 
 export interface IndividualReport {
   key: IndividualReportKey;
@@ -165,6 +179,13 @@ export const INDIVIDUAL_REPORTS: IndividualReport[] = [
   { key: 'fine_mesh', label: 'Planilha de aviso de malha fina', description: 'Pontos de atenção encontrados nas linhas da declaração.', permission: 'report.fine_mesh' },
   { key: 'tax_planning', label: 'Planejamento tributário', description: 'Comparativo completa × simplificada e sugestões.', permission: 'report.tax_planning' },
   { key: 'assets', label: 'Bens e direitos', description: 'Bens e dívidas com a situação no ano anterior e no atual.', permission: 'report.assets' },
+  {
+    key: 'alimony',
+    label: 'Pensão alimentícia',
+    description: 'Pensão paga no ano por alimentando: parte dedutível, parte não dedutível e despesas médicas e de instrução do alimentando.',
+    // sem permissão própria no catálogo: é um relatório de deduções, como o planejamento tributário
+    permission: 'report.tax_planning',
+  },
 ];
 
 export const INDIVIDUAL_REPORT_KEYS = INDIVIDUAL_REPORTS.map((r) => r.key) as [IndividualReportKey, ...IndividualReportKey[]];

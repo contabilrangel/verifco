@@ -50,7 +50,7 @@ describe('relatórios individuais', () => {
     const ctx0 = await api.get(`/api/declarations/${id}/reports`);
     expect(ctx0.body.itemsCount).toBe(0);
     expect(ctx0.body.spouse.available).toBe(false);
-    expect(ctx0.body.reports).toHaveLength(7);
+    expect(ctx0.body.reports).toHaveLength(8);
     const empty = await api.post(`/api/declarations/${id}/reports/generate`, { reports: ['cash_analysis'], format: 'pdf' });
     expect(empty.status).toBe(400);
     expect(empty.body.error).toMatch(/não tem linhas/);
@@ -64,7 +64,7 @@ describe('relatórios individuais', () => {
     expect(saved.body.otherExpenses).toEqual({ annualPaymentCents: 120_000, interestCents: 30_000 });
     expect((await api.get(`/api/declarations/${id}/reports`)).body.declaration.otherExpenses.interestCents).toBe(30_000);
 
-    const all = ['cash_analysis', 'cash_details', 'patrimony_history', 'cash_history', 'fine_mesh', 'tax_planning', 'assets'];
+    const all = ['cash_analysis', 'cash_details', 'patrimony_history', 'cash_history', 'fine_mesh', 'tax_planning', 'assets', 'alimony'];
     const pdf = await api.post(`/api/declarations/${id}/reports/generate`, { reports: all, format: 'pdf' });
     expect(pdf.status).toBe(200);
     expect(pdf.raw.headers['content-type']).toBe('application/pdf');
@@ -207,6 +207,75 @@ describe('relatórios individuais', () => {
     expect(emails[0].to).toBe('c4@ex.com');
     expect(emails[0].attachments?.[0].filename).toBe('relatorios-irpf-2026-quesia-lopes.pdf');
     expect((await api.post(`/api/declarations/${d2.id}/reports/send`, { ...body, channels: ['email'], requestId: uuid() })).status).toBe(400);
+  });
+
+  it('pensão alimentícia: por alimentando, separa o dedutível do não dedutível e lembra as regras', async () => {
+    const { api, officeId } = await registerOffice(env);
+    const cid = await newCustomer(api, 2, 'Tiago Alimentante');
+    const d = await declaration(officeId, cid, 2026, {}, [
+      ...yearItems(0),
+      // filho: pensão judicial paga à mãe, com o alimentando e o CPF dele na linha
+      { kind: 'payment', code: '30', description: 'Pensão judicial', counterpartyName: 'Rita Moura', counterpartyDoc: VALID_CPFS[3], ownerName: 'Caio Moura', ownerCpf: VALID_CPFS[5], valueCents: 2_400_000, extra: { nature: 'alimony' } },
+      // complemento combinado por fora: inteiro como parcela não dedutível
+      { kind: 'payment', code: '30', description: 'Complemento por acordo informal', counterpartyName: 'Rita Moura', counterpartyDoc: VALID_CPFS[3], ownerName: 'Caio Moura', ownerCpf: VALID_CPFS[5], valueCents: 600_000, extra: { nature: 'alimony', reimbursedCents: 600_000 } },
+      // despesas do alimentando pagas pelo alimentante
+      { kind: 'payment', counterpartyName: 'Dr. Paulo Dentista', counterpartyDoc: VALID_CPFS[6], ownerName: 'Caio Moura', ownerCpf: VALID_CPFS[5], valueCents: 300_000, extra: { nature: 'health' } },
+      { kind: 'payment', counterpartyName: 'Colégio Alfa', counterpartyDoc: '11222333000181', ownerName: 'Caio Moura', ownerCpf: VALID_CPFS[5], valueCents: 500_000, extra: { nature: 'education' } },
+      // o mesmo filho também na ficha de dependentes: o relatório aponta
+      { kind: 'dependent', ownerName: 'Caio Moura', ownerCpf: VALID_CPFS[5], extra: { relationship: 'child' } },
+    ]);
+    const ctx = await api.get(`/api/declarations/${d.id}/reports`);
+    expect(ctx.body.reports.find((r: any) => r.key === 'alimony')).toMatchObject({ label: 'Pensão alimentícia', allowed: true });
+
+    const x = await api.post(`/api/declarations/${d.id}/reports/generate`, { reports: ['alimony'], format: 'xlsx' });
+    expect(x.status).toBe(200);
+    const wb = await readXlsx(x.raw.rawPayload);
+    expect(wb.worksheets.map((w) => w.name)).toEqual(['Pensão alimentícia']);
+    const rows: unknown[][] = [];
+    wb.worksheets[0].eachRow((r) => rows.push((r.values as unknown[]).slice(1)));
+    const row = (first: string) => rows.find((r) => r[0] === first)!;
+    expect(row('Pensão paga no ano')[1]).toBe(30_000);
+    expect(row('Pensão não dedutível')[1]).toBe(6_000);
+    // pensão 24.000 + médicas 3.000 + instrução limitada a 3.561,50 por pessoa
+    expect(row('Total dedutível')[1]).toBe(24_000 + 3_000 + 3_561.5);
+    const person = rows.filter((r) => r[0] === 'Caio Moura');
+    expect(person[0]).toEqual(['Caio Moura', '987.654.321-00', 'Filho(a) ou enteado(a) · Cód. 30', 30_000, 24_000, 6_000]);
+    expect(person[1]).toEqual(['Caio Moura', 24_000, 3_000, 3_561.5, 30_561.5]);
+    // linhas lançadas: 2 de pensão, 1 médica, 1 de instrução
+    expect(person.slice(2).map((r) => String(r[1]).split(' · ')[0])).toEqual(['Pensão alimentícia', 'Pensão alimentícia', 'Despesa médica', 'Instrução']);
+    const text = rows.map((r) => String(r[0])).join('\n');
+    expect(text).toContain('Caio Moura consta como alimentando e também na ficha de dependentes');
+    expect(text).toMatch(/Instrução de Caio Moura: R\$\s1\.438,50 acima do limite anual/);
+    expect(text).toContain('O alimentando não pode ser dependente na mesma declaração.');
+    expect(text).toContain('ADI 5422');
+
+    const pdf = await api.post(`/api/declarations/${d.id}/reports/generate`, { reports: ['alimony'], format: 'pdf' });
+    expect(pdf.status).toBe(200);
+    expect(pdf.raw.rawPayload.subarray(0, 4).toString()).toBe('%PDF');
+    expect(String(pdf.raw.headers['content-disposition'])).toContain('relatorios-irpf-2026-tiago-alimentante.pdf');
+
+    // usa a permissão do planejamento tributário
+    const planner = await createEmployee(env, api, ['report.tax_planning']);
+    expect((await planner.api.post(`/api/declarations/${d.id}/reports/generate`, { reports: ['alimony'] })).status).toBe(200);
+    const other = await createEmployee(env, api, ['report.cash_analysis']);
+    const denied = await other.api.post(`/api/declarations/${d.id}/reports/generate`, { reports: ['alimony'] });
+    expect(denied.status).toBe(403);
+    expect(denied.body.error).toMatch(/Pensão alimentícia/);
+  });
+
+  it('pensão alimentícia: sem linhas de pensão, o relatório diz isso em vez de sair vazio', async () => {
+    const { api, officeId } = await registerOffice(env);
+    const cid = await newCustomer(api, 3, 'Ugo Sem Pensão');
+    const d = await declaration(officeId, cid, 2026, {}, yearItems(0));
+    const x = await api.post(`/api/declarations/${d.id}/reports/generate`, { reports: ['alimony'], format: 'xlsx' });
+    expect(x.status).toBe(200);
+    const rows: string[] = [];
+    (await readXlsx(x.raw.rawPayload)).worksheets[0].eachRow((r) => rows.push(String((r.values as unknown[])[1])));
+    expect(rows.some((t) => t.startsWith('Esta declaração não tem pensão alimentícia paga'))).toBe(true);
+    expect(rows.some((t) => t.includes('ADI 5422'))).toBe(true);
+    expect(rows.some((t) => t.includes('O alimentando não pode ser dependente na mesma declaração.'))).toBe(true);
+    expect(rows).not.toContain('Pensão paga por alimentando');
+    expect((await api.post(`/api/declarations/${d.id}/reports/generate`, { reports: ['alimony'], format: 'pdf' })).status).toBe(200);
   });
 
   it('baixa o kit pós-declaração em PDF', async () => {
