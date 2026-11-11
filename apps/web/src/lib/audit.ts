@@ -65,6 +65,7 @@ const ACTIONS: Record<string, string> = {
   delete: 'excluiu',
   restore: 'restaurou',
   purge: 'eliminou em definitivo',
+  reveal: 'consultou a senha guardada',
   export: 'exportou',
   import: 'importou',
   send: 'enviou',

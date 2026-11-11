@@ -25,6 +25,7 @@ import { queueDelivery } from '../../services/delivery';
 import { PdfBuilder, loadBranding } from '../../services/pdf';
 import { CERTIFICATE_TYPES, readUploads } from '../../services/uploads';
 import { purgeCustomer } from '../../services/purge';
+import { consume } from '../../services/rate-limit';
 import { buildWorkbook } from '../../services/xlsx';
 import { exposeDevSecrets } from '../../config';
 
@@ -367,6 +368,21 @@ export async function customerRoutes(app: FastifyInstance) {
       .returning();
     await audit(req, 'update', 'customer_credentials', c.id, { fields: Object.keys(body) });
     return publicCustomer(row);
+  });
+
+  /**
+   * Mostra o login e a senha do eCAC guardados, para quem cuida das credenciais entrar no eCAC em
+   * nome do cliente. Cada consulta fica na auditoria (quem viu, de qual cliente) e há um limite
+   * por pessoa, para a tela não virar um meio de copiar a carteira inteira.
+   */
+  app.post('/customers/:id/credentials/reveal', { preHandler: guard('ecac.credentials') }, async (req) => {
+    const user = requireUser(req);
+    const { id } = parse(uuidParam, req.params);
+    const c = await getCustomerForUser(app.ctx, user, id);
+    if (!c.ecacLoginEnc && !c.ecacPasswordEnc) throw notFound('Credenciais do eCAC');
+    await consume(app.ctx, `credentials-reveal:${user.userId}`, { max: 30, windowSec: 3600 }, 'Você consultou muitas credenciais na última hora. Aguarde para ver outras.');
+    await audit(req, 'reveal', 'customer_credentials', c.id, { name: c.name });
+    return { login: c.ecacLoginEnc ? secrets.decrypt(c.ecacLoginEnc) : null, password: c.ecacPasswordEnc ? secrets.decrypt(c.ecacPasswordEnc) : null };
   });
 
   app.delete('/customers/:id', { preHandler: guard('customer.delete') }, async (req) => {

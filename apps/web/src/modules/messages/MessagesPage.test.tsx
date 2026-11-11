@@ -348,12 +348,14 @@ describe('item do menu', () => {
 });
 
 describe('hora da última mensagem', () => {
-  it('hoje mostra a hora; ontem, "Ontem"; antes, a data', () => {
-    const now = new Date(2026, 10, 11, 15, 0);
-    expect(threadTime(new Date(2026, 10, 11, 9, 5).toISOString(), now)).toBe('09:05');
-    expect(threadTime(new Date(2026, 10, 10, 23, 0).toISOString(), now)).toBe('Ontem');
-    expect(threadTime(new Date(2026, 9, 3, 8, 0).toISOString(), now)).toBe('03/10');
-    expect(threadTime(new Date(2025, 11, 30, 8, 0).toISOString(), now)).toBe('30/12/25');
+  it('hoje mostra a hora; ontem, "Ontem"; antes, a data (sempre no horário de Brasília)', () => {
+    // 15h de Brasília de 11/11/2026 (UTC-3)
+    const now = new Date('2026-11-11T18:00:00Z');
+    expect(threadTime('2026-11-11T12:05:00Z', now)).toBe('09:05');
+    // 23h de Brasília do dia 10 já é dia 11 em UTC: continua "Ontem"
+    expect(threadTime('2026-11-11T02:00:00Z', now)).toBe('Ontem');
+    expect(threadTime('2026-10-03T11:00:00Z', now)).toBe('03/10');
+    expect(threadTime('2025-12-30T11:00:00Z', now)).toBe('30/12/25');
     expect(threadTime('', now)).toBe('');
   });
 });

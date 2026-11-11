@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
-import { KeyRound, Plus, RefreshCw, Save, ShieldCheck, Trash2 } from 'lucide-react';
+import { Copy, Eye, KeyRound, Plus, RefreshCw, Save, ShieldCheck, Trash2 } from 'lucide-react';
 import {
   AUTH_TYPES,
   CND_STATUS,
@@ -13,7 +13,7 @@ import {
   optionsOf,
   todayIso,
 } from '@verifco/shared';
-import { Alert, Button, Card, Checkbox, ConfirmDialog, DropFile, EmptyState, IconButton, Input, Loading, Modal, Select, Tabs, Tag, Textarea } from '../../ds';
+import { Alert, Button, Card, Checkbox, ConfirmDialog, DropFile, EmptyState, IconButton, Input, Loading, Modal, Select, Tabs, Tag, Textarea, useToast } from '../../ds';
 import { api } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { useAction, useApi } from '../../lib/hooks';
@@ -170,6 +170,15 @@ function CredentialsCard({ panel, onSaved }: { panel: EcacPanel; onSaved: () => 
   );
   const remove = useAction(() => api.put(`/customers/${customer.id}/credentials`, { ecacLogin: null, ecacPassword: null }), { success: 'Credenciais removidas.', onSuccess: done });
   const editable = can('ecac.credentials');
+  const toast = useToast();
+  // credenciais mostradas a pedido (a consulta fica na auditoria); somem ao fechar
+  const [shown, setShown] = useState<{ login: string | null; password: string | null } | null>(null);
+  const reveal = useAction(() => api.post<{ login: string | null; password: string | null }>(`/customers/${customer.id}/credentials/reveal`), { onSuccess: setShown });
+  const copy = (text: string, what: string) =>
+    void navigator.clipboard.writeText(text).then(
+      () => toast.success(`${what} copiado.`),
+      () => toast.error('Não foi possível copiar. Selecione o texto e copie manualmente.'),
+    );
   return (
     <Card title="Acesso eCAC / gov.br" actions={<Tag tone={configured ? 'success' : 'neutral'} icon={configured ? <ShieldCheck size={14} /> : <KeyRound size={14} />}>{configured ? 'Configurado' : 'Sem login'}</Tag>}>
       <div className="vf-stack">
@@ -194,10 +203,16 @@ function CredentialsCard({ panel, onSaved }: { panel: EcacPanel; onSaved: () => 
           />
         </div>
         <span className="vf-text-xs vf-muted">
-          Guardadas cifradas e nunca exibidas de volta. Para trocar, digite os novos valores; campos vazios mantêm o que já está salvo.
+          Guardadas cifradas, para o escritório entrar no eCAC em nome do cliente. Só quem cuida das credenciais consegue ver, e cada consulta fica registrada na auditoria. Para trocar, digite os novos valores; campos vazios mantêm o que já
+          está salvo.
         </span>
         {editable && (
           <div className="vf-inline vf-end">
+            {(panel.credentials.hasLogin || panel.credentials.hasPassword) && (
+              <Button kind="tertiary" icon={<Eye />} loading={reveal.isPending} onClick={() => reveal.mutate(undefined)}>
+                Ver login e senha
+              </Button>
+            )}
             {configured && (
               <Button kind="tertiary" icon={<Trash2 />} onClick={() => setConfirmRemove(true)}>
                 Remover
@@ -209,6 +224,29 @@ function CredentialsCard({ panel, onSaved }: { panel: EcacPanel; onSaved: () => 
           </div>
         )}
       </div>
+      <Modal open={Boolean(shown)} title="Acesso eCAC / gov.br" onClose={() => setShown(null)} width={480} footer={<Button onClick={() => setShown(null)}>Fechar</Button>}>
+        {shown && (
+          <div className="vf-stack">
+            <span className="vf-muted">Esta consulta ficou registrada na auditoria do escritório.</span>
+            {(
+              [
+                ['Login', shown.login],
+                ['Senha', shown.password],
+              ] as const
+            ).map(([label, value]) => (
+              <div key={label} className="vf-ecac-code">
+                <span className="vf-text-sm-bold">{label}</span>
+                <code>{value ?? 'não cadastrado'}</code>
+                {value && (
+                  <Button kind="secondary" size="sm" icon={<Copy />} onClick={() => copy(value, label)}>
+                    Copiar
+                  </Button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </Modal>
       <ConfirmDialog
         open={confirmRemove}
         title="Remover credenciais"

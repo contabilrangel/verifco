@@ -502,7 +502,9 @@ export function Shell({ children }: { children?: ReactNode }) {
           {/* um erro ao desenhar a página fica dentro do conteúdo; navegar para outra página desfaz */}
           <ErrorBoundary resetKey={location.pathname}>{children ?? <Outlet />}</ErrorBoundary>
         </main>
-        <footer className="footer">Verifco · gestão de IRPF para escritórios contábeis</footer>
+        <footer className="footer">
+          Verifco · gestão de IRPF para escritórios contábeis · <Link to="/ajuda">Ajuda</Link> · <Link to="/downloads">Downloads</Link>
+        </footer>
       </div>
     </div>
   );

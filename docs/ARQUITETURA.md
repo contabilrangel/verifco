@@ -123,6 +123,50 @@ externo ou demora (envios, exportações, IA, sincronizações) passa pela fila.
   `spawn([...])` (chave por filho) e devolve `WAIT_FOR_CHILDREN`; sem ocupar o worker, o pai roda de
   novo quando todos terminam e junta os resultados com `children()` (veja `elaboration.process`).
 
+- **Rotinas diárias**: os próprios jobs se reagendam antes de rodar (uma chave por dia), e só a
+  instância com `RUN_WORKER` agenda ao subir. Hoje são: lembretes por escritório às 8h de Brasília
+  (`modules/reminders`, com a conferência das 7h30 que agenda quem ficou sem rodada), Selic do Banco
+  Central às segundas (`services/indices.ts`), conciliação das cobranças a cada 6 h
+  (`modules/integrations/jobs.ts`) e a retenção às 3h40 (`modules/maintenance`). Uma rotina nova segue
+  o mesmo padrão: `scheduleX(ctx)` com `idempotencyKey` do dia, chamado no `registerJobs` e no começo
+  do executor.
+- **Acompanhar em produção**: `GET /ready` (na raiz, fora de `/api`) responde 503 quando um dos
+  bancos ou o laço da fila parou; `GET /health` só diz que o processo está vivo. O painel
+  `/sistema › Operação` mostra a fila, as falhas com o motivo e "tentar de novo". Falha final de job
+  e erro 500 vão para o log em JSON e, com `SENTRY_DSN`, para o monitoramento.
+
+### Arquivos e retenção
+
+- `ctx.files` grava no disco (`STORAGE_DIR`) ou, com `STORAGE_DRIVER=s3`, num bucket compatível com
+  S3 (`src/storage/s3.ts`: REST assinado com SigV4, sem SDK; arquivos grandes em partes). Com S3 a
+  API confere bucket e chaves ao subir e recusa iniciar se estiverem errados.
+- `modules/maintenance/jobs.ts` apaga o que cumpriu o prazo: tarefas terminadas
+  (`RETENTION_JOBS_DAYS`), backups do escritório (`RETENTION_BACKUPS_DAYS`), clientes da lixeira
+  (`RETENTION_DELETED_CUSTOMERS_DAYS`, pela `purgeCustomer` de `services/purge.ts`, que leva junto o
+  conteúdo dos arquivos), links de senha vencidos, contadores de tentativas e avisos lidos. Tabela
+  nova com dado pessoal do cliente: inclua os arquivos dela em `customerFileIds`.
+- Backup do servidor (bancos e arquivos, cifrado, com restauração ensaiada no CI): perfil `backup`
+  dos Composes, descrito em `docs/RESTAURACAO.md`. O backup que o escritório gera pela tela é outro:
+  um .zip dos dados dele, para ele guardar.
+
+### Contas e segurança
+
+- Senha com bcrypt, sessão por JWT com `tokenVersion` (trocar senha, e-mail ou papel derruba as
+  sessões). Verificação em duas etapas por TOTP (`lib/totp.ts`, `services/two-factor.ts`), igual
+  para `users` e `platform_users`: o login responde 401 com `details.code = 'two_factor_required'`
+  até receber `code` (do aplicativo ou de recuperação).
+- E-mails da conta (convite, senha, confirmação, avisos) levam `system: true` e saem pelo
+  `SMTP_URL`, com o SMTP do escritório de reserva; os demais usam o do escritório primeiro.
+- Escritório suspenso (`offices.blockedAt`, pelo painel do sistema): o plugin de autenticação não
+  autentica ninguém dele e `requireUser` responde 403 com a mensagem de suspensão; tokens de
+  máquina também.
+- Toda ação relevante chama `audit(req, ação, entidade, id, dados)`. O escritório lê em
+  `GET /audit` (Meu escritório › Auditoria) e por cliente em `GET /customers/:id/events`; ação nova
+  ganha o texto em `apps/web/src/lib/audit.ts`.
+- Segredo guardado (credencial do eCAC, chave de integração) é cifrado com `ctx.secrets` e nunca
+  volta numa listagem; a consulta da senha do eCAC tem rota própria, com limite por pessoa e
+  registro na auditoria.
+
 ### Banco
 
 `src/db/schema.ts` concentra as tabelas. Depois de alterá-lo, gere a migração
@@ -214,11 +258,11 @@ dashboard para quem pode; os demais vão ao primeiro destino do menu que veem (`
 
 | Onde | path (ordem) → módulo |
 | --- | --- |
-| Rotas | `''` dashboard e `kanban` → declarations · `radar`, `backup` → advisory · `clientes` → customers · `importacoes/:tipo` → imports (exceto `importacoes/orcamentos` → finance) · `financeiro/metodos`, `financeiro/tabelas` → finance · `comunicacao/*`, `ajuda` → communication · `elaboracao`, `pre-preenchidas`, `downloads` → ecac · `conta`, `conta/preferencias` → imports (conta do usuário) |
-| Rotas públicas | `/portal/*`, `/checklist/:token` → checklist · `/orcamento/:token` → finance |
-| Perfil do cliente | `''` Painel (10) → declarations · `irpf` (20) → núcleo · `ia` (30), `irpfm` (80), `copiloto` (85), `livro-caixa` (90) → advisory · `ecac` (40), `acoes-ecac` (45) → ecac · `identificacao` (60), `endereco` (70) → customers · `mensagens` (95) → checklist |
+| Rotas | `''` dashboard e `kanban` → declarations · `radar`, `backup` → advisory · `clientes` → customers · `mensagens/:customerId?` → messages · `notificacoes` → notifications · `importacoes/:tipo` → imports (exceto `importacoes/orcamentos` → finance) · `financeiro/metodos`, `financeiro/tabelas` → finance · `comunicacao/*`, `ajuda` → communication · `elaboracao`, `pre-preenchidas`, `downloads` → ecac · `conta`, `conta/preferencias` → imports (conta do usuário) |
+| Rotas públicas | `/portal/*`, `/checklist/:token` → checklist · `/orcamento/:token` → finance · `/confirmar-email` → auth · `/sistema/*` → platform (painel do sistema, com login próprio) |
+| Perfil do cliente | `''` Painel (10) → declarations · `irpf` (20) → núcleo · `ia` (30), `irpfm` (80), `copiloto` (85), `livro-caixa` (90) → advisory · `ecac` (40), `acoes-ecac` (45) → ecac · `identificacao` (60), `endereco` (70), `historico` (95) → customers · `mensagens` (95) → checklist |
 | Etapas IRPF | `orcamento` (10) → finance · `declaracao` (20), `darf` (40), `pendencias` (60), `documentos` (65) → declarations · `documentacao` (30) → checklist · `relatorios` (50) → communication · `holding` (70) → advisory |
-| Administração | `empresa` (10), `preferencias` (20), `colaboradores` (30), `funcoes` (40), `grupos` (50), `procuradores` (60), `contratos` (70) → imports/admin · `integracoes` (80) → integrations · `robo` (85) → ecac · `copiloto` (90) → advisory |
+| Administração | `empresa` (10), `preferencias` (20), `colaboradores` (30), `funcoes` (40), `grupos` (50), `procuradores` (60), `contratos` (70), `auditoria` (95) → imports/admin · `integracoes` (80) → integrations · `robo` (85) → ecac · `copiloto` (90) → advisory |
 | Relatórios | `faturamento` (10) → finance · `resultados` (20), `documentos-faltantes` (30), `restituicao` (40) → communication |
 
 ### Design system (`src/ds/`)

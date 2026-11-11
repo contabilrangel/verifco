@@ -1,3 +1,4 @@
+import { BRAZIL_TIME_ZONE, addDaysIso, todayIso } from '@verifco/shared';
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
@@ -16,10 +17,12 @@ export const THREADS_PAGE_SIZE = 20;
 export function threadTime(iso: string, now = new Date()): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';
-  const sameDay = (a: Date, b: Date) => a.toDateString() === b.toDateString();
-  if (sameDay(d, now)) return d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-  if (sameDay(d, new Date(now.getTime() - 86400_000))) return 'Ontem';
-  return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: d.getFullYear() === now.getFullYear() ? undefined : '2-digit' });
+  // dia e hora de Brasília, como no resto do sistema (não o fuso do navegador)
+  const day = todayIso(d);
+  const today = todayIso(now);
+  if (day === today) return d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: BRAZIL_TIME_ZONE });
+  if (day === addDaysIso(today, -1)) return 'Ontem';
+  return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: day.slice(0, 4) === today.slice(0, 4) ? undefined : '2-digit', timeZone: BRAZIL_TIME_ZONE });
 }
 
 const firstName = (name: string | null) => name?.trim().split(/\s+/)[0] || 'Escritório';

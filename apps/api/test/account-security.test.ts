@@ -266,6 +266,35 @@ describe('auditoria e histórico', () => {
   });
 });
 
+describe('credenciais do eCAC guardadas', () => {
+  it('quem cuida das credenciais vê login e senha; a consulta fica na auditoria e tem limite por pessoa', async () => {
+    const office = await registerOffice(env);
+    const other = await registerOffice(env);
+    const emp = await employee(office.api, ['customer.list', 'ecac.view']);
+    const c = await office.api.post('/api/customers', { name: 'Maria', cpfCnpj: VALID_CPFS[2] });
+    expect((await office.api.post(`/api/customers/${c.body.id}/credentials/reveal`)).status).toBe(404);
+    await office.api.put(`/api/customers/${c.body.id}/credentials`, { ecacLogin: VALID_CPFS[2], ecacPassword: 'Senha@GovBr1' });
+    const row = await env.ctx.db.query.customers.findFirst({ where: eq(customers.id, c.body.id) });
+    expect(row!.ecacPasswordEnc).not.toContain('Senha@GovBr1');
+    // a ficha do cliente continua sem devolver os valores
+    expect(JSON.stringify((await office.api.get(`/api/customers/${c.body.id}`)).body)).not.toContain('Senha@GovBr1');
+    expect((await emp.api.post(`/api/customers/${c.body.id}/credentials/reveal`)).status).toBe(403);
+    expect((await other.api.post(`/api/customers/${c.body.id}/credentials/reveal`)).status).toBe(404);
+    const shown = await office.api.post(`/api/customers/${c.body.id}/credentials/reveal`);
+    expect(shown.body).toEqual({ login: VALID_CPFS[2], password: 'Senha@GovBr1' });
+    const trail = await env.ctx.db.select().from(auditLogs).where(eq(auditLogs.entityId, c.body.id));
+    expect(trail.filter((t) => t.entity === 'customer_credentials' && t.action === 'reveal')).toHaveLength(1);
+    env.ctx.config.RATE_LIMIT = true;
+    try {
+      let last = 200;
+      for (let i = 0; i < 31 && last === 200; i++) last = (await office.api.post(`/api/customers/${c.body.id}/credentials/reveal`)).status;
+      expect(last).toBe(429);
+    } finally {
+      env.ctx.config.RATE_LIMIT = false;
+    }
+  });
+});
+
 describe('exclusão definitiva de um escritório pelo painel do sistema', () => {
   it('exige a suspensão e o nome digitado; apaga dados e arquivos sem tocar nos outros escritórios', async () => {
     const office = await registerOffice(env, 'Escritório Encerrado');

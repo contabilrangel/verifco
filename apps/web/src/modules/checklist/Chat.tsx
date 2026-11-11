@@ -1,3 +1,4 @@
+import { BRAZIL_TIME_ZONE, addDaysIso, todayIso } from '@verifco/shared';
 import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import { MessageCircle, Paperclip, Send, X } from 'lucide-react';
 import { CHECKLIST_UPLOAD_ACCEPT, checklistUploadMime } from '@verifco/shared';
@@ -36,16 +37,16 @@ export function chatFileError(file: File): string | null {
 }
 
 const dayLabel = (iso: string) => {
+  // dia de Brasília, como no resto do sistema (não o fuso do navegador)
   const d = new Date(iso);
-  const today = new Date();
-  const yesterday = new Date(Date.now() - 86400_000);
-  const same = (a: Date, b: Date) => a.toDateString() === b.toDateString();
-  if (same(d, today)) return 'Hoje';
-  if (same(d, yesterday)) return 'Ontem';
-  return d.toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: d.getFullYear() === today.getFullYear() ? undefined : 'numeric' });
+  const day = todayIso(d);
+  const today = todayIso();
+  if (day === today) return 'Hoje';
+  if (day === addDaysIso(today, -1)) return 'Ontem';
+  return d.toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: day.slice(0, 4) === today.slice(0, 4) ? undefined : 'numeric', timeZone: BRAZIL_TIME_ZONE });
 };
 
-export const timeOf = (iso: string) => new Date(iso).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+export const timeOf = (iso: string) => new Date(iso).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: BRAZIL_TIME_ZONE });
 
 /**
  * Conversa no formato de bolhas, agrupada por dia, rolando para a última mensagem.
