@@ -151,6 +151,40 @@ export const TEMPLATES: TemplateDef[] = [
     defaultSubject: 'Fale com o {{ESCRITORIO}} pelo WhatsApp',
     defaultBody: '<p>Olá, {{CLIENTE}}!</p><p>Salve nosso número de atendimento <strong>{{WHATSAPP}}</strong> para receber avisos da sua declaração {{ANO_EXERCICIO}}.</p><p>{{ESCRITORIO}}</p>',
   },
+  {
+    key: 'charge',
+    name: 'Cobrança dos honorários',
+    description: 'Link de pagamento da parcela dos honorários (boleto ou Pix), enviado quando a cobrança é emitida.',
+    variables: [CLIENTE, ESCRITORIO, CONTADOR, ANO, v('CATEGORIA', 'Categoria do serviço'), v('PARCELA', 'Número da parcela, ex.: 1/3'), v('VALOR', 'Valor da parcela'), v('VENCIMENTO', 'Data de vencimento'), LINK('Link de pagamento')],
+    defaultSubject: 'Cobrança dos honorários — vencimento {{VENCIMENTO}}',
+    defaultBody: wrap(
+      '<p>A cobrança da parcela {{PARCELA}} dos honorários de {{CATEGORIA}} {{ANO_EXERCICIO}}, no valor de <strong>{{VALOR}}</strong>, vence em <strong>{{VENCIMENTO}}</strong>.</p><p><a href="{{LINK}}">Pagar agora</a></p>',
+    ),
+  },
+  {
+    key: 'installment_reminder',
+    name: 'Lembrete de vencimento dos honorários',
+    description: 'Lembrete enviado alguns dias antes do vencimento da parcela dos honorários.',
+    variables: [CLIENTE, ESCRITORIO, CONTADOR, ANO, v('PARCELA', 'Número da parcela, ex.: 1/3'), v('VALOR', 'Valor da parcela'), v('VENCIMENTO', 'Data de vencimento'), LINK('Link de pagamento (vazio quando não há cobrança emitida)')],
+    defaultSubject: 'Lembrete: honorários vencem em {{VENCIMENTO}}',
+    defaultBody: wrap('<p>A parcela {{PARCELA}} dos honorários, no valor de <strong>{{VALOR}}</strong>, vence em <strong>{{VENCIMENTO}}</strong>.</p><p><a href="{{LINK}}">Ver cobrança</a></p>'),
+  },
+  {
+    key: 'installment_overdue',
+    name: 'Honorários vencidos',
+    description: 'Aviso enviado uma vez quando a parcela dos honorários fica vencida.',
+    variables: [CLIENTE, ESCRITORIO, CONTADOR, ANO, v('PARCELA', 'Número da parcela, ex.: 1/3'), v('VALOR', 'Valor da parcela'), v('VENCIMENTO', 'Data de vencimento'), LINK('Link de pagamento (vazio quando não há cobrança emitida)')],
+    defaultSubject: 'Honorários em aberto desde {{VENCIMENTO}}',
+    defaultBody: wrap('<p>Não identificamos o pagamento da parcela {{PARCELA}} dos honorários, no valor de <strong>{{VALOR}}</strong>, vencida em <strong>{{VENCIMENTO}}</strong>.</p><p>Se você já pagou, desconsidere este aviso.</p><p><a href="{{LINK}}">Ver cobrança</a></p>'),
+  },
+  {
+    key: 'darf_reminder',
+    name: 'Lembrete de vencimento do DARF',
+    description: 'Lembrete enviado alguns dias antes do vencimento da quota do imposto.',
+    variables: [CLIENTE, ESCRITORIO, CONTADOR, ANO, v('QUOTA', 'Número da quota'), v('VALOR', 'Valor da quota'), v('VENCIMENTO', 'Data de vencimento'), LINK('Link do portal do cliente')],
+    defaultSubject: 'Lembrete: DARF do Imposto de Renda vence em {{VENCIMENTO}}',
+    defaultBody: wrap('<p>A quota {{QUOTA}} do seu Imposto de Renda {{ANO_EXERCICIO}}, no valor de <strong>{{VALOR}}</strong>, vence em <strong>{{VENCIMENTO}}</strong>.</p><p>A guia está disponível no <a href="{{LINK}}">portal do cliente</a>.</p>'),
+  },
 ];
 
 export const TEMPLATE_KEYS = TEMPLATES.map((t) => t.key);

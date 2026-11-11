@@ -54,7 +54,30 @@ const schema = z.object({
    * e-mail). Nunca vale em produção.
    */
   DEV_SHOW_ACCESS_CODES: flag(false),
+  /** Cadastro de novos escritórios aberto em /cadastro. Desligado, só o painel do sistema cria escritórios. */
+  SIGNUP_ENABLED: flag(true),
+  /** E-mail de contato mostrado aos escritórios (contrato vencido, suporte). */
+  SUPPORT_EMAIL: z.string().optional(),
   SMTP_URL: z.string().optional(),
+  /** Em produção, recusa iniciar sem SMTP_URL (convites e redefinição de senha dependem dele). */
+  SMTP_REQUIRED: flag(false),
+  /** DSN do Sentry (ou compatível) para receber os erros 500 e as falhas finais da fila. */
+  SENTRY_DSN: z.string().optional(),
+  /** Onde ficam os arquivos: `local` (STORAGE_DIR) ou `s3` (bucket compatível com S3). */
+  STORAGE_DRIVER: z.enum(['local', 's3']).default('local'),
+  S3_ENDPOINT: z.string().optional(),
+  S3_REGION: z.string().default('us-east-1'),
+  S3_BUCKET: z.string().optional(),
+  S3_ACCESS_KEY_ID: z.string().optional(),
+  S3_SECRET_ACCESS_KEY: z.string().optional(),
+  /** Endereço no estilo caminho (`endpoint/bucket/chave`), o padrão dos serviços compatíveis (MinIO, R2, B2). */
+  S3_FORCE_PATH_STYLE: flag(true),
+  /** Dias que tarefas concluídas, envios de teste e pedidos de senha usados ficam guardados. */
+  RETENTION_JOBS_DAYS: z.coerce.number().int().min(1).max(3650).default(30),
+  /** Dias entre excluir um cliente e apagar de vez os dados e arquivos dele (LGPD). */
+  RETENTION_DELETED_CUSTOMERS_DAYS: z.coerce.number().int().min(1).max(3650).default(90),
+  /** Dias que os arquivos .zip de backup do escritório ficam disponíveis para download. */
+  RETENTION_BACKUPS_DAYS: z.coerce.number().int().min(1).max(3650).default(30),
   SMTP_FROM: z.string().default('Verifco <nao-responda@verifco.com.br>'),
   ANTHROPIC_API_KEY: z.string().optional(),
   AI_MODEL: z.string().default('claude-opus-5-5'),
@@ -128,7 +151,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     }
     if (!/^postgres(ql)?:\/\//i.test(cfg.PLATFORM_DATABASE_URL) && !cfg.ALLOW_PGLITE) problems.push('defina PLATFORM_DATABASE_URL=postgres://... para um banco separado');
     if (cfg.DEV_SHOW_ACCESS_CODES) problems.push('DEV_SHOW_ACCESS_CODES não pode ser usado em produção');
+    if (cfg.SMTP_REQUIRED && !cfg.SMTP_URL) problems.push('defina SMTP_URL (SMTP_REQUIRED está ligado: convites e redefinição de senha dependem do e-mail)');
+    if (cfg.SMTP_URL && !/^smtps?:\/\//i.test(cfg.SMTP_URL)) problems.push('SMTP_URL deve começar com smtp:// ou smtps://');
+    if (cfg.STORAGE_DRIVER === 's3') {
+      const missing = (['S3_ENDPOINT', 'S3_BUCKET', 'S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY'] as const).filter((k) => !cfg[k]);
+      if (missing.length) problems.push(`STORAGE_DRIVER=s3 exige ${missing.join(', ')}`);
+    }
     if (problems.length) throw new Error(`Configuração inválida para produção: ${problems.join('; ')}.`);
+    if (!cfg.SMTP_URL) {
+      console.warn('[verifco] SMTP_URL não definido: convites, redefinição de senha e avisos de segurança só saem pelos escritórios que configurarem o próprio SMTP. Defina SMTP_URL (e SMTP_REQUIRED=true para exigir).');
+    }
+    if (/\/\/(localhost|127\.0\.0\.1)/.test(cfg.WEB_URL)) {
+      console.warn('[verifco] WEB_URL aponta para localhost em produção: os links dos e-mails (convite, senha, portal) vão sair errados. Defina WEB_URL com o endereço público.');
+    }
   } else if (cfg.NODE_ENV === 'development' && env.NODE_ENV === undefined && env.VITEST === undefined) {
     console.warn('[verifco] NODE_ENV não definido: a API está em modo de desenvolvimento. Em produção use NODE_ENV=production (o "pnpm start" já define).');
   }

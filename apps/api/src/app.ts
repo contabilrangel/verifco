@@ -2,6 +2,7 @@ import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import { ZodError } from 'zod';
+import { sql } from 'drizzle-orm';
 import type { AppContext } from './context';
 import { HttpError } from './lib/errors';
 import { fastifyTrustProxy, isInternalAddress } from './lib/proxy';
@@ -137,10 +138,28 @@ export async function buildApp(ctx: AppContext, opts: { logger?: boolean } = {})
       return reply.status(409).send({ error: 'Já existe um registro com esses dados.' });
     }
     req.log.error(err);
-    return reply.status(500).send({ error: 'Erro interno. Tente novamente em instantes.' });
+    ctx.reportError(err, { source: 'http', requestId: req.id, route: req.routeOptions?.url, method: req.method, officeId: req.auth?.officeId ?? null });
+    // o código acompanha a mensagem para o suporte achar o erro no log
+    return reply.status(500).send({ error: 'Erro interno. Tente novamente em instantes.', requestId: req.id });
   });
 
+  // vivo: o processo responde (não consulta nada)
   app.get('/health', async () => ({ ok: true }));
+  // pronto: os dois bancos respondem e, na instância que executa tarefas, o laço da fila está vivo
+  app.get('/ready', async (_req, reply) => {
+    const probe = async (run: () => Promise<unknown>) => {
+      try {
+        await run();
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const [database, platform] = await Promise.all([probe(() => ctx.db.execute(sql`select 1`)), probe(() => ctx.platformDb.execute(sql`select 1`))]);
+    const queue = ctx.jobs.health();
+    const ok = database && platform && queue.alive;
+    return reply.status(ok ? 200 : 503).send({ ok, database, platform, queue: { worker: queue.started, alive: queue.alive, running: queue.running } });
+  });
   await registerModules(app);
   return app;
 }

@@ -125,6 +125,23 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   /** Uso do contrato do próprio escritório: validade, modo só consulta e declarações usadas no limite. */
+  /**
+   * Situação do plano para qualquer pessoa da equipe (faixa de aviso do topo): vigência e modo só
+   * consulta, sem os detalhes dos contratos (esses pedem `contracts.view`).
+   */
+  app.get('/plan/status', async (req) => {
+    const user = requireUser(req);
+    const usage = await contractUsage(db, user.officeId);
+    return {
+      hasContracts: usage.hasContracts,
+      readOnly: usage.readOnly,
+      validUntil: usage.validUntil,
+      daysLeft: usage.daysLeft,
+      lastExpiredAt: usage.lastExpiredAt,
+      supportEmail: app.ctx.config.SUPPORT_EMAIL || null,
+    };
+  });
+
   app.get('/office/contracts/status', { preHandler: guard('contracts.view') }, async (req) => {
     const user = requireUser(req);
     return contractUsage(db, user.officeId);

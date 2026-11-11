@@ -4,6 +4,7 @@ import type { JobQueue } from './jobs/queue';
 import type { Secrets } from './lib/crypto';
 import type { FileService } from './storage';
 import type { Providers } from './integrations/providers';
+import type { ErrorReporter } from './lib/observability';
 
 /** Dependências compartilhadas pelos módulos (injetadas no Fastify como `app.ctx`). */
 export interface AppContext {
@@ -14,6 +15,8 @@ export interface AppContext {
   files: FileService;
   jobs: JobQueue;
   providers: Providers;
+  /** Envia erros inesperados ao serviço de monitoramento (SENTRY_DSN); sem ele, não faz nada. */
+  reportError: ErrorReporter;
 }
 
 export interface AuthUser {

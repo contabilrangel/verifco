@@ -98,7 +98,7 @@ it('preserva e transfere a administração antiga com IDs, hash, chave cifrada, 
     const connection = (await client.query<{ id: string }>(`insert into platform_ai_connections (provider,name,model,base_url,secrets_enc) values ('openai','Antiga','modelo-antigo','https://api.openai.com/v1',$1) returning id`, [encrypted])).rows[0];
     await client.query(`insert into platform_settings (id,default_ai_id) values ('global',$1)`, [connection.id]);
     await client.query(`insert into platform_audit_logs (actor_id,action) values ($1,'legacy.audit')`, [account.id]);
-    await source.insert(officeSchema.offices).values({ name: 'Escritório preservado' });
+    await client.query(`insert into offices (name) values ('Escritório preservado')`);
     writeFileSync(journalPath, JSON.stringify(journal));
     await migrate(source, { migrationsFolder: dir });
     expect((await source.execute(sql`select to_regclass('public.platform_users') as admins`)).rows[0].admins).toBeNull();

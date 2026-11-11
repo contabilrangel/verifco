@@ -106,6 +106,13 @@
       "when": 1792120402601,
       "tag": "0014_indice_status_whatsapp",
       "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1794360277967,
+      "tag": "0015_operacao_completa",
+      "breakpoints": true
     }
   ]
 }

@@ -71,6 +71,16 @@ export type OfficeSettings = {
   reportSubtitleColor?: string;
   reportLineColor?: string;
   whatsappServiceNumber?: string;
+  /** Envia ao cliente o link de pagamento assim que a cobrança é emitida no provedor. */
+  chargeLinkAutoSend?: boolean;
+  /** Dias antes do vencimento da quota do DARF para lembrar o cliente por e-mail (0 = não lembrar). */
+  reminderDarfCustomerDays?: number;
+  /** Dias antes do vencimento da parcela dos honorários para lembrar o cliente (0 = não lembrar). */
+  reminderInstallmentCustomerDays?: number;
+  /** Avisa o cliente uma vez quando a parcela dos honorários fica vencida. */
+  reminderInstallmentOverdueCustomer?: boolean;
+  /** Avisos diários no sino para a equipe: vencimentos de procuração, certificado, contrato e links. */
+  reminderOfficeDigest?: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -87,6 +97,12 @@ export const offices = pgTable('offices', {
   state: text('state'),
   logoFileId: uuid('logo_file_id'),
   settings: jsonb('settings').$type<OfficeSettings>().notNull().default({}),
+  /** Bloqueado pelo painel do sistema: a equipe não entra e as rotas do escritório recusam. */
+  blockedAt: ts('blocked_at'),
+  blockedReason: text('blocked_reason'),
+  /** Aceite dos termos de uso e da política de privacidade no cadastro. */
+  termsAcceptedAt: ts('terms_accepted_at'),
+  termsVersion: text('terms_version'),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });
@@ -119,6 +135,15 @@ export const users = pgTable(
     notificationPrefs: jsonb('notification_prefs').$type<{ enabled?: boolean; devices?: string[] }>().notNull().default({}),
     lastLoginAt: ts('last_login_at'),
     tokenVersion: integer('token_version').notNull().default(0),
+    /** Verificação em duas etapas (TOTP): segredo cifrado; vale só depois de confirmado (`totpEnabledAt`). */
+    totpSecretEnc: text('totp_secret_enc'),
+    totpEnabledAt: ts('totp_enabled_at'),
+    /** Códigos de recuperação (hash sha256), cada um vale uma vez. */
+    totpRecoveryHashes: jsonb('totp_recovery_hashes').$type<string[]>().notNull().default([]),
+    /** Troca de e-mail aguardando confirmação pelo link enviado ao endereço novo. */
+    pendingEmail: text('pending_email'),
+    pendingEmailTokenHash: text('pending_email_token_hash'),
+    pendingEmailExpiresAt: ts('pending_email_expires_at'),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -578,6 +603,12 @@ export const installments = pgTable(
     receiptSentAt: ts('receipt_sent_at'),
     externalId: text('external_id'),
     externalUrl: text('external_url'),
+    /** Última conferência da cobrança no provedor (rodízio da conciliação: as mais antigas primeiro). */
+    externalCheckedAt: ts('external_checked_at'),
+    /** Quando o link de pagamento foi enviado ao cliente. */
+    chargeSentAt: ts('charge_sent_at'),
+    canceledAt: ts('canceled_at'),
+    cancelReason: text('cancel_reason'),
     createdAt: createdAt(),
   },
   (t) => [
@@ -649,6 +680,8 @@ export const messages = pgTable(
     createdAt: createdAt(),
     /** Id da mensagem no provedor (WhatsApp recebido pelo webhook): o reenvio não duplica. */
     externalId: text('external_id'),
+    /** Arquivos da mensagem (mídia recebida pelo WhatsApp ou anexos do escritório/portal). */
+    attachments: jsonb('attachments').$type<{ fileId: string; filename: string; mimeType: string; size: number }[]>().notNull().default([]),
   },
   (t) => [
     index('messages_customer_idx').on(t.customerId, t.createdAt),
@@ -762,6 +795,9 @@ export const apiTokens = pgTable(
     createdByUserId: uuid('created_by_user_id'),
     lastUsedAt: ts('last_used_at'),
     lastUsedIp: text('last_used_ip'),
+    /** Versão e sistema do programa que usa o token (cabeçalho `X-Verifco-Client`). */
+    clientVersion: text('client_version'),
+    clientPlatform: text('client_platform'),
     revokedAt: ts('revoked_at'),
     createdAt: createdAt(),
   },
@@ -989,4 +1025,62 @@ export const copilotEntries = pgTable(
     createdAt: createdAt(),
   },
   (t) => [index('copilot_entries_customer_idx').on(t.customerId, t.year, t.kind)],
+);
+
+// ---------------------------------------------------------------------------
+// Robô: arquivos sem cliente identificado
+// ---------------------------------------------------------------------------
+/**
+ * Arquivos que o sincronizador encontrou e não conseguiu ligar a um cliente (nome fora do padrão,
+ * CPF não cadastrado): ficam aqui até alguém do escritório atribuir a um cliente ou descartar.
+ */
+export const syncInbox = pgTable(
+  'sync_inbox',
+  {
+    id: id(),
+    officeId: officeId(),
+    fileId: uuid('file_id').notNull().references(() => files.id, { onDelete: 'cascade' }),
+    filename: text('filename').notNull(),
+    originalPath: text('original_path'),
+    /** `sem_cpf` | `cliente_nao_cadastrado`. */
+    reason: text('reason').notNull(),
+    cpf: text('cpf'),
+    exerciseYear: integer('exercise_year'),
+    sha256: text('sha256').notNull(),
+    tokenName: text('token_name'),
+    /** `pending` | `filed` | `discarded`. */
+    status: text('status').notNull().default('pending'),
+    documentId: uuid('document_id'),
+    resolvedByUserId: uuid('resolved_by_user_id'),
+    resolvedAt: ts('resolved_at'),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex('sync_inbox_office_hash_uq').on(t.officeId, t.sha256), index('sync_inbox_office_status_idx').on(t.officeId, t.status, t.createdAt)],
+);
+
+// ---------------------------------------------------------------------------
+// Lembretes e índices
+// ---------------------------------------------------------------------------
+/** Marca de lembrete já emitido (a rotina diária não repete o mesmo aviso). */
+export const reminderMarks = pgTable(
+  'reminder_marks',
+  {
+    officeId: officeId(),
+    key: text('key').notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex('reminder_marks_office_key_uq').on(t.officeId, t.key)],
+);
+
+/** Índices oficiais por mês (`selic` = taxa Selic mensal em %, série 4390 do Banco Central). */
+export const taxIndices = pgTable(
+  'tax_indices',
+  {
+    code: text('code').notNull(),
+    /** Mês de referência `AAAA-MM`. */
+    period: text('period').notNull(),
+    value: text('value').notNull(),
+    fetchedAt: ts('fetched_at').notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('tax_indices_code_period_uq').on(t.code, t.period)],
 );

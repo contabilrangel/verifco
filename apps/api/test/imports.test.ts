@@ -288,8 +288,10 @@ describe('importações de atualização', () => {
       const db = drizzle(client, { schema });
       await migrate(db, { migrationsFolder: dir });
 
-      const [withPasswords] = await db.insert(schema.offices).values({ name: 'Com senhas' }).returning();
-      const [without] = await db.insert(schema.offices).values({ name: 'Sem senhas' }).returning();
+      // em SQL: o schema.ts atual tem colunas de migrações posteriores
+      const newOffice = async (name: string) => (await client.query<{ id: string }>(`insert into offices (name) values ($1) returning id`, [name])).rows[0];
+      const withPasswords = await newOffice('Com senhas');
+      const without = await newOffice('Sem senhas');
       await db.insert(schema.customers).values([
         { officeId: withPasswords.id, name: 'Ana', cpfCnpj: VALID_CPFS[0], inssPasswordEnc: 'cifrada-1', ecacPasswordEnc: 'ecac-1' },
         { officeId: withPasswords.id, name: 'Beto', cpfCnpj: VALID_CPFS[1], inssPasswordEnc: 'cifrada-2' },

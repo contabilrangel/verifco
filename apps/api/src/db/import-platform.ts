@@ -19,14 +19,18 @@ export async function importLegacyPlatform(source: Db, destination: PlatformDb) 
     await tx.execute(sql`select pg_advisory_xact_lock(728103)`);
     const settings = await tx.query.platformSettings.findFirst({ where: eq(platformSettings.id, 'global') });
     if (settings?.legacyImportedAt) return 'already' as const;
-    async function load<T extends PgTable>(table: T): Promise<T['$inferSelect'][]> {
-      const columns = Object.entries(getTableColumns(table)).map(([field, column]) => sql`${sql.identifier(column.name)} as ${sql.identifier(field)}`);
-      const result = await source.execute<T['$inferSelect']>(sql`select ${sql.join(columns, sql`, `)} from ${sql.identifier('legacy_platform')}.${sql.identifier(getTableName(table))}`);
+    async function load<T extends PgTable>(table: T): Promise<T['$inferInsert'][]> {
+      // O arquivo antigo só tem as colunas da época: as criadas depois ficam com o padrão do banco novo.
+      const present = await source.execute<{ column_name: string }>(sql`select column_name from information_schema.columns where table_schema = 'legacy_platform' and table_name = ${getTableName(table)}`);
+      const names = new Set(present.rows.map((r) => r.column_name));
+      const fields = Object.entries(getTableColumns(table)).filter(([, column]) => names.has(column.name));
+      const columns = fields.map(([field, column]) => sql`${sql.identifier(column.name)} as ${sql.identifier(field)}`);
+      const result = await source.execute<Record<string, unknown>>(sql`select ${sql.join(columns, sql`, `)} from ${sql.identifier('legacy_platform')}.${sql.identifier(getTableName(table))}`);
       // execute() não aplica os codecs do schema (timestamps podem vir como strings).
-      return result.rows.map((row) => Object.fromEntries(Object.entries(getTableColumns(table)).map(([field, column]) => {
+      return result.rows.map((row) => Object.fromEntries(fields.map(([field, column]) => {
         const value = row[field];
         return [field, value == null ? value : column.mapFromDriverValue(value)];
-      })) as T['$inferSelect']);
+      })) as T['$inferInsert']);
     }
     // O arquivo anterior não tem a coluna criada apenas no banco da plataforma.
     const accounts = await load(platformUsers);

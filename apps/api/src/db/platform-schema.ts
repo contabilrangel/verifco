@@ -16,6 +16,12 @@ export const platformUsers = pgTable('platform_users', {
   isActive: boolean('is_active').notNull().default(true),
   tokenVersion: integer('token_version').notNull().default(0),
   createdAt: createdAt(),
+  // colunas novas ficam no fim: a ordem bate com a do banco que recebeu a migração
+  /** Verificação em duas etapas (TOTP): segredo cifrado; vale só depois de confirmado. */
+  totpSecretEnc: text('totp_secret_enc'),
+  totpEnabledAt: ts('totp_enabled_at'),
+  totpRecoveryHashes: jsonb('totp_recovery_hashes').$type<string[]>().notNull().default([]),
+  lastLoginAt: ts('last_login_at'),
 }, (t) => [uniqueIndex('platform_users_email_uq').on(sql`lower(${t.email})`)]);
 
 export const platformAiConnections = pgTable('platform_ai_connections', {
@@ -37,6 +43,14 @@ export const platformSettings = pgTable('platform_settings', {
   legacyImportedAt: ts('legacy_imported_at'),
   defaultAiId: uuid('default_ai_id').references(() => platformAiConnections.id, { onDelete: 'restrict' }),
   updatedAt: updatedAt(),
+  /** Cadastro de novos escritórios (null = vale a variável SIGNUP_ENABLED). */
+  signupEnabled: boolean('signup_enabled'),
+  /** Avaliação criada no cadastro: dias e limite de declarações (null = padrão do código). */
+  trialDays: integer('trial_days'),
+  trialDeclarationLimit: integer('trial_declaration_limit'),
+  supportEmail: text('support_email'),
+  termsUrl: text('terms_url'),
+  privacyUrl: text('privacy_url'),
 });
 
 export const platformAuditLogs = pgTable('platform_audit_logs', {

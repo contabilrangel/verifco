@@ -21,6 +21,11 @@ export const DEFAULT_SETTINGS: Required<OfficeSettings> = {
   reportSubtitleColor: '#3468E6',
   reportLineColor: '#E1E4E8',
   whatsappServiceNumber: '',
+  chargeLinkAutoSend: true,
+  reminderDarfCustomerDays: 3,
+  reminderInstallmentCustomerDays: 2,
+  reminderInstallmentOverdueCustomer: true,
+  reminderOfficeDigest: true,
 };
 
 export async function getOfficeSettings(db: DbOrTx, officeId: string): Promise<Required<OfficeSettings>> {

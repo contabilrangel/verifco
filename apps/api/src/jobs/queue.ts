@@ -101,6 +101,16 @@ const ownRound = (job: JobRow): SQL => (job.lockToken ? and(eq(jobs.id, job.id),
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
 const clampPct = (pct: number) => Math.max(0, Math.min(100, Math.round(pct)));
 
+/** Para onde a fila escreve as falhas (em produção, o log do processo). */
+export interface QueueLogger {
+  /** Job que falhou de vez (tentativas esgotadas ou erro permanente). */
+  jobFailed?: (job: Pick<JobRow, 'id' | 'type' | 'officeId' | 'attempts'>, error: string) => void;
+  /** Tentativa que falhou e será repetida. */
+  jobRetry?: (job: Pick<JobRow, 'id' | 'type' | 'officeId' | 'attempts'>, error: string, waitMs: number) => void;
+  /** O laço não conseguiu falar com o banco. */
+  loopError?: (error: string) => void;
+}
+
 interface Running {
   job: JobRow;
   heavy: boolean;
@@ -130,11 +140,16 @@ export class JobQueue {
   private refill = false;
   private lastSweep = 0;
   private running = new Map<string, Running>();
+  private readonly log: QueueLogger;
+  /** Última volta do laço que conseguiu falar com o banco (para a prontidão do worker). */
+  private lastTickAt = 0;
+  private lastErrorLoggedAt = 0;
 
   constructor(
     private db: Db,
-    opts: { concurrency?: number; leaseMs?: number; heartbeatMs?: number; policies?: Record<string, JobTypeOptions> } = {},
+    opts: { concurrency?: number; leaseMs?: number; heartbeatMs?: number; policies?: Record<string, JobTypeOptions>; logger?: QueueLogger } = {},
   ) {
+    this.log = opts.logger ?? {};
     this.concurrency = Math.max(1, Math.floor(opts.concurrency ?? 1));
     this.leaseMs = opts.leaseMs ?? JOB_LEASE_MS;
     this.heartbeatMs = opts.heartbeatMs ?? Math.min(HEARTBEAT_MS, Math.floor(this.leaseMs / 4));
@@ -322,9 +337,20 @@ export class JobQueue {
           });
         this.running.set(job.id, { job, heavy, done });
       }
-    } catch {
-      /* banco indisponível: tenta de novo no próximo intervalo */
+      this.lastTickAt = Date.now();
+    } catch (err) {
+      // banco indisponível: tenta de novo no próximo intervalo (o log sai no máximo uma vez por minuto)
+      if (Date.now() - this.lastErrorLoggedAt > 60_000) {
+        this.lastErrorLoggedAt = Date.now();
+        this.log.loopError?.(errorText(err));
+      }
     }
+  }
+
+  /** O laço está rodando e falou com o banco há pouco (prontidão do worker). */
+  health(maxSilenceMs = 60_000) {
+    const started = this.timer !== null;
+    return { started, running: this.running.size, alive: !started || (this.lastTickAt > 0 && Date.now() - this.lastTickAt < maxSilenceMs), lastTickAt: this.lastTickAt || null };
   }
 
   /** Jobs abandonados sem tentativas sobrando: falham de vez (e avisam como qualquer falha final). */
@@ -439,8 +465,10 @@ export class JobQueue {
           .set({ status: 'queued', error: message, runAt: new Date(Date.now() + wait), lockedAt: null, lockToken: null, finishedAt: null })
           .where(mine)
           .catch(() => undefined);
+        this.log.jobRetry?.(job, message, wait);
         return;
       }
+      this.log.jobFailed?.(job, message);
       const [failed] = await this.db
         .update(jobs)
         .set({ status: 'failed', error: message, finishedAt: new Date() })

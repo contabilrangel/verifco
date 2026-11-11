@@ -53,8 +53,8 @@ describe('etapas', () => {
 });
 
 describe('templates', () => {
-  it('tem 14 modelos e todos usam só variáveis declaradas', () => {
-    expect(TEMPLATES).toHaveLength(14);
+  it('tem 18 modelos e todos usam só variáveis declaradas', () => {
+    expect(TEMPLATES).toHaveLength(18);
     for (const t of TEMPLATES) {
       expect(unknownVariables(t.defaultSubject + t.defaultBody, t)).toEqual([]);
     }

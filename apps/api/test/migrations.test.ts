@@ -33,7 +33,8 @@ describe('migrações (SEG-4)', () => {
       writeFileSync(journalPath, JSON.stringify({ ...journal, entries: journal.entries.slice(0, index) }));
       const db = drizzle(client, { schema });
       await migrate(db, { migrationsFolder: dir });
-      const [office] = await db.insert(schema.offices).values({ name: 'Escritório com INSS' }).returning();
+      // em SQL: o schema.ts atual tem colunas de migrações posteriores
+      const office = (await client.query<{ id: string }>(`insert into offices (name) values ('Escritório com INSS') returning id`)).rows[0];
       await db.insert(schema.customers).values([
         { officeId: office.id, name: 'Antigo', cpfCnpj: '52998224725', inssPasswordEnc: 'inss-cifrado', ecacPasswordEnc: 'ecac-cifrado' },
         { officeId: office.id, name: 'Sem senha', cpfCnpj: '11144477735' },
@@ -70,7 +71,9 @@ describe('migrações (SEG-4)', () => {
       writeFileSync(journalPath, JSON.stringify({ ...journal, entries: journal.entries.slice(0, index) }));
       const db = drizzle(client, { schema });
       await migrate(db, { migrationsFolder: dir });
-      const offices = await db.insert(schema.offices).values([{ name: 'Ativo' }, { name: 'Desativado' }, { name: 'Sem SERPRO' }]).returning();
+      // em SQL: o schema.ts atual tem colunas de migrações posteriores
+      const offices: { id: string }[] = [];
+      for (const name of ['Ativo', 'Desativado', 'Sem SERPRO']) offices.push((await client.query<{ id: string }>(`insert into offices (name) values ($1) returning id`, [name])).rows[0]);
       const [active, disabled, other] = offices;
       await db.insert(schema.integrations).values([
         { officeId: active.id, provider: 'serpro', enabled: true, publicConfig: { contractorCnpj: '11222333000181' } },

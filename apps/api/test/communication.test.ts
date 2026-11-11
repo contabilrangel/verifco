@@ -44,7 +44,7 @@ describe('templates de e-mail', () => {
     const { api } = await registerOffice(env);
     const list = await api.get('/api/email-templates');
     expect(list.status).toBe(200);
-    expect(list.body).toHaveLength(14);
+    expect(list.body).toHaveLength(18);
     expect(list.body.every((t: any) => t.customized === false)).toBe(true);
 
     const put = await api.put('/api/email-templates/marketing', {
