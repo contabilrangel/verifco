@@ -2,9 +2,10 @@ import { and, eq, isNull } from 'drizzle-orm';
 import type { FastifyRequest } from 'fastify';
 import { MACHINE_TOKEN_PREFIX, type MachineTokenScope } from '@verifco/shared';
 import type { AppContext } from '../../context';
-import { apiTokens } from '../../db/schema';
+import { apiTokens, offices } from '../../db/schema';
 import { randomToken, sha256 } from '../../lib/crypto';
 import { HttpError, forbidden } from '../../lib/errors';
+import { OFFICE_BLOCKED_MESSAGE } from '../../lib/http';
 import { parseClientHeader } from './packages';
 
 export type ApiTokenRow = typeof apiTokens.$inferSelect;
@@ -43,6 +44,8 @@ export async function requireMachine(ctx: AppContext, req: FastifyRequest, scope
   if (!raw.startsWith(MACHINE_TOKEN_PREFIX) || raw.length < MACHINE_TOKEN_PREFIX.length + 20) throw unauthorizedMachine();
   const row = await ctx.db.query.apiTokens.findFirst({ where: and(eq(apiTokens.tokenHash, sha256(raw)), isNull(apiTokens.revokedAt)) });
   if (!row) throw unauthorizedMachine('Token de máquina inválido ou revogado.');
+  const [office] = await ctx.db.select({ blockedAt: offices.blockedAt }).from(offices).where(eq(offices.id, row.officeId));
+  if (office?.blockedAt) throw new HttpError(403, OFFICE_BLOCKED_MESSAGE);
   if (!scopes.includes(row.scope as MachineTokenScope)) {
     throw forbidden(`Este token é do escopo "${row.scope}" e não permite esta operação.`);
   }

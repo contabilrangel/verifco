@@ -46,5 +46,7 @@ declare module 'fastify' {
     platformAuth: { id: string; name: string; email: string; role: 'owner' | 'developer' } | null;
     auth: AuthUser | null;
     customerAuth: AuthCustomer | null;
+    /** O token é válido, mas o escritório foi suspenso no painel do sistema (ninguém dele entra). */
+    officeBlocked: boolean;
   }
 }

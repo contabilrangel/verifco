@@ -14,6 +14,12 @@ export interface OutgoingEmail {
   replyTo?: string | null;
   fromName?: string | null;
   attachments?: { filename: string; content: Buffer; contentType?: string }[];
+  /**
+   * E-mail da conta (convite, redefinição de senha, avisos de segurança): sai pelo e-mail do
+   * sistema (`SMTP_URL`) quando existe, e o do escritório fica de reserva. Os demais usam o do
+   * escritório primeiro. Assim um SMTP de escritório mal configurado não tranca ninguém para fora.
+   */
+  system?: boolean;
 }
 
 export interface EmailSender {

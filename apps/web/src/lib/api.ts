@@ -64,12 +64,19 @@ function saveBlob(data: ArrayBuffer | Blob, name: string) {
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 
+/** Aviso da sessão que caiu (token vencido ou revogado): o mesmo texto no erro da requisição e na tela de login. */
+export const SESSION_EXPIRED_MESSAGE = 'Sua sessão expirou. Entre de novo para continuar.';
+
 let onUnauthorized: (() => void) | null = null;
-export const setUnauthorizedHandler = (fn: () => void) => {
+/** Chamado quando a API recusa (401) o token da sessão do escritório: a sessão acabou. */
+export const setUnauthorizedHandler = (fn: (() => void) | null) => {
   onUnauthorized = fn;
 };
 
 async function request<T>(method: string, path: string, body?: unknown, opts: { raw?: boolean; token?: string } = {}): Promise<T> {
+  // caminho ausente (consulta desligada que ainda tinha uma nova tentativa agendada) viraria "/apinull",
+  // que o servidor web responde com o HTML do aplicativo: recusa antes de sair
+  if (typeof path !== 'string' || !path.startsWith('/')) throw new ApiError(0, 'Não foi possível concluir. Tente de novo.');
   const headers: Record<string, string> = {};
   const token = opts.token ?? getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
@@ -86,7 +93,12 @@ async function request<T>(method: string, path: string, body?: unknown, opts: { 
     // sem rede, o navegador lança "Failed to fetch" (em inglês): a interface recebe a mensagem em português
     throw new ApiError(0, OFFLINE_MESSAGE);
   }
-  if (res.status === 401 && !opts.token && token) onUnauthorized?.();
+  // (o 401 do próprio login é "senha incorreta", não sessão expirada)
+  if (res.status === 401 && !opts.token && token && path !== '/auth/login') {
+    // a sessão caiu: sai para o login (que explica o motivo e volta à página depois de entrar)
+    onUnauthorized?.();
+    throw new ApiError(401, SESSION_EXPIRED_MESSAGE);
+  }
   if (!res.ok) {
     let msg = `Erro ${res.status}`;
     let details: unknown;

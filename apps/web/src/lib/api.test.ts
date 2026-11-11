@@ -25,6 +25,21 @@ describe('errorMessage', () => {
   });
 });
 
+/** Consulta desligada com nova tentativa agendada chama o cliente sem caminho: não pode virar GET /apinull. */
+describe('caminho ausente', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('recusa sem chamar o servidor', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    for (const path of [null, undefined, '', 'customers']) {
+      const err = await api.get(path as unknown as string).catch((e: unknown) => e);
+      expect(err, String(path)).toBeInstanceOf(ApiError);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
 /** Download de arquivos grandes (DAD-3): o backup pode ter alguns GB. */
 describe('api.download', () => {
   const createObjectURL = URL.createObjectURL;

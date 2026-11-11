@@ -5,8 +5,9 @@ import { z } from 'zod';
 import { ADMIN_ROLE_NAME, ALL_PERMISSIONS, DEFAULT_OPERATOR_PERMISSIONS, addDaysIso, isValidCpfCnpj, onlyDigits, todayIso } from '@verifco/shared';
 import { contracts, offices, passwordResets, roles, userFavorites, users } from '../../db/schema';
 import { randomToken, sha256 } from '../../lib/crypto';
-import { badRequest, conflict, unauthorized } from '../../lib/errors';
-import { parse, requireUser } from '../../lib/http';
+import { badRequest, conflict, forbidden, unauthorized } from '../../lib/errors';
+import { OFFICE_BLOCKED_MESSAGE, parse, requireUser } from '../../lib/http';
+import { effectiveSettings, termsVersionOf } from '../../services/platform-settings';
 import { signUserToken } from '../../plugins/auth';
 import { FORGOT_PER_ACCOUNT_RULE, LOGIN_EMAIL_RULE, allow, check, fail, resetLimit } from '../../services/rate-limit';
 import { LOCKOUT_NOTICE_JOB, PASSWORD_RESET_JOB } from './jobs';
@@ -14,9 +15,6 @@ import { seedOfficeDefaults } from './seed-office';
 
 const password = z.string().min(8, 'A senha precisa ter ao menos 8 caracteres').max(200);
 
-/** Contrato de avaliação criado no cadastro do escritório. */
-const TRIAL_DAYS = 30;
-const TRIAL_DECLARATION_LIMIT = 30;
 
 export async function serializeMe(app: FastifyInstance, userId: string) {
   const { db } = app.ctx;
@@ -40,8 +38,21 @@ export async function serializeMe(app: FastifyInstance, userId: string) {
 export async function authRoutes(app: FastifyInstance) {
   const { db } = app.ctx;
 
+  /**
+   * O que a tela de entrada precisa saber antes do login: se o cadastro está aberto, o contato do
+   * suporte e os endereços dos termos de uso e da política de privacidade.
+   */
+  app.get('/auth/config', async () => {
+    const s = await effectiveSettings(app.ctx);
+    return { signupEnabled: s.signupEnabled, trialDays: s.trialDays, supportEmail: s.supportEmail, termsUrl: s.termsUrl, privacyUrl: s.privacyUrl };
+  });
+
   /** Cadastro de um novo escritório com o usuário administrador. */
   app.post('/auth/register', async (req, reply) => {
+    const settings = await effectiveSettings(app.ctx);
+    if (!settings.signupEnabled) {
+      throw forbidden(`O cadastro de novos escritórios está fechado.${settings.supportEmail ? ` Fale com o suporte: ${settings.supportEmail}.` : ''}`);
+    }
     const body = parse(
       z.object({
         officeName: z.string().trim().min(2).max(200),
@@ -49,9 +60,12 @@ export async function authRoutes(app: FastifyInstance) {
         name: z.string().trim().min(2).max(200),
         email: z.email(),
         password,
+        acceptTerms: z.boolean().optional(),
       }),
       req.body,
     );
+    // com termos publicados, a conta só nasce com o aceite (guardado no escritório, com a versão)
+    if (settings.termsUrl && body.acceptTerms !== true) throw badRequest('Para criar a conta, aceite os termos de uso.');
     if (body.officeDocument && !isValidCpfCnpj(body.officeDocument)) throw badRequest('CPF/CNPJ do escritório inválido.');
     const existing = await db.query.users.findFirst({ where: sql`lower(${users.email}) = ${body.email.toLowerCase()}` });
     if (existing) throw conflict('Já existe uma conta com este e-mail.');
@@ -59,7 +73,13 @@ export async function authRoutes(app: FastifyInstance) {
     const result = await db.transaction(async (tx) => {
       const [office] = await tx
         .insert(offices)
-        .values({ name: body.officeName, cpfCnpj: body.officeDocument ? onlyDigits(body.officeDocument) : null, email: body.email })
+        .values({
+          name: body.officeName,
+          cpfCnpj: body.officeDocument ? onlyDigits(body.officeDocument) : null,
+          email: body.email,
+          termsAcceptedAt: body.acceptTerms ? new Date() : null,
+          termsVersion: body.acceptTerms ? termsVersionOf(settings) : null,
+        })
         .returning();
       const [admin] = await tx
         .insert(roles)
@@ -77,16 +97,17 @@ export async function authRoutes(app: FastifyInstance) {
           isOwner: true,
         })
         .returning();
-      // avaliação de 30 dias contados no dia de Brasília (services/plan.ts aplica o limite e a validade)
+      // avaliação contada no dia de Brasília (services/plan.ts aplica o limite e a validade);
+      // dias e limite vêm do painel do sistema (padrão: 30 dias, 30 declarações)
       const today = todayIso();
       await tx.insert(contracts).values({
         officeId: office.id,
         name: 'Avaliação gratuita',
         plan: 'trial',
-        declarationLimit: TRIAL_DECLARATION_LIMIT,
+        declarationLimit: settings.trialDeclarationLimit,
         year: Number(today.slice(0, 4)),
         startsAt: today,
-        expiresAt: addDaysIso(today, TRIAL_DAYS),
+        expiresAt: addDaysIso(today, settings.trialDays),
       });
       return { office, user };
     });
@@ -115,6 +136,8 @@ export async function authRoutes(app: FastifyInstance) {
       throw unauthorized('E-mail ou senha incorretos.');
     }
     await resetLimit(app.ctx, emailKey);
+    const office = await db.query.offices.findFirst({ where: eq(offices.id, user.officeId) });
+    if (office?.blockedAt) throw forbidden(OFFICE_BLOCKED_MESSAGE);
     await db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id));
     return { token: signUserToken(app, user), ...(await serializeMe(app, user.id)) };
   });

@@ -21,15 +21,15 @@ export const HELP_SECTIONS: HelpSection[] = [
     faqs: [
       { q: 'Por onde começo?', a: 'Cadastre o logo e os dados do escritório em Meu escritório › Empresa, convide a equipe em Colaboradores e importe a carteira em Clientes › Novos clientes em lote.' },
       { q: 'O que é o ano-exercício da barra superior?', a: 'É o ano de entrega da declaração (o exercício 2026 corresponde ao ano-calendário 2025). Ele vale para todas as telas, filtros e relatórios.' },
-      { q: 'Como favorito uma tela?', a: 'Clique na estrela ao lado do título da página. Os favoritos ficam salvos no seu usuário.' },
+      { q: 'Como favorito uma tela?', a: 'Clique na estrela ao lado do título da página. Os favoritos ficam salvos no seu usuário e aparecem no topo do menu lateral. Na lista de Clientes, o favorito guarda a busca, os filtros e a ordem.' },
     ],
   },
   {
     id: 'clientes',
     title: 'Clientes',
     faqs: [
-      { q: 'Como encontro um cliente?', a: 'Use a busca da barra superior (nome, CPF ou e-mail) e tecle Enter, ou a lista de Clientes com filtros por grupo, responsável, procuração e status da declaração.' },
-      { q: 'Posso alterar vários clientes de uma vez?', a: 'Sim. Na lista de Clientes, selecione os clientes e use o menu Ações para mudar status, responsável, grupos, procurador, exportar para Excel ou enviar a mala direta.' },
+      { q: 'Como encontro um cliente?', a: 'Digite o nome, o CPF ou o e-mail na busca da barra superior: os primeiros clientes aparecem enquanto você digita e Enter abre a lista completa. Na lista de Clientes há filtros por grupo, responsável, procuração e status da declaração, e a ordem por nome, cadastro ou atualização.' },
+      { q: 'Posso alterar vários clientes de uma vez?', a: 'Sim. Na lista de Clientes, selecione os clientes e use o menu Ações para mudar status, responsável, grupos, procurador, exportar para Excel ou enviar a mala direta. Depois de marcar a página inteira, “Selecionar todos os resultados” estende a seleção a todos os clientes da busca e dos filtros (as ações em massa aceitam até 2.000 clientes por vez).' },
       { q: 'Um colaborador pode ver só os clientes dele?', a: 'Sim. Em Meu escritório › Preferências, ative a restrição de visibilidade por responsável. O dono do escritório continua vendo todos.' },
     ],
   },
@@ -37,8 +37,12 @@ export const HELP_SECTIONS: HelpSection[] = [
     id: 'irpf',
     title: 'Declaração IRPF',
     faqs: [
-      { q: 'Quais são as etapas da declaração?', a: 'Na aba IRPF do cliente: orçamento, declaração, documentação (checklist), DARF, relatórios, pendências e holding. O status de cada declaração aparece no Kanban.' },
-      { q: 'Como peço documentos que faltam?', a: 'Na etapa Pendências do cliente, cadastre cada documento com a data limite e envie a lista por e-mail ou WhatsApp. O relatório Documentos faltantes mostra todas as pendências da carteira.' },
+      { q: 'Quais são as etapas da declaração?', a: 'Na aba IRPF do cliente: orçamento, declaração, documentação (checklist), DARF, relatórios, documentos faltantes, documentos e holding. O status de cada declaração aparece no Kanban.' },
+      { q: 'Como peço documentos que faltam?', a: 'Na etapa Documentos faltantes do cliente, cadastre cada documento com a data limite e envie a lista por e-mail ou WhatsApp. O relatório Documentos faltantes mostra o que falta em toda a carteira.' },
+      {
+        q: 'O Verifco lê os arquivos do programa IRPF?',
+        a: 'Não. Os arquivos .DEC, .REC e .DBK enviados pelo sincronizador ficam guardados nos documentos do cliente, e o recibo (.REC) marca a declaração como transmitida. Nada é lido de dentro deles: as linhas da declaração são cadastradas na etapa Declaração ou validadas em Elaboração.',
+      },
       { q: 'O que é o kit pós-declaração?', a: 'Um PDF para o cliente com o resumo da declaração transmitida, as quotas do DARF ou a restituição, a evolução do patrimônio e lembretes para o próximo ano. Baixe na etapa Relatórios ou envie em lote pela mala direta.' },
     ],
   },
@@ -47,10 +51,10 @@ export const HELP_SECTIONS: HelpSection[] = [
     title: 'Relatórios',
     faqs: [
       { q: 'Quais relatórios posso gerar para um cliente?', a: 'Na etapa Relatórios da aba IRPF: análise de caixa, detalhes do caixa, histórico patrimonial e do caixa (últimos 5 exercícios), aviso de malha fina, planejamento tributário e bens e direitos, em PDF ou Excel.' },
-      { q: 'Por que o relatório diz que a declaração não tem linhas?', a: 'Os relatórios usam as linhas cadastradas da declaração (rendimentos, pagamentos, bens, dívidas). Importe ou cadastre a declaração do exercício antes de gerar.' },
+      { q: 'Por que o relatório diz que a declaração não tem linhas?', a: 'Os relatórios usam as linhas cadastradas da declaração (rendimentos, pagamentos, bens, dívidas). Cadastre as linhas na etapa Declaração do cliente, ou valide em Elaboração as linhas que a IA leu dos documentos, antes de gerar.' },
       { q: 'Para que servem os "Outros gastos"?', a: 'Gastos que não aparecem na declaração, como juros, cartão de crédito e perdas de capital, entram na análise de caixa como aplicações do ano e deixam o saldo mais próximo da realidade.' },
       { q: 'Quando posso exibir os dados do cônjuge?', a: 'Quando o cônjuge está como dependente (relação cônjuge) e também é cliente do escritório com declaração no mesmo exercício. Os relatórios passam a mostrar os dois e o consolidado do casal.' },
-      { q: 'O que mostram os relatórios gerais?', a: 'Em Relatórios: resultados (imposto a pagar e a restituir da carteira), documentos faltantes por cliente e restituições com a data dos lotes. Todos podem ser baixados em Excel.' },
+      { q: 'O que mostram os relatórios gerais?', a: 'Em Relatórios: faturamento, resultados (imposto a pagar e a restituir da carteira), documentos faltantes por cliente e restituições com a data dos lotes. A tela mostra 50 linhas por página; “Imprimir” e o Excel saem com o relatório inteiro.' },
     ],
   },
   {
@@ -83,11 +87,40 @@ export const HELP_SECTIONS: HelpSection[] = [
     ],
   },
   {
+    id: 'portal',
+    title: 'Portal do cliente',
+    faqs: [
+      { q: 'O que o cliente vê no portal?', a: 'O andamento da declaração, o que o escritório precisa dele (documentos do checklist), os orçamentos para aprovar, os documentos que o escritório compartilhou (declaração, recibo, DARF) e as mensagens trocadas com o escritório.' },
+      { q: 'Como libero o acesso?', a: 'Na aba Identificação do cliente, use “Gerar acesso ao portal do cliente”: ele recebe por e-mail o código de acesso e entra com o CPF e o código. É preciso ter o e-mail cadastrado. No mesmo lugar dá para reenviar ou revogar o acesso.' },
+    ],
+  },
+  {
+    id: 'elaboracao',
+    title: 'Elaboração e pré-preenchidas',
+    faqs: [
+      { q: 'O que a Elaboração faz?', a: 'A IA lê os documentos do cliente (PDF ou imagem) e propõe as linhas da declaração, comparando com as já lançadas. Em “Conferir” você aceita ou recusa as linhas em conflito e “Validar” aplica as aceitas. A exportação gera um pacote .zip de conferência (linhas em CSV/JSON e os documentos usados) para digitar no programa IRPF: não é um arquivo do programa.' },
+      { q: 'Como funcionam as Pré-preenchidas?', a: 'A tela guarda os arquivos das pré-preenchidas do exercício, que chegam pelo sincronizador ou por envio manual. O procurador baixa o arquivo no eCAC; no Verifco você baixa um por vez, só os novos ou todos em um .zip, e inicia a declaração no programa IRPF a partir dele.' },
+    ],
+  },
+  {
+    id: 'oportunidades',
+    title: 'Radar e assistentes',
+    faqs: [
+      { q: 'O que é o Radar de oportunidades?', a: 'Em Início › Radar de oportunidades, o Verifco aponta clientes com sinais de serviços adicionais nas declarações do exercício (alto patrimônio, criptoativos, renda variável, atividade rural, carnê-leão, abertura de empresa, IRPFM e holding). “Atualizar dados” refaz a análise; em cada cartão você vê os clientes, marca o andamento e abre uma campanha de mala direta.' },
+      { q: 'O que são os Assistentes de IA?', a: 'Na aba IA do cliente há três especialistas em conversa (IR, Malha Fina, com minuta de defesa administrativa, e Ganho de Capital) e o Assessor Financeiro, que analisa até 10 documentos do cliente. As respostas são apoio ao trabalho: revise fatos, valores e fundamentação antes de usar.' },
+      { q: 'O que é o Copiloto Financeiro?', a: 'Uma aba do cliente com receitas e despesas por mês, orçamento por categoria, vencimentos, seguros, bens e contas no exterior, documentos, a projeção do IRPFM e uma conversa com IA sobre esses dados. O cliente precisa ser habilitado em Meu escritório › Copiloto Financeiro; o limite de clientes vem do contrato.' },
+      { q: 'Para que serve o Livro Caixa?', a: 'Na aba Livro Caixa do cliente, baixe os modelos de planilha, converta a planilha preenchida em lançamentos, revise os lançamentos por mês e exporte o arquivo para importar no Carnê-Leão Web (Escrituração › Importar Escrituração).' },
+    ],
+  },
+  {
     id: 'acesso',
     title: 'Acesso e segurança',
     faqs: [
       { q: 'Como controlo o que cada colaborador faz?', a: 'Em Meu escritório › Funções, crie perfis e marque as permissões de cada área. O servidor confere a permissão em todas as ações.' },
       { q: 'As senhas do eCAC ficam seguras?', a: 'Senhas e certificados ficam cifrados no banco e nunca são exibidos de volta na tela.' },
+      { q: 'Como faço backup dos dados do escritório?', a: 'Em Backup (para quem tem a permissão), “Gerar backup” monta em segundo plano um arquivo .zip com os dados e os arquivos do escritório para guardar fora do Verifco. O arquivo contém dados pessoais e fiscais dos clientes: guarde em local seguro e com acesso restrito.' },
+      { q: 'Por que voltei para a tela de login?', a: 'A sessão vale por 12 horas e também termina quando o acesso é revogado. A tela de login avisa que a sessão expirou; ao entrar de novo, o Verifco volta para a página em que você estava.' },
+      { q: 'O que é o modo de consulta?', a: 'Quando o contrato do escritório vence, um aviso aparece no topo das páginas e o Verifco passa a só consultar: dá para ver e exportar os dados, mas não para cadastrar nem alterar, até a renovação. Os contratos ficam em Meu escritório › Contratos.' },
     ],
   },
 ];

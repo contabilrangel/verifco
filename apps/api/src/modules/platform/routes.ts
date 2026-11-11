@@ -1,9 +1,9 @@
 import bcrypt from 'bcryptjs';
-import { asc, desc, eq, ilike, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { AI_PROVIDERS, CONTRACT_STATUS_KEYS, aiProviderDef, todayIso } from '@verifco/shared';
-import { contracts, offices } from '../../db/schema';
+import { contracts, jobs, offices, users } from '../../db/schema';
 import { platformUsers, platformSettings, platformAiConnections, platformAuditLogs } from '../../db/platform-schema';
 import { badRequest, conflict, forbidden, notFound, unauthorized } from '../../lib/errors';
 import { guard, parse } from '../../lib/http';
@@ -11,6 +11,9 @@ import { PLATFORM_LOGIN_EMAIL_RULE, PLATFORM_LOGIN_RULE, check, consume, fail, r
 import { unsafeBaseUrlReason } from '../../integrations/ssrf';
 import { safeConnection, unlockConnection, resolveGlobalAi } from '../../integrations/platform-ai-store';
 import { completeConnection, connectionFetch } from '../../integrations/multi-ai';
+import { platformSmtpInfo, testPlatformSmtp } from '../../integrations/email';
+import { IntegrationError } from '../../integrations/http';
+import { effectiveSettings } from '../../services/platform-settings';
 
 const idParam = z.object({ id: z.uuid() });
 const pageQuery = z.object({ offset: z.coerce.number().int().min(0).default(0), limit: z.coerce.number().int().min(1).max(500).default(100),
@@ -30,6 +33,19 @@ const contractBody = z.object({
   startsAt: z.iso.date(), expiresAt: z.iso.date(), hasBackup: z.boolean(),
   status: z.enum(CONTRACT_STATUS_KEYS),
 }).refine((v) => v.expiresAt >= v.startsAt, { message: 'O término deve ser igual ou posterior ao início.' });
+
+const platformPassword = z.string().min(12, 'Use uma senha com pelo menos 12 caracteres.').max(200);
+/** Endereço público (https) ou vazio; nunca `javascript:` nem outro esquema, porque vira link na tela de entrada. */
+const publicUrl = z.string().trim().max(500).refine((v) => /^https:\/\/[^\s]+$/i.test(v), 'Informe um endereço que comece com https://').nullable();
+const settingsBody = z.object({
+  signupEnabled: z.boolean().nullable(),
+  trialDays: z.number().int().min(1).max(365).nullable(),
+  trialDeclarationLimit: z.number().int().min(1).max(1000000).nullable(),
+  supportEmail: z.email().max(320).nullable(),
+  termsUrl: publicUrl,
+  privacyUrl: publicUrl,
+});
+const JOB_STATUSES = ['queued', 'running', 'done', 'failed'] as const;
 
 function platformUser(req: FastifyRequest, owner = false) {
   if (!req.platformAuth) throw unauthorized('Entre na administração do sistema para continuar.');
@@ -66,6 +82,7 @@ export default async function platformRoutes(app: FastifyInstance) {
       throw unauthorized('E-mail ou senha inválidos.');
     }
     await resetLimit(rateCtx, ipKey);
+    await platformDb.update(platformUsers).set({ lastLoginAt: new Date() }).where(eq(platformUsers.id, user.id));
     await platformDb.insert(platformAuditLogs).values({ actorId: user.id, action: 'platform.login' });
     return { token: app.jwt.sign({ typ: 'platform', sub: user.id, tv: user.tokenVersion }, { expiresIn: '1h' }) };
   });
@@ -75,24 +92,98 @@ export default async function platformRoutes(app: FastifyInstance) {
     await platformDb.update(platformUsers).set({ tokenVersion: sql`${platformUsers.tokenVersion} + 1` }).where(eq(platformUsers.id, user.id));
     await audit(req, 'platform.logout'); return { ok: true };
   });
+  /** A própria conta troca a senha (as outras sessões caem; esta recebe um token novo). */
+  app.post('/platform/change-password', read, async (req) => {
+    const me = platformUser(req);
+    const body = parse(z.object({ currentPassword: z.string().min(1).max(200), newPassword: platformPassword }), req.body);
+    await consume(rateCtx, `platform-password:${me.id}`, { max: 10, windowSec: 900 });
+    const row = await platformDb.query.platformUsers.findFirst({ where: eq(platformUsers.id, me.id) });
+    if (!row || !(await bcrypt.compare(body.currentPassword, row.passwordHash))) throw badRequest('Senha atual incorreta.');
+    const [saved] = await platformDb.update(platformUsers)
+      .set({ passwordHash: await bcrypt.hash(body.newPassword, 12), tokenVersion: sql`${platformUsers.tokenVersion} + 1` })
+      .where(eq(platformUsers.id, me.id)).returning({ id: platformUsers.id, tokenVersion: platformUsers.tokenVersion });
+    await audit(req, 'platform.password.change');
+    return { token: app.jwt.sign({ typ: 'platform', sub: saved.id, tv: saved.tokenVersion }, { expiresIn: '1h' }) };
+  });
   app.get('/platform/overview', read, async () => {
     const today = todayIso();
     const result = await db.execute(sql`select
       (select count(*)::int from offices) as offices,
+      (select count(*)::int from offices where blocked_at is not null) as blocked_offices,
       (select count(*)::int from users where is_active) as collaborators,
       (select count(*)::int from contracts where status = 'active' and starts_at <= ${today}::date and expires_at >= ${today}::date) as active_contracts,
-      (select count(*)::int from jobs where status = 'queued') as queued_jobs,
-      (select count(*)::int from jobs where status = 'failed') as failed_jobs`);
-    return (result as { rows: unknown[] }).rows[0];
+      (select count(*)::int from jobs where status = 'queued' and run_at <= now()) as queued_jobs,
+      (select count(*)::int from jobs where status = 'running') as running_jobs,
+      (select count(*)::int from jobs where status = 'failed') as failed_jobs,
+      (select count(*)::int from jobs where status = 'failed' and finished_at > now() - interval '24 hours') as failed_jobs_24h,
+      (select extract(epoch from now() - min(run_at))::int from jobs where status = 'queued' and run_at <= now()) as oldest_queued_seconds`);
+    const queue = ctx.jobs.health();
+    return {
+      ...((result as { rows: Record<string, unknown>[] }).rows[0]),
+      // o processo que respondeu está consumindo a fila? (num servidor só de API, `worker` é false)
+      queue: { worker: queue.started, alive: queue.alive, lastTickAt: queue.lastTickAt },
+      email: platformSmtpInfo(ctx).configured,
+    };
   });
   app.get('/platform/offices', read, async (req) => {
     const page = parse(pageQuery, req.query);
+    const today = todayIso();
+    const term = '%' + page.search.replace(/[\\%_]/g, (c) => '\\' + c) + '%';
     return db.select({
     id: offices.id, name: offices.name, email: offices.email, city: offices.city, state: offices.state,
     collaborators: sql<number>`(select count(*)::int from users where office_id = offices.id)`,
     customers: sql<number>`(select count(*)::int from customers where office_id = offices.id and deleted_at is null)`,
-  }).from(offices).where(page.search ? ilike(offices.name, '%' + page.search + '%') : undefined)
+    blockedAt: offices.blockedAt, createdAt: offices.createdAt,
+    lastLoginAt: sql<Date | null>`(select max(last_login_at) from users where office_id = offices.id)`.mapWith((v) => (v ? new Date(v as string) : null)),
+    contractExpiresAt: sql<string | null>`(select max(expires_at)::text from contracts where office_id = offices.id and status = 'active' and starts_at <= ${today}::date)`,
+  }).from(offices).where(page.search ? or(ilike(offices.name, term), ilike(offices.email, term), ilike(offices.cpfCnpj, term)) : undefined)
       .orderBy(asc(offices.name), asc(offices.id)).limit(page.limit).offset(page.offset);
+  });
+  /** Ficha do escritório: quem responde por ele, uso e contratos. Nenhum dado de cliente. */
+  app.get('/platform/offices/:id', read, async (req) => {
+    const { id } = parse(idParam, req.params);
+    const office = await db.query.offices.findFirst({ where: eq(offices.id, id) });
+    if (!office) throw notFound('Escritório');
+    const usage = await db.execute(sql`select
+      (select count(*)::int from users where office_id = ${id} and is_active) as active_users,
+      (select count(*)::int from customers where office_id = ${id} and deleted_at is null) as customers,
+      (select count(*)::int from declarations where office_id = ${id} and exercise_year = ${Number(todayIso().slice(0, 4))}) as declarations_this_year,
+      (select count(*)::int from declarations where office_id = ${id}) as declarations,
+      (select coalesce(sum(size), 0)::bigint from files where office_id = ${id}) as storage_bytes,
+      (select count(*)::int from files where office_id = ${id}) as files,
+      (select count(*)::int from jobs where office_id = ${id} and status = 'failed' and finished_at > now() - interval '7 days') as failed_jobs_7d,
+      (select max(last_login_at) from users where office_id = ${id}) as last_login_at`);
+    const u = (usage as { rows: Record<string, unknown>[] }).rows[0];
+    const owners = await db.select({ name: users.name, email: users.email, lastLoginAt: users.lastLoginAt })
+      .from(users).where(and(eq(users.officeId, id), eq(users.isOwner, true))).orderBy(asc(users.name));
+    const officeContracts = await db.select({
+      id: contracts.id, name: contracts.name, plan: contracts.plan, year: contracts.year, declarationLimit: contracts.declarationLimit,
+      startsAt: contracts.startsAt, expiresAt: contracts.expiresAt, hasBackup: contracts.hasBackup, status: contracts.status,
+    }).from(contracts).where(eq(contracts.officeId, id)).orderBy(desc(contracts.expiresAt), asc(contracts.id));
+    return {
+      id: office.id, name: office.name, cpfCnpj: office.cpfCnpj, email: office.email, phone: office.phone, city: office.city, state: office.state,
+      createdAt: office.createdAt, blockedAt: office.blockedAt, blockedReason: office.blockedReason,
+      termsAcceptedAt: office.termsAcceptedAt, termsVersion: office.termsVersion,
+      owners,
+      usage: {
+        activeUsers: Number(u.active_users), customers: Number(u.customers), declarations: Number(u.declarations),
+        declarationsThisYear: Number(u.declarations_this_year), storageBytes: Number(u.storage_bytes), files: Number(u.files),
+        failedJobs7d: Number(u.failed_jobs_7d), lastLoginAt: u.last_login_at ? new Date(u.last_login_at as string) : null,
+      },
+      contracts: officeContracts,
+    };
+  });
+  /** Suspende ou libera o acesso do escritório (colaboradores, portal do cliente e robôs). Os dados ficam. */
+  app.put('/platform/offices/:id/block', write, async (req) => {
+    const { id } = parse(idParam, req.params);
+    const body = parse(z.object({ blocked: z.boolean(), reason: z.string().trim().max(500).nullable().optional() }), req.body);
+    if (body.blocked && !body.reason) throw badRequest('Informe o motivo da suspensão (fica registrado na auditoria).');
+    const [saved] = await db.update(offices)
+      .set({ blockedAt: body.blocked ? new Date() : null, blockedReason: body.blocked ? body.reason ?? null : null })
+      .where(eq(offices.id, id)).returning({ id: offices.id, blockedAt: offices.blockedAt });
+    if (!saved) throw notFound('Escritório');
+    await audit(req, body.blocked ? 'office.block' : 'office.unblock', id, body.blocked ? { reason: body.reason } : {});
+    return saved;
   });
   app.put('/platform/offices/:id', write, async (req) => {
     const { id } = parse(idParam, req.params);
@@ -103,12 +194,13 @@ export default async function platformRoutes(app: FastifyInstance) {
     await audit(req, 'office.update', id); return saved;
   });
   app.get('/platform/contracts', read, async (req) => {
-    const page = parse(pageQuery, req.query);
+    const page = parse(pageQuery.extend({ officeId: z.uuid().optional() }), req.query);
     return db.select({
     id: contracts.id, officeId: contracts.officeId, officeName: offices.name, name: contracts.name, plan: contracts.plan,
     year: contracts.year, declarationLimit: contracts.declarationLimit, startsAt: contracts.startsAt, expiresAt: contracts.expiresAt,
     hasBackup: contracts.hasBackup, status: contracts.status,
   }).from(contracts).innerJoin(offices, eq(offices.id, contracts.officeId))
+    .where(page.officeId ? eq(contracts.officeId, page.officeId) : undefined)
     .orderBy(desc(contracts.createdAt), asc(contracts.id)).limit(page.limit).offset(page.offset);
   });
   async function saveContract(req: FastifyRequest, id?: string) {
@@ -182,12 +274,114 @@ export default async function platformRoutes(app: FastifyInstance) {
     if (!deleted.length) throw notFound('Conexão');
     await audit(req, 'ai.delete', id); return reply.code(204).send();
   });
+  // ---------------------------------------------------------------- fila de tarefas
+  /** Tarefas da fila (padrão: as que falharam), com o escritório e o erro. O conteúdo do job não sai daqui. */
+  app.get('/platform/jobs', read, async (req) => {
+    const q = parse(z.object({ status: z.enum(JOB_STATUSES).default('failed'), limit: z.coerce.number().int().min(1).max(200).default(50), officeId: z.uuid().optional() }), req.query);
+    return db.select({
+      id: jobs.id, type: jobs.type, status: jobs.status, attempts: jobs.attempts, maxAttempts: jobs.maxAttempts, error: jobs.error,
+      officeId: jobs.officeId, officeName: offices.name, createdAt: jobs.createdAt, runAt: jobs.runAt, finishedAt: jobs.finishedAt,
+    }).from(jobs).leftJoin(offices, eq(offices.id, jobs.officeId))
+      .where(and(eq(jobs.status, q.status), q.officeId ? eq(jobs.officeId, q.officeId) : undefined))
+      .orderBy(desc(sql`coalesce(${jobs.finishedAt}, ${jobs.createdAt})`)).limit(q.limit);
+  });
+  /** Recoloca na fila uma tarefa que falhou (as tentativas recomeçam do zero). */
+  app.post('/platform/jobs/:id/retry', write, async (req) => {
+    const { id } = parse(idParam, req.params);
+    const [saved] = await db.update(jobs)
+      .set({ status: 'queued', attempts: 0, error: null, runAt: new Date(), finishedAt: null, lockedAt: null, lockToken: null, progress: 0 })
+      .where(and(eq(jobs.id, id), eq(jobs.status, 'failed'))).returning({ id: jobs.id, type: jobs.type });
+    if (!saved) throw notFound('Tarefa com falha');
+    await audit(req, 'job.retry', id, { type: saved.type }); return { ok: true };
+  });
+  /** Tira da lista as tarefas com falha já vistas (a rotina de limpeza apagaria só depois do prazo). */
+  app.post('/platform/jobs/dismiss', write, async (req) => {
+    const { ids } = parse(z.object({ ids: z.array(z.uuid()).min(1).max(200) }), req.body);
+    const gone = await db.delete(jobs).where(and(inArray(jobs.id, ids), eq(jobs.status, 'failed'))).returning({ id: jobs.id });
+    await audit(req, 'job.dismiss', null, { count: gone.length }); return { removed: gone.length };
+  });
+  // ---------------------------------------------------------------- configurações do sistema
+  app.get('/platform/settings', read, async () => {
+    const row = await platformDb.query.platformSettings.findFirst({ where: eq(platformSettings.id, 'global') });
+    return {
+      // o que está gravado (null = padrão) e o que vale de fato
+      stored: { signupEnabled: row?.signupEnabled ?? null, trialDays: row?.trialDays ?? null, trialDeclarationLimit: row?.trialDeclarationLimit ?? null,
+        supportEmail: row?.supportEmail ?? null, termsUrl: row?.termsUrl ?? null, privacyUrl: row?.privacyUrl ?? null },
+      effective: await effectiveSettings(ctx),
+      // travas do servidor que o painel não muda
+      environment: { signupEnabled: ctx.config.SIGNUP_ENABLED, supportEmail: ctx.config.SUPPORT_EMAIL || null },
+    };
+  });
+  app.put('/platform/settings', write, async (req) => {
+    const body = parse(settingsBody, req.body);
+    await platformDb.insert(platformSettings).values({ id: 'global', ...body }).onConflictDoUpdate({
+      target: platformSettings.id, set: { ...body, updatedAt: new Date() },
+    });
+    await audit(req, 'settings.update', null, body);
+    return effectiveSettings(ctx);
+  });
+  // ---------------------------------------------------------------- e-mail do sistema
+  app.get('/platform/email', read, async () => {
+    const failures = await db.execute(sql`select
+      (select count(*)::int from jobs where status = 'failed' and type like 'auth.%' and finished_at > now() - interval '7 days') as account_mail_failures_7d,
+      (select count(*)::int from deliveries where channel = 'email' and status = 'failed' and created_at > now() - interval '7 days') as delivery_failures_7d,
+      (select count(*)::int from deliveries where channel = 'email' and status = 'sent' and created_at > now() - interval '7 days') as delivery_sent_7d`);
+    const f = (failures as { rows: Record<string, unknown>[] }).rows[0];
+    return { ...platformSmtpInfo(ctx), accountMailFailures7d: Number(f.account_mail_failures_7d), deliveryFailures7d: Number(f.delivery_failures_7d), deliverySent7d: Number(f.delivery_sent_7d) };
+  });
+  app.post('/platform/email/test', write, async (req) => {
+    await consume(rateCtx, `email-test:${platformUser(req).id}`, { max: 10, windowSec: 600 });
+    const { to } = parse(z.object({ to: z.email().max(320).optional() }), req.body ?? {});
+    let ok = true; let message: string;
+    try { message = await testPlatformSmtp(ctx, to, ctx.providers.smtpTransport); }
+    catch (err) { ok = false; message = err instanceof IntegrationError ? err.message : 'Não foi possível testar o envio de e-mail.'; }
+    await audit(req, 'email.test', null, { ok, sent: Boolean(to) });
+    return { ok, message };
+  });
+  // ---------------------------------------------------------------- contas do sistema
   app.get('/platform/users', write, async () => platformDb.select({
     id: platformUsers.id, name: platformUsers.name, email: platformUsers.email, role: platformUsers.role, isActive: platformUsers.isActive,
+    createdAt: platformUsers.createdAt, lastLoginAt: platformUsers.lastLoginAt,
+    twoFactor: sql<boolean>`${platformUsers.totpEnabledAt} is not null`,
   }).from(platformUsers).orderBy(asc(platformUsers.name)));
+  /** Nome e papel de uma conta. Rebaixar o último proprietário ativo é recusado; ninguém muda o próprio papel. */
+  app.put('/platform/users/:id', write, async (req) => {
+    const { id } = parse(idParam, req.params);
+    const body = parse(z.object({ name: z.string().trim().min(1).max(100), role: z.enum(['owner', 'developer']) }), req.body);
+    const saved = await platformDb.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(728103)`);
+      const target = await tx.query.platformUsers.findFirst({ where: eq(platformUsers.id, id) });
+      if (!target) throw notFound('Conta do sistema');
+      if (target.role !== body.role) {
+        if (id === platformUser(req).id) throw badRequest('Você não pode mudar o seu próprio papel.');
+        if (target.role === 'owner' && target.isActive) {
+          const owners = await tx.select({ id: platformUsers.id }).from(platformUsers).where(sql`${platformUsers.role} = 'owner' and ${platformUsers.isActive}`);
+          if (owners.length <= 1) throw conflict('O sistema precisa manter pelo menos um proprietário ativo.');
+        }
+      }
+      // mudou o papel: as sessões abertas da conta caem (o token antigo carregaria o papel anterior só até a próxima requisição, mas encerrar é mais claro)
+      return (await tx.update(platformUsers)
+        .set({ name: body.name, role: body.role, ...(target.role !== body.role ? { tokenVersion: sql`${platformUsers.tokenVersion} + 1` } : {}) })
+        .where(eq(platformUsers.id, id)).returning({ id: platformUsers.id }))[0];
+    });
+    await audit(req, 'platform.user.update', id, { role: body.role }); return saved;
+  });
+  /** O proprietário define uma senha nova para outra conta (a própria se troca em "Minha conta"). */
+  app.put('/platform/users/:id/password', write, async (req) => {
+    const { id } = parse(idParam, req.params);
+    const { password } = parse(z.object({ password: platformPassword }), req.body);
+    if (id === platformUser(req).id) throw badRequest('Para a sua conta, use "Trocar senha" (pede a senha atual).');
+    const [saved] = await platformDb.update(platformUsers)
+      .set({ passwordHash: await bcrypt.hash(password, 12), tokenVersion: sql`${platformUsers.tokenVersion} + 1` })
+      .where(eq(platformUsers.id, id)).returning({ id: platformUsers.id, email: platformUsers.email });
+    if (!saved) throw notFound('Conta do sistema');
+    // a conta pode estar bloqueada por tentativas com a senha antiga
+    await resetLimit(rateCtx, `platform-login-email:${saved.email}`);
+    await audit(req, 'platform.user.password', id); return { id: saved.id };
+  });
   app.post('/platform/users', write, async (req, reply) => {
     const body = parse(z.object({ name: z.string().trim().min(1).max(100), email: z.email().max(320).transform((v) => v.toLowerCase()),
-      password: z.string().min(12, 'Use uma senha com pelo menos 12 caracteres.').max(200), role: z.enum(['owner', 'developer']) }), req.body);
+      password: platformPassword, role: z.enum(['owner', 'developer']) }), req.body);
     if (await platformDb.query.platformUsers.findFirst({ where: eq(platformUsers.email, body.email) })) throw conflict('Este e-mail já possui uma conta do sistema.');
     const [saved] = await platformDb.insert(platformUsers).values({ name: body.name, email: body.email, role: body.role,
       passwordHash: await bcrypt.hash(body.password, 12) }).returning({ id: platformUsers.id });

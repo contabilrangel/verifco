@@ -134,8 +134,10 @@ export function parse<T extends z.ZodType>(schema: T, data: unknown): z.infer<T>
   return r.data;
 }
 
+export const OFFICE_BLOCKED_MESSAGE = 'O acesso deste escritório está suspenso. Fale com o suporte do Verifco.';
+
 export function requireUser(req: FastifyRequest): AuthUser {
-  if (!req.auth) throw unauthorized();
+  if (!req.auth) throw req.officeBlocked ? forbidden(OFFICE_BLOCKED_MESSAGE) : unauthorized();
   return req.auth;
 }
 

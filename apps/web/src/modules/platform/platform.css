@@ -19,6 +19,11 @@
 .vf-platform-page-title span { color: var(--color-text-low); }
 .vf-platform-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: var(--size-spacing-04); }
 .vf-platform-metrics strong { display: block; margin-top: var(--size-spacing-03); font: var(--text-xxl-bold); }
+.vf-platform-metrics > div { display: grid; gap: var(--size-spacing-01); align-content: start; }
+.vf-platform-metrics strong.vf-platform-metric-text { font: var(--text-lg-bold); }
+.vf-platform-subtitle { margin: 0 0 var(--size-spacing-02); font: var(--text-sm-bold); }
+.vf-platform-error { max-width: 420px; overflow-wrap: anywhere; color: var(--color-text-medium); }
+.vf-platform-test { align-items: flex-end; }
 .vf-platform-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--size-spacing-04); }
 .vf-platform-list, .vf-platform-audit { display: grid; gap: var(--size-spacing-04); }
 .vf-platform-row, .vf-platform-section-title { display: flex; align-items: center; justify-content: space-between; gap: var(--size-spacing-04); flex-wrap: wrap; }

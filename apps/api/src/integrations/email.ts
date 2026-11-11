@@ -125,19 +125,23 @@ interface ResolvedTransport {
   source: 'office' | 'platform';
 }
 
-async function resolveTransport(ctx: AppContext, officeId: string): Promise<ResolvedTransport> {
+/**
+ * Caminhos de envio, na ordem de tentativa. E-mail comum: o SMTP do escritório e, sem ele, o do
+ * sistema. E-mail da conta (`system`): o do sistema primeiro, com o do escritório de reserva.
+ */
+async function resolveTransports(ctx: AppContext, officeId: string, system = false): Promise<ResolvedTransport[]> {
   const loaded = await loadIntegration<SmtpConfig, SmtpSecrets>(ctx, officeId, 'smtp');
-  if (loaded?.row.enabled && loaded.config.host && loaded.config.fromEmail) {
-    return {
-      options: smtpOptionsFromConfig(loaded.config, loaded.secrets),
-      from: { name: loaded.config.fromName || null, address: loaded.config.fromEmail },
-      source: 'office',
-    };
-  }
-  if (ctx.config.SMTP_URL) {
-    return { options: smtpOptionsFromUrl(ctx.config.SMTP_URL), from: parseAddress(ctx.config.SMTP_FROM), source: 'platform' };
-  }
-  throw new IntegrationError('smtp', NO_EMAIL_CONFIGURED);
+  const office: ResolvedTransport | null =
+    loaded?.row.enabled && loaded.config.host && loaded.config.fromEmail
+      ? { options: smtpOptionsFromConfig(loaded.config, loaded.secrets), from: { name: loaded.config.fromName || null, address: loaded.config.fromEmail }, source: 'office' }
+      : null;
+  const platform: ResolvedTransport | null = ctx.config.SMTP_URL
+    ? { options: smtpOptionsFromUrl(ctx.config.SMTP_URL), from: parseAddress(ctx.config.SMTP_FROM), source: 'platform' }
+    : null;
+  const order = system ? [platform, office] : office ? [office] : [platform];
+  const list = order.filter((t): t is ResolvedTransport => t !== null);
+  if (!list.length) throw new IntegrationError('smtp', NO_EMAIL_CONFIGURED);
+  return list;
 }
 
 function smtpError(err: unknown): IntegrationError {
@@ -154,33 +158,67 @@ function smtpError(err: unknown): IntegrationError {
 export function createEmailSender(ctx: AppContext, factory: TransportFactory = defaultTransportFactory): EmailSender {
   return {
     async send(officeId: string, msg: OutgoingEmail) {
-      const t = await resolveTransport(ctx, officeId);
-      let fromName = msg.fromName ?? t.from.name;
-      if (!fromName) {
-        const office = await ctx.db.query.offices.findFirst({ where: eq(offices.id, officeId) });
-        fromName = office?.name ?? null;
+      const transports = await resolveTransports(ctx, officeId, msg.system);
+      let failure: IntegrationError | null = null;
+      for (const t of transports) {
+        let fromName = msg.fromName ?? t.from.name;
+        if (!fromName) {
+          const office = await ctx.db.query.offices.findFirst({ where: eq(offices.id, officeId) });
+          fromName = office?.name ?? null;
+        }
+        const transport = factory(t.options);
+        try {
+          const info = await transport.sendMail({
+            from: fromName ? { name: fromName, address: t.from.address } : t.from.address,
+            to: msg.toName ? { name: msg.toName, address: msg.to } : msg.to,
+            replyTo: msg.replyTo ?? undefined,
+            subject: msg.subject,
+            html: msg.html,
+            attachments: (msg.attachments ?? []).map((a) => ({ filename: a.filename, content: a.content, contentType: a.contentType })),
+            // Imagens enviadas do computador chegam no HTML como `data:image/...`, que o Gmail e o Outlook
+            // não exibem; o nodemailer as converte em anexos inline (Content-ID) e troca o src por `cid:`.
+            attachDataUrls: true,
+          });
+          return { messageId: info.messageId ?? `smtp-${Date.now()}` };
+        } catch (err) {
+          // guarda a primeira falha (a do caminho preferido) e tenta a reserva, se houver
+          failure ??= smtpError(err);
+        } finally {
+          transport.close?.();
+        }
       }
-      const transport = factory(t.options);
-      try {
-        const info = await transport.sendMail({
-          from: fromName ? { name: fromName, address: t.from.address } : t.from.address,
-          to: msg.toName ? { name: msg.toName, address: msg.to } : msg.to,
-          replyTo: msg.replyTo ?? undefined,
-          subject: msg.subject,
-          html: msg.html,
-          attachments: (msg.attachments ?? []).map((a) => ({ filename: a.filename, content: a.content, contentType: a.contentType })),
-          // Imagens enviadas do computador chegam no HTML como `data:image/...`, que o Gmail e o Outlook
-          // não exibem; o nodemailer as converte em anexos inline (Content-ID) e troca o src por `cid:`.
-          attachDataUrls: true,
-        });
-        return { messageId: info.messageId ?? `smtp-${Date.now()}` };
-      } catch (err) {
-        throw smtpError(err);
-      } finally {
-        transport.close?.();
-      }
+      throw failure ?? new IntegrationError('smtp', NO_EMAIL_CONFIGURED);
     },
   };
+}
+
+/** Situação do e-mail do sistema (`SMTP_URL`), sem expor usuário nem senha. */
+export function platformSmtpInfo(ctx: Pick<AppContext, 'config'>) {
+  if (!ctx.config.SMTP_URL) return { configured: false as const, host: null, port: null, secure: null, from: ctx.config.SMTP_FROM, required: ctx.config.SMTP_REQUIRED };
+  const o = smtpOptionsFromUrl(ctx.config.SMTP_URL);
+  return { configured: true as const, host: o.host, port: o.port, secure: o.secure, from: ctx.config.SMTP_FROM, required: ctx.config.SMTP_REQUIRED };
+}
+
+/** Teste do e-mail do sistema: conecta, autentica e, com `sendTo`, envia uma mensagem. */
+export async function testPlatformSmtp(ctx: Pick<AppContext, 'config'>, sendTo: string | undefined, factory: TransportFactory = defaultTransportFactory) {
+  if (!ctx.config.SMTP_URL) throw new IntegrationError('smtp', 'O e-mail do sistema não está configurado: defina SMTP_URL no servidor.');
+  const transport = factory(smtpOptionsFromUrl(ctx.config.SMTP_URL));
+  const from = parseAddress(ctx.config.SMTP_FROM);
+  try {
+    await transport.verify();
+    if (!sendTo) return 'Conexão com o servidor de e-mail funcionando.';
+    await transport.sendMail({
+      from: from.name ? { name: from.name, address: from.address } : from.address,
+      to: sendTo,
+      subject: 'Teste do e-mail do sistema — Verifco',
+      html: '<p>Este é um e-mail de teste enviado pelo painel do sistema do Verifco.</p><p>Se você recebeu, convites e redefinições de senha estão saindo.</p>',
+    });
+    return `Conexão funcionando. Mensagem de teste enviada para ${sendTo}.`;
+  } catch (err) {
+    throw smtpError(err);
+  } finally {
+    transport.close?.();
+  }
 }
 
 /** Teste: conecta e autentica; com `sendTo`, envia uma mensagem de teste. */

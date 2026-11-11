@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Mail, Pencil, Power, Trash2, UserPlus, Users } from 'lucide-react';
+import { Copy, Mail, Pencil, Power, Trash2, UserPlus, Users } from 'lucide-react';
 import { isValidEmail } from '@verifco/shared';
-import { Alert, Avatar, Button, Card, ConfirmDialog, EmptyState, Input, Loading, MenuItem, Modal, Select, Tag } from '../../ds';
+import { Alert, Avatar, Button, Card, ConfirmDialog, EmptyState, Input, Loading, MenuItem, Modal, Select, Tag, useToast } from '../../ds';
 import { api } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { useAction, useApi } from '../../lib/hooks';
@@ -10,6 +10,11 @@ import { RowMenu, SearchBox, matches, type EmployeeRow, type RoleRow } from './s
 
 type StatusFilter = '' | 'active' | 'inactive' | 'pending';
 type Confirm = { kind: 'toggle' | 'delete' | 'invite'; employee: EmployeeRow } | null;
+/** Resposta do convite: sem e-mail (`emailSent: false`), vem o link para entregar por outro meio. */
+interface InviteResult {
+  emailSent?: boolean;
+  inviteLink?: string;
+}
 
 /** Aba Colaboradores: equipe do escritório, convites, funções e situação de acesso. */
 export function EmployeesTab() {
@@ -43,9 +48,15 @@ export function EmployeesTab() {
     invalidate: [['employees'], ['roles']],
     onSuccess: () => setConfirm(null),
   });
-  const resend = useAction((e: EmployeeRow) => api.post(`/employees/${e.id}/invite`), {
-    success: 'Convite reenviado por e-mail.',
-    onSuccess: () => setConfirm(null),
+  const toast = useToast();
+  // quando o e-mail não sai, quem convidou recebe o link para entregar por outro meio
+  const [manualInvite, setManualInvite] = useState<{ name: string; link: string } | null>(null);
+  const resend = useAction((e: EmployeeRow) => api.post<InviteResult>(`/employees/${e.id}/invite`), {
+    onSuccess: (r, e) => {
+      setConfirm(null);
+      if (r.emailSent === false && r.inviteLink) setManualInvite({ name: e.name, link: r.inviteLink });
+      else toast.success('Convite reenviado por e-mail.');
+    },
   });
 
   const canInvite = can('employee.create', 'employee.edit');
@@ -172,7 +183,33 @@ export function EmployeesTab() {
         )}
       </Card>
 
-      {editing && <EmployeeForm employee={editing === 'new' ? null : editing} roles={roles.data ?? []} onClose={() => setEditing(null)} />}
+      {editing && <EmployeeForm employee={editing === 'new' ? null : editing} roles={roles.data ?? []} onClose={() => setEditing(null)} onManualInvite={setManualInvite} />}
+      <Modal open={Boolean(manualInvite)} title="O e-mail do convite não saiu" onClose={() => setManualInvite(null)} width={560} footer={<Button onClick={() => setManualInvite(null)}>Fechar</Button>}>
+        {manualInvite && (
+          <div className="vf-stack">
+            <Alert tone="warning" title="Entregue o link por outro meio">
+              O convite de {manualInvite.name} foi criado, mas o envio por e-mail falhou. Copie o link abaixo e mande por WhatsApp ou outro canal: ele vale 7 dias e serve só para essa pessoa criar a senha. Confira o envio de e-mail em Meu
+              escritório › Integrações.
+            </Alert>
+            <div className="adm-invite-link">
+              <code>{manualInvite.link}</code>
+              <Button
+                kind="secondary"
+                size="sm"
+                icon={<Copy />}
+                onClick={() =>
+                  void navigator.clipboard.writeText(manualInvite.link).then(
+                    () => toast.success('Link copiado.'),
+                    () => toast.error('Não foi possível copiar. Selecione o texto e copie manualmente.'),
+                  )
+                }
+              >
+                Copiar
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
 
       <ConfirmDialog
         open={confirm?.kind === 'toggle'}
@@ -211,7 +248,18 @@ export function EmployeesTab() {
   );
 }
 
-function EmployeeForm({ employee, roles, onClose }: { employee: EmployeeRow | null; roles: RoleRow[]; onClose: () => void }) {
+function EmployeeForm({
+  employee,
+  roles,
+  onClose,
+  onManualInvite,
+}: {
+  employee: EmployeeRow | null;
+  roles: RoleRow[];
+  onClose: () => void;
+  onManualInvite: (invite: { name: string; link: string }) => void;
+}) {
+  const toast = useToast();
   const [form, setForm] = useState({ name: employee?.name ?? '', email: employee?.email ?? '', roleId: employee?.roleId ?? '' });
   useEffect(() => {
     if (!employee && !form.roleId) {
@@ -223,12 +271,16 @@ function EmployeeForm({ employee, roles, onClose }: { employee: EmployeeRow | nu
   const save = useAction(
     () =>
       employee
-        ? api.put(`/employees/${employee.id}`, { ...form, isActive: employee.isActive })
-        : api.post('/employees', form),
+        ? api.put<InviteResult>(`/employees/${employee.id}`, { ...form, isActive: employee.isActive })
+        : api.post<InviteResult>('/employees', form),
     {
-      success: employee ? 'Colaborador atualizado.' : `Convite enviado para ${form.email}.`,
       invalidate: [['employees'], ['roles']],
-      onSuccess: onClose,
+      onSuccess: (r) => {
+        onClose();
+        if (employee) toast.success('Colaborador atualizado.');
+        else if (r.emailSent === false && r.inviteLink) onManualInvite({ name: form.name, link: r.inviteLink });
+        else toast.success(`Convite enviado para ${form.email}.`);
+      },
     },
   );
   const ownerLocked = Boolean(employee?.isOwner);

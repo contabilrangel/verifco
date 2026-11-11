@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { Link } from 'react-router';
-import { BarChart3, FileSpreadsheet, Filter, Play } from 'lucide-react';
+import { BarChart3, FileSpreadsheet, Filter, Play, Printer } from 'lucide-react';
 import { BUDGET_CATEGORIES, BUDGET_TYPES } from '@verifco/shared';
-import { Alert, Button, Card, Checkbox, Drawer, EmptyState, Loading, Select, Stat, Tag, useToast } from '../../ds';
+import { Alert, Button, Card, Checkbox, Drawer, EmptyState, Loading, Pagination, Select, Stat, Tag, usePagination, usePrint, useToast } from '../../ds';
 import { api, qs } from '../../lib/api';
 import { useApi } from '../../lib/hooks';
 import { formatCpfCnpj, formatDateTime, formatMoney } from '../../lib/format';
@@ -26,7 +26,10 @@ export const EXTERNAL_SYNC_FAILED_HINT =
 
 const opts = (o: Record<string, string>) => Object.entries(o).map(([value, label]) => ({ value, label }));
 
-/** Relatórios › Faturamento. */
+/**
+ * Relatórios › Faturamento. A tabela mostra 50 orçamentos por página (paginação no navegador: a API
+ * devolve o relatório inteiro); "Imprimir" e o Excel saem com todas as linhas.
+ */
 export function BillingReportPage() {
   const { year } = useYear();
   const toast = useToast();
@@ -49,6 +52,8 @@ export function BillingReportPage() {
   const active = [draft.category, draft.responsible, draft.type, draft.paymentStatus, draft.approvedOnly, draft.overdueOnly].filter(Boolean).length;
   const d = report.data;
   const failedSync = d?.data.filter((r) => r.externalSyncFailed).length ?? 0;
+  const { printing, print } = usePrint();
+  const pg = usePagination(d?.data ?? [], { resetKey: d, all: printing });
 
   return (
     <div className="vf-stack" style={{ '--gap': '16px' } as React.CSSProperties}>
@@ -61,9 +66,12 @@ export function BillingReportPage() {
               {active ? ` · ${active} filtro(s)` : ''}.
             </p>
           </div>
-          <div className="vf-inline">
+          <div className="vf-inline vf-screen-only">
             <Button kind="secondary" icon={<Filter />} onClick={() => setShowFilters(true)}>
               Filtros{active ? ` (${active})` : ''}
+            </Button>
+            <Button kind="secondary" icon={<Printer />} disabled={!d || d.data.length === 0 || report.isFetching} onClick={print}>
+              Imprimir
             </Button>
             <Button
               kind="secondary"
@@ -147,7 +155,7 @@ export function BillingReportPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {d.data.map((r) => (
+                  {pg.rows.map((r) => (
                     <tr key={r.budgetId}>
                       <td>
                         <div className="vf-stack" style={{ '--gap': '2px' } as React.CSSProperties}>
@@ -200,6 +208,7 @@ export function BillingReportPage() {
                 </tfoot>
               </table>
             </div>
+            <Pagination page={pg.page} pages={pg.pages} total={pg.total} onChange={pg.setPage} />
             <div className="vf-pagination">
               <span className="vf-text-xs vf-muted">Gerado em {formatDateTime(d.generatedAt)}</span>
             </div>

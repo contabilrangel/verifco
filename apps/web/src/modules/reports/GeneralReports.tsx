@@ -1,9 +1,9 @@
 import { useState, type ReactNode } from 'react';
 import { Link } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
-import { BarChart3, FileSpreadsheet, Filter, Play } from 'lucide-react';
+import { BarChart3, FileSpreadsheet, Filter, Play, Printer } from 'lucide-react';
 import { ECAC_DECLARATION_STATUS, stageOfSubstatus, type DeclarationSubstatus } from '@verifco/shared';
-import { Alert, Button, Card, Checkbox, Drawer, EmptyState, Loading, Select, Stat, Tag, useToast } from '../../ds';
+import { Alert, Button, Card, Checkbox, Drawer, EmptyState, Loading, Pagination, Select, Stat, Tag, usePagination, usePrint, useToast } from '../../ds';
 import { ApiError, api, qs } from '../../lib/api';
 import { formatCpfCnpj, formatDate, formatMoney, stageTone, substatusLabel } from '../../lib/format';
 import { YEAR_OPTIONS, useYear } from '../../lib/year';
@@ -11,6 +11,8 @@ import { YEAR_OPTIONS, useYear } from '../../lib/year';
 /**
  * Padrão dos relatórios gerais: filtros num Drawer, estado vazio até gerar,
  * tabela com totais e download em Excel com os mesmos filtros.
+ * A tabela mostra 50 linhas por página (paginação no navegador: a API devolve o relatório inteiro);
+ * "Imprimir" e o Excel saem com todas as linhas.
  */
 function useReport<T>(name: string, path: string) {
   const [applied, setApplied] = useState<Record<string, unknown> | null>(null);
@@ -40,6 +42,7 @@ function ReportFrame({
   filters,
   onGenerate,
   onExcel,
+  onPrint,
   canExcel,
   loading,
   error,
@@ -53,6 +56,8 @@ function ReportFrame({
   filters: ReactNode;
   onGenerate: () => void;
   onExcel: () => Promise<void>;
+  /** Imprime o relatório gerado (a tabela inteira, não só a página da tela). */
+  onPrint: () => void;
   canExcel: boolean;
   loading: boolean;
   error: ApiError | null;
@@ -78,9 +83,12 @@ function ReportFrame({
           <h2 className="vf-text-lg">{title}</h2>
           <p className="vf-muted">{description}</p>
         </div>
-        <div className="vf-inline">
+        <div className="vf-inline vf-screen-only">
           <Button kind="secondary" icon={<Filter />} onClick={() => setFiltersOpen(true)}>
             Filtros
+          </Button>
+          <Button kind="secondary" icon={<Printer />} disabled={!canExcel || loading} onClick={onPrint}>
+            Imprimir
           </Button>
           <Button kind="secondary" icon={<FileSpreadsheet />} disabled={!canExcel} loading={downloading} onClick={() => void excel()}>
             Baixar Excel
@@ -136,6 +144,8 @@ export function ResultsReport() {
   const r = useReport<ResultsData>('results', '/reports/results');
   const params = { year: f.year, payable: f.payable || undefined, refundable: f.refundable || undefined, neutral: f.neutral || undefined };
   const d = r.q.data;
+  const { printing, print } = usePrint();
+  const pg = usePagination(d?.rows ?? [], { resetKey: d, all: printing });
   return (
     <ReportFrame
       title="Relatório de resultados"
@@ -144,6 +154,7 @@ export function ResultsReport() {
       setFiltersOpen={setOpen}
       onGenerate={() => r.generate(params)}
       onExcel={() => api.download(`/reports/results${qs({ ...(r.applied ?? params), format: 'xlsx' })}`, `resultados-${f.year}.xlsx`)}
+      onPrint={print}
       canExcel={Boolean(d)}
       loading={r.q.isFetching}
       error={r.q.error}
@@ -196,7 +207,7 @@ export function ResultsReport() {
                     </tr>
                   </thead>
                   <tbody>
-                    {d.rows.map((x) => (
+                    {pg.rows.map((x) => (
                       <tr key={x.declarationId}>
                         <td>
                           <Link to={`/clientes/${x.customerId}/irpf`} className="vf-text-sm-bold">
@@ -229,6 +240,7 @@ export function ResultsReport() {
                 </table>
               </div>
             )}
+            {pg.total > 0 && <Pagination page={pg.page} pages={pg.pages} total={pg.total} onChange={pg.setPage} />}
           </Card>
         </>
       )}
@@ -256,6 +268,9 @@ export function BacklogsReport() {
   const r = useReport<BacklogsData>('backlogs', '/reports/backlogs');
   const params = { year: f.year || undefined, overdueOnly: f.overdueOnly || undefined };
   const d = r.q.data;
+  const { printing, print } = usePrint();
+  // um grupo por cliente: a página conta clientes, cada um com todos os seus documentos
+  const pg = usePagination(d?.groups ?? [], { resetKey: d, all: printing });
   return (
     <ReportFrame
       title="Documentos faltantes"
@@ -264,6 +279,7 @@ export function BacklogsReport() {
       setFiltersOpen={setOpen}
       onGenerate={() => r.generate(params)}
       onExcel={() => api.download(`/reports/backlogs${qs({ ...(r.applied ?? params), format: 'xlsx' })}`, 'documentos-faltantes.xlsx')}
+      onPrint={print}
       canExcel={Boolean(d)}
       loading={r.q.isFetching}
       error={r.q.error}
@@ -303,7 +319,7 @@ export function BacklogsReport() {
                       <th>Prazo</th>
                     </tr>
                   </thead>
-                  {d.groups.map((g) => (
+                  {pg.rows.map((g) => (
                     <tbody key={g.customerId}>
                       <tr>
                         <td colSpan={5} style={{ background: 'var(--color-surface-low)' }}>
@@ -334,6 +350,7 @@ export function BacklogsReport() {
                 </table>
               </div>
             )}
+            {pg.total > 0 && <Pagination page={pg.page} pages={pg.pages} total={pg.total} onChange={pg.setPage} />}
           </Card>
         </>
       )}
@@ -356,6 +373,8 @@ export function RefundsReport() {
   const r = useReport<RefundsData>('refunds', '/reports/refunds');
   const params = { year: f.year, futureOnly: f.futureOnly || undefined, sort: f.sort };
   const d = r.q.data;
+  const { printing, print } = usePrint();
+  const pg = usePagination(d?.rows ?? [], { resetKey: d, all: printing });
   return (
     <ReportFrame
       title="Relatório de restituição"
@@ -364,6 +383,7 @@ export function RefundsReport() {
       setFiltersOpen={setOpen}
       onGenerate={() => r.generate(params)}
       onExcel={() => api.download(`/reports/refunds${qs({ ...(r.applied ?? params), format: 'xlsx' })}`, `restituicoes-${f.year}.xlsx`)}
+      onPrint={print}
       canExcel={Boolean(d)}
       loading={r.q.isFetching}
       error={r.q.error}
@@ -418,7 +438,7 @@ export function RefundsReport() {
                     </tr>
                   </thead>
                   <tbody>
-                    {d.rows.map((x) => (
+                    {pg.rows.map((x) => (
                       <tr key={x.declarationId}>
                         <td>
                           <Link to={`/clientes/${x.customerId}/irpf`} className="vf-text-sm-bold">
@@ -449,6 +469,7 @@ export function RefundsReport() {
                 </table>
               </div>
             )}
+            {pg.total > 0 && <Pagination page={pg.page} pages={pg.pages} total={pg.total} onChange={pg.setPage} />}
           </Card>
         </>
       )}

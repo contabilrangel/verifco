@@ -18,7 +18,7 @@ import {
   type SelectHTMLAttributes,
   type TextareaHTMLAttributes,
 } from 'react';
-import { createPortal } from 'react-dom';
+import { createPortal, flushSync } from 'react-dom';
 import { AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, Eye, EyeOff, Info, Inbox, UploadCloud, X, XCircle } from 'lucide-react';
 
 const cx = (...c: (string | false | null | undefined)[]) => c.filter(Boolean).join(' ');
@@ -304,13 +304,76 @@ export function Alert({ tone = 'primary', children, title }: { tone?: 'primary' 
 }
 
 // ---------------------------------------------------------------- Overlays
-function useEscape(onClose: () => void, active: boolean) {
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/** Elementos que recebem foco pelo teclado dentro de `root`, na ordem do documento. */
+export function focusableIn(root: Element | null | undefined): HTMLElement[] {
+  if (!root) return [];
+  return [...root.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((el) => !el.closest('[hidden], [aria-hidden="true"]'));
+}
+
+/** Diálogos abertos, do mais antigo ao mais novo: Tab e Esc valem só para o de cima. */
+const dialogStack: object[] = [];
+
+/**
+ * Comportamento de diálogo modal (Modal, Drawer, ConfirmDialog):
+ * - ao abrir, o foco vai para o primeiro campo ou botão do conteúdo (ou para quem pediu `autoFocus`);
+ * - Tab e Shift+Tab circulam só dentro do diálogo;
+ * - Esc fecha o diálogo de cima;
+ * - ao fechar, o foco volta para o elemento que abriu.
+ */
+function useDialog<E extends HTMLElement>(open: boolean, onClose: () => void) {
+  const ref = useRef<E>(null);
+  const close = useRef(onClose);
+  close.current = onClose;
+  // quem tinha o foco ao abrir: lido já no desenho, antes de um campo com autoFocus tomar o foco
+  const opener = useRef<HTMLElement | null>(null);
+  const wasOpen = useRef(false);
+  if (open && !wasOpen.current) opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  wasOpen.current = open;
   useEffect(() => {
-    if (!active) return;
-    const h = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
-    window.addEventListener('keydown', h);
-    return () => window.removeEventListener('keydown', h);
-  }, [onClose, active]);
+    const node = ref.current;
+    if (!open || !node) return;
+    const token = {};
+    dialogStack.push(token);
+    if (!node.contains(document.activeElement)) {
+      const first = focusableIn(node.querySelector('.vf-modal__body'))[0] ?? focusableIn(node.querySelector('.vf-modal__footer'))[0] ?? node;
+      first.focus();
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (dialogStack[dialogStack.length - 1] !== token) return;
+      if (e.key === 'Escape') {
+        // um menu aberto dentro do diálogo fecha primeiro (ele marca o evento como tratado)
+        if (!e.defaultPrevented) close.current();
+        return;
+      }
+      if (e.key !== 'Tab') return;
+      const list = focusableIn(node);
+      const active = document.activeElement;
+      if (!list.length) {
+        e.preventDefault();
+        node.focus();
+      } else if (!node.contains(active)) {
+        e.preventDefault();
+        (e.shiftKey ? list[list.length - 1] : list[0]).focus();
+      } else if (e.shiftKey && (active === list[0] || active === node)) {
+        e.preventDefault();
+        list[list.length - 1].focus();
+      } else if (!e.shiftKey && active === list[list.length - 1]) {
+        e.preventDefault();
+        list[0].focus();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      const i = dialogStack.indexOf(token);
+      if (i >= 0) dialogStack.splice(i, 1);
+      const back = opener.current;
+      if (back && back !== document.body && back.isConnected) back.focus();
+    };
+  }, [open]);
+  return ref;
 }
 
 export function Modal({
@@ -328,13 +391,16 @@ export function Modal({
   footer?: ReactNode;
   width?: number;
 }) {
-  useEscape(onClose, open);
+  const ref = useDialog<HTMLDivElement>(open, onClose);
+  const titleId = useId();
   if (!open) return null;
   return createPortal(
     <div className="vf-overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="vf-modal" role="dialog" aria-modal="true" aria-label={typeof title === 'string' ? title : undefined} style={{ '--modal-w': width ? `${width}px` : undefined } as CSSProperties}>
+      <div ref={ref} className="vf-modal" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} style={{ '--modal-w': width ? `${width}px` : undefined } as CSSProperties}>
         <div className="vf-modal__header">
-          <h2 className="vf-modal__title">{title}</h2>
+          <h2 className="vf-modal__title" id={titleId}>
+            {title}
+          </h2>
           <IconButton label="Fechar" onClick={onClose}>
             <X />
           </IconButton>
@@ -362,13 +428,16 @@ export function Drawer({
   footer?: ReactNode;
   width?: number;
 }) {
-  useEscape(onClose, open);
+  const ref = useDialog<HTMLElement>(open, onClose);
+  const titleId = useId();
   if (!open) return null;
   return createPortal(
     <div className="vf-overlay vf-drawer-overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <aside className="vf-drawer" role="dialog" aria-modal="true" style={{ '--drawer-w': width ? `${width}px` : undefined } as CSSProperties}>
+      <aside ref={ref} className="vf-drawer" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} style={{ '--drawer-w': width ? `${width}px` : undefined } as CSSProperties}>
         <div className="vf-modal__header">
-          <h2 className="vf-modal__title">{title}</h2>
+          <h2 className="vf-modal__title" id={titleId}>
+            {title}
+          </h2>
           <IconButton label="Fechar" onClick={onClose}>
             <X />
           </IconButton>
@@ -426,22 +495,87 @@ export function ConfirmDialog({
 }
 
 // ---------------------------------------------------------------- Dropdown menu
+/**
+ * Menu suspenso. O primeiro botão devolvido por `trigger` é o acionador: recebe `aria-haspopup`,
+ * `aria-expanded` e volta a ter o foco quando o menu fecha.
+ * Teclado: ↓/↑ (e Home/End) percorrem os itens, Esc fecha, Tab fecha e segue adiante;
+ * ↓, Enter ou espaço no acionador abrem o menu com o foco no primeiro item.
+ */
 export function Menu({ trigger, children, align = 'right' }: { trigger: (toggle: () => void, open: boolean) => ReactNode; children: (close: () => void) => ReactNode; align?: 'left' | 'right' }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const listId = useId();
+
+  const triggerEl = useCallback(() => focusableIn(ref.current).find((el) => !listRef.current?.contains(el)) ?? null, []);
+  const close = useCallback(() => {
+    setOpen(false);
+    // devolve o foco só se ele estava no menu (quem clicou fora já escolheu outro lugar)
+    if (ref.current?.contains(document.activeElement)) triggerEl()?.focus();
+  }, [triggerEl]);
+
   useEffect(() => {
     if (!open) return;
-    const h = (e: MouseEvent) => ref.current && !ref.current.contains(e.target as Node) && setOpen(false);
-    document.addEventListener('mousedown', h);
-    return () => document.removeEventListener('mousedown', h);
+    const onMouse = (e: MouseEvent) => ref.current && !ref.current.contains(e.target as Node) && setOpen(false);
+    // na captura, e marcando o evento como tratado: o Esc fecha o menu, não o diálogo em volta
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopPropagation();
+      close();
+    };
+    document.addEventListener('mousedown', onMouse);
+    window.addEventListener('keydown', onKey, true);
+    return () => {
+      document.removeEventListener('mousedown', onMouse);
+      window.removeEventListener('keydown', onKey, true);
+    };
+  }, [open, close]);
+
+  // o acionador é desenhado por quem usa o menu: os atributos ARIA entram aqui
+  useLayoutEffect(() => {
+    const t = triggerEl();
+    if (!t) return;
+    t.setAttribute('aria-haspopup', 'menu');
+    t.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) t.setAttribute('aria-controls', listId);
+    else t.removeAttribute('aria-controls');
+  });
+
+  // ao abrir, o foco entra no menu (primeiro item)
+  useEffect(() => {
+    if (!open) return;
+    (focusableIn(listRef.current)[0] ?? listRef.current)?.focus();
   }, [open]);
-  useEscape(() => setOpen(false), open);
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLElement;
+    if (!open) {
+      // ↓ no acionador abre o menu (Enter e espaço já abrem pelo clique do botão)
+      if (e.key === 'ArrowDown' && target === triggerEl()) {
+        e.preventDefault();
+        setOpen(true);
+      }
+      return;
+    }
+    if (e.key === 'Tab') return setOpen(false);
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
+    // campos dentro do menu mantêm as setas
+    if (/^(INPUT|SELECT|TEXTAREA)$/.test(target.tagName)) return;
+    const items = focusableIn(listRef.current);
+    if (!items.length) return;
+    e.preventDefault();
+    const i = items.indexOf(document.activeElement as HTMLElement);
+    const next = e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1 : e.key === 'ArrowDown' ? (i + 1) % items.length : (i - 1 + items.length) % items.length;
+    items[next].focus();
+  };
+
   return (
-    <div className="vf-menu" ref={ref}>
+    <div className="vf-menu" ref={ref} onKeyDown={onKeyDown}>
       {trigger(() => setOpen((o) => !o), open)}
       {open && (
-        <div className={cx('vf-menu__list', align === 'left' && 'vf-menu__list--left')} role="menu">
-          {children(() => setOpen(false))}
+        <div ref={listRef} id={listId} className={cx('vf-menu__list', align === 'left' && 'vf-menu__list--left')} role="menu" tabIndex={-1}>
+          {children(close)}
         </div>
       )}
     </div>
@@ -620,7 +754,7 @@ export function Progress({ value, tone, label }: { value: number; tone?: 'warnin
 
 export function Pagination({ page, pages, total, onChange }: { page: number; pages: number; total: number; onChange: (p: number) => void }) {
   return (
-    <div className="vf-pagination">
+    <div className="vf-pagination vf-screen-only">
       <span className="vf-muted vf-text-xs">{total.toLocaleString('pt-BR')} registro(s)</span>
       <div className="vf-inline">
         <IconButton label="Página anterior" disabled={page <= 1} onClick={() => onChange(page - 1)}>
@@ -635,6 +769,63 @@ export function Pagination({ page, pages, total, onChange }: { page: number; pag
       </div>
     </div>
   );
+}
+
+/** Linhas por página nas tabelas paginadas no navegador (relatórios). */
+export const PAGE_SIZE = 50;
+
+/**
+ * Paginação feita no navegador sobre uma lista já carregada.
+ * - `resetKey`: quando muda (outro filtro, outro relatório), volta à primeira página;
+ * - `all`: devolve a lista inteira (impressão), sem mexer na página atual.
+ */
+export function usePagination<T>(rows: readonly T[], opts: { pageSize?: number; resetKey?: unknown; all?: boolean } = {}) {
+  const pageSize = opts.pageSize ?? PAGE_SIZE;
+  const [page, setPage] = useState(1);
+  const [key, setKey] = useState(opts.resetKey);
+  if (key !== opts.resetKey) {
+    setKey(opts.resetKey);
+    setPage(1);
+  }
+  const pages = Math.max(1, Math.ceil(rows.length / pageSize));
+  const current = Math.min(page, pages);
+  return {
+    page: current,
+    pages,
+    total: rows.length,
+    rows: opts.all ? rows : rows.slice((current - 1) * pageSize, current * pageSize),
+    setPage,
+  };
+}
+
+/**
+ * Impressão de telas com tabela paginada: `printing` fica verdadeiro enquanto o navegador monta a
+ * impressão (pelo botão ou por Ctrl+P), para a tela desenhar a tabela inteira. A folha de estilos
+ * de impressão esconde menu, barra superior e o que tiver a classe `vf-screen-only`.
+ */
+export function usePrint() {
+  const [printing, setPrinting] = useState(false);
+  useEffect(() => {
+    const before = () => flushSync(() => setPrinting(true));
+    const after = () => setPrinting(false);
+    window.addEventListener('beforeprint', before);
+    window.addEventListener('afterprint', after);
+    return () => {
+      window.removeEventListener('beforeprint', before);
+      window.removeEventListener('afterprint', after);
+    };
+  }, []);
+  const print = useCallback(() => {
+    // a tabela inteira precisa estar na página antes de o navegador abrir a impressão
+    flushSync(() => setPrinting(true));
+    try {
+      window.print();
+    } finally {
+      // onde print() não espera o diálogo fechar, o evento afterprint desfaz; sem o evento, desfaz aqui
+      if (!('onafterprint' in window)) setPrinting(false);
+    }
+  }, []);
+  return { printing, print };
 }
 
 // ---------------------------------------------------------------- DropFile
@@ -693,22 +884,44 @@ export function DropFile({
 // ---------------------------------------------------------------- Toast
 type ToastItem = { id: number; message: ReactNode; tone: 'neutral' | 'success' | 'danger' };
 const ToastCtx = createContext<(message: ReactNode, tone?: ToastItem['tone']) => void>(() => {});
+const ToastClearCtx = createContext<() => void>(() => {});
+
+/** Tempo na tela dos avisos de sucesso e informativos; os de erro ficam até serem dispensados. */
+export const TOAST_DURATION_MS = 4500;
+/** Avisos visíveis ao mesmo tempo (os mais antigos saem). */
+const MAX_TOASTS = 4;
+let toastSeq = 0;
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<ToastItem[]>([]);
-  const push = useCallback((message: ReactNode, tone: ToastItem['tone'] = 'neutral') => {
-    const id = Date.now() + Math.random();
-    setItems((list) => [...list, { id, message, tone }]);
-    setTimeout(() => setItems((list) => list.filter((t) => t.id !== id)), 4500);
-  }, []);
+  const dismiss = useCallback((id: number) => setItems((list) => list.filter((t) => t.id !== id)), []);
+  const push = useCallback(
+    (message: ReactNode, tone: ToastItem['tone'] = 'neutral') => {
+      const id = ++toastSeq;
+      setItems((list) => {
+        // o mesmo erro repetido (ex.: várias requisições recusadas) não empilha
+        if (tone === 'danger' && typeof message === 'string' && list.some((t) => t.tone === 'danger' && t.message === message)) return list;
+        return [...list, { id, message, tone }].slice(-MAX_TOASTS);
+      });
+      // o erro fica até a pessoa fechar: dá tempo de ler e de copiar a mensagem
+      if (tone !== 'danger') setTimeout(() => dismiss(id), TOAST_DURATION_MS);
+    },
+    [dismiss],
+  );
+  const clear = useCallback(() => setItems((list) => (list.length ? [] : list)), []);
   return (
     <ToastCtx.Provider value={push}>
-      {children}
-      <div className="vf-toasts" aria-live="polite">
+      <ToastClearCtx.Provider value={clear}>{children}</ToastClearCtx.Provider>
+      <div className="vf-toasts">
         {items.map((t) => (
-          <div key={t.id} className={cx('vf-toast', t.tone !== 'neutral' && `vf-toast--${t.tone}`)}>
-            {t.tone === 'success' ? <CheckCircle2 /> : t.tone === 'danger' ? <XCircle /> : <Info />}
-            <span>{t.message}</span>
+          <div key={t.id} className={cx('vf-toast', t.tone !== 'neutral' && `vf-toast--${t.tone}`)} role={t.tone === 'danger' ? 'alert' : 'status'}>
+            {t.tone === 'success' ? <CheckCircle2 aria-hidden /> : t.tone === 'danger' ? <XCircle aria-hidden /> : <Info aria-hidden />}
+            <span className="vf-toast__text">{t.message}</span>
+            {t.tone === 'danger' && (
+              <button type="button" className="vf-toast__close" aria-label="Dispensar aviso" title="Dispensar aviso" onClick={() => dismiss(t.id)}>
+                <X aria-hidden />
+              </button>
+            )}
           </div>
         ))}
       </div>
@@ -718,10 +931,14 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
 export function useToast() {
   const push = useContext(ToastCtx);
+  const clear = useContext(ToastClearCtx);
   return {
     success: (m: ReactNode) => push(m, 'success'),
+    /** Erro: fica na tela até a pessoa dispensar. */
     error: (m: ReactNode) => push(m, 'danger'),
     info: (m: ReactNode) => push(m, 'neutral'),
+    /** Tira todos os avisos da tela (ex.: ao cair no login, os erros da sessão anterior não interessam mais). */
+    clear,
   };
 }
 

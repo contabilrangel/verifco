@@ -1,28 +1,20 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { Link, NavLink, useLocation } from 'react-router';
-import { Building2, FileCheck2, LayoutDashboard, Lock, LogOut, Mail, Plus, ShieldCheck, Sparkles, Users, History, Check, PlugZap } from 'lucide-react';
+import { Activity, Building2, FileCheck2, KeyRound, LayoutDashboard, Lock, LogOut, Mail, Plus, Settings, ShieldCheck, Sparkles, Users, History, Check, PlugZap } from 'lucide-react';
 import { AI_PROVIDERS, CONTRACT_STATUS, aiProviderDef, contractSituation, todayIso, formatDateTimeBr, type AiProviderKey } from '@verifco/shared';
 import { Alert, Button, Card, Checkbox, ConfirmDialog, Input, Loading, PasswordInput, Select, Tag } from '../../ds';
 import { AuthFooter, AuthHeading, AuthLayout } from '../../app/AuthLayout';
 import { ApiError, errorMessage } from '../../lib/api';
 import { useDebounced } from '../../lib/hooks';
 import { platformRequest as request, platformToken, savePlatformToken } from './client';
+import { AccountPage, DataState, HealthAlerts, OfficeDetailCard, OperationPage, SettingsPage, useData, type OverviewData, type PageProps } from './PlatformOps';
 import './platform.css';
 
-interface Account { id: string; name: string; email: string; role: 'owner' | 'developer'; isActive?: boolean }
-interface Office { id: string; name: string; email: string | null; city: string | null; state: string | null; customers: number; collaborators: number }
+interface Account { id: string; name: string; email: string; role: 'owner' | 'developer'; isActive?: boolean; lastLoginAt?: string | null; twoFactor?: boolean }
+interface Office { id: string; name: string; email: string | null; city: string | null; state: string | null; customers: number; collaborators: number; blockedAt?: string | null; lastLoginAt?: string | null; contractExpiresAt?: string | null }
 interface Connection { id: string; provider: AiProviderKey; name: string; model: string; baseUrl: string; enabled: boolean; keyConfigured: boolean; supportsImages: boolean; pdf: boolean; status: string; lastTestAt: string | null }
 interface AiData { connections: Connection[]; defaultAiId: string | null; environmentConfigured: boolean }
 interface Contract { id: string; officeId: string; officeName?: string; name: string; plan: string; declarationLimit: number | null; year: number; startsAt: string; expiresAt: string; hasBackup: boolean; status: string }
-
-function useData<T>(path: string, revision = 0) {
-  const [data, setData] = useState<T>(); const [error, setError] = useState('');
-  useEffect(() => { let live = true; setError('');
-    request<T>(path).then((d) => { if (live) setData(d); }).catch((e) => { if (live) setError(errorMessage(e)); });
-    return () => { live = false; };
-  }, [path, revision]);
-  return { data, error };
-}
 
 export function PlatformPanel() {
   const [token, setToken] = useState(platformToken);
@@ -41,7 +33,7 @@ export function PlatformPanel() {
   }, [token]);
   if (loading) return <Loading label="Abrindo a administração do sistema..." />;
   if (!me) return <PlatformLogin error={error} onLogin={(value) => { savePlatformToken(value); setToken(value); }} />;
-  return <PlatformShell me={me} logout={async () => {
+  return <PlatformShell me={me} onToken={setToken} logout={async () => {
     // encerra a sessão local mesmo se o POST falhar (máquina compartilhada): o token sai daqui
     try { await request('/logout', 'POST', {}); }
     catch { /* a sessão local é encerrada de qualquer forma */ }
@@ -85,11 +77,20 @@ const TABS = [
   { path: '', label: 'Visão geral', icon: LayoutDashboard },
   { path: 'escritorios', label: 'Escritórios', icon: Building2 },
   { path: 'contratos', label: 'Planos e contratos', icon: FileCheck2 },
+  { path: 'operacao', label: 'Operação', icon: Activity },
   { path: 'ia', label: 'Inteligência artificial', icon: Sparkles, owner: true },
   { path: 'equipe', label: 'Equipe do sistema', icon: Users, owner: true },
+  { path: 'configuracoes', label: 'Configurações', icon: Settings },
   { path: 'auditoria', label: 'Auditoria', icon: History },
+  { path: 'conta', label: 'Minha conta', icon: KeyRound },
 ];
-function PlatformShell({ me, logout, error }: { me: Account; logout: () => Promise<void>; error: string }) {
+const SUBTITLES: Record<string, string> = {
+  ia: 'Conecte serviços, escolha os modelos e disponibilize a IA para os escritórios.',
+  operacao: 'Fila de tarefas, falhas e o e-mail que entrega convites e redefinições de senha.',
+  configuracoes: 'Cadastro de novos escritórios, avaliação gratuita, suporte e termos de uso.',
+  conta: 'Sua senha de acesso ao painel do sistema.',
+};
+function PlatformShell({ me, logout, error, onToken }: { me: Account; logout: () => Promise<void>; error: string; onToken: (token: string) => void }) {
   const location = useLocation(); const tab = location.pathname.replace(/^\/sistema\/?/, '').replace(/\/$/, '');
   const owner = me.role === 'owner'; const [revision, setRevision] = useState(0);
   const [busy, setBusy] = useState(false); const [notice, setNotice] = useState<{ error: boolean; text: string } | null>(null);
@@ -111,11 +112,12 @@ function PlatformShell({ me, logout, error }: { me: Account; logout: () => Promi
     </aside>
     <div className="vf-platform-body"><header className="vf-platform-header"><Tag tone="primary">Painel global</Tag><span>{me.email}</span></header>
       <main className="vf-platform-content"><div className="vf-platform-page-title"><p>VERIFCO / SISTEMA</p><h1>{selected?.label ?? 'Página indisponível'}</h1>
-        <span>{tab === 'ia' ? 'Conecte serviços, escolha os modelos e disponibilize a IA para os escritórios.' : 'Administração central para o proprietário e a equipe de desenvolvimento.'}</span></div>
+        <span>{SUBTITLES[tab] ?? 'Administração central para o proprietário e a equipe de desenvolvimento.'}</span></div>
         {error && <Alert tone="danger" title={error} />}
         {notice && <Alert tone={notice.error ? 'danger' : 'success'} title={notice.text} />}
         {!selected ? <Alert tone="warning" title="Esta página não está disponível para sua conta." />
           : tab === 'ia' ? <AiPage {...props} /> : tab === 'escritorios' ? <OfficesPage {...props} /> : tab === 'contratos' ? <ContractsPage {...props} />
+          : tab === 'operacao' ? <OperationPage {...props} /> : tab === 'configuracoes' ? <SettingsPage {...props} /> : tab === 'conta' ? <AccountPage p={props} me={me} onToken={onToken} />
           : tab === 'equipe' ? <TeamPage {...props} me={me} /> : tab === 'auditoria' ? <AuditPage revision={revision} /> : <Overview revision={revision} />}
       </main>
     </div>
@@ -123,25 +125,24 @@ function PlatformShell({ me, logout, error }: { me: Account; logout: () => Promi
       onConfirm={async () => { const current = confirmation; setConfirmation(null); await current?.run(); }} />
   </div>;
 }
-type PageProps = { owner: boolean; revision: number; busy: boolean; action: (fn: () => Promise<unknown>, message?: string) => Promise<void>; confirm: (title: string, fn: () => Promise<unknown>, message?: string) => void };
-function DataState({ error, loading, children }: { error: string; loading: boolean; children: ReactNode }) {
-  return error ? <Alert tone="danger" title={error} /> : loading ? <Loading /> : <>{children}</>;
-}
 function Overview({ revision }: { revision: number }) {
-  const { data, error } = useData<Record<string, number>>('/overview', revision);
-  const metrics = [['offices', 'Escritórios'], ['collaborators', 'Colaboradores ativos'], ['active_contracts', 'Contratos vigentes'], ['queued_jobs', 'Tarefas na fila'], ['failed_jobs', 'Tarefas com falha']];
-  return <DataState error={error} loading={!data}><div className="vf-platform-metrics">{metrics.map(([key, label]) => <Card key={key}><span className="vf-muted">{label}</span><strong>{data?.[key] ?? 0}</strong></Card>)}</div>
+  const { data, error } = useData<OverviewData>('/overview', revision);
+  const metrics = [['offices', 'Escritórios'], ['blocked_offices', 'Escritórios suspensos'], ['collaborators', 'Colaboradores ativos'], ['active_contracts', 'Contratos vigentes'], ['queued_jobs', 'Tarefas na fila'], ['failed_jobs', 'Tarefas com falha']] as const;
+  return <DataState error={error} loading={!data}>{data && <HealthAlerts data={data} />}
+    <div className="vf-platform-metrics">{metrics.map(([key, label]) => <Card key={key}><span className="vf-muted">{label}</span><strong>{data?.[key] ?? 0}</strong></Card>)}</div>
     <Card title="A plataforma em um só lugar"><p>Gerencie os escritórios e os contratos de acesso. O proprietário configura as conexões de IA e as contas da equipe do sistema.</p>
       <p className="vf-muted">O painel do contador continua dedicado aos clientes, declarações e à rotina do escritório.</p></Card>
   </DataState>;
 }
 function OfficesPage(p: PageProps) {
   const [edit, setEdit] = useState<Office | null>(null); const [search, setSearch] = useState(''); const [page, setPage] = useState(0);
+  const [detail, setDetail] = useState<string | null>(null); const today = todayIso();
   const debounced = useDebounced(search);
   const { data, error } = useData<Office[]>(`/offices?offset=${page * 100}&search=${encodeURIComponent(debounced)}`, p.revision);
   // a busca fica fora do DataState: se a consulta falhar, o campo continua editável para corrigir
   return <>
-    <Input label="Buscar escritório" placeholder="Nome do escritório" value={search} onChange={(e) => { setSearch(e.target.value); setPage(0); }} />
+    <Input label="Buscar escritório" placeholder="Nome, e-mail ou CNPJ" value={search} onChange={(e) => { setSearch(e.target.value); setPage(0); }} />
+    {detail && <OfficeDetailCard id={detail} p={p} onClose={() => setDetail(null)} />}
     <DataState error={error} loading={!data}>
     {edit && <Card title="Dados do escritório"><form className="vf-stack" onSubmit={(e) => { e.preventDefault(); void p.action(async () => {
       await request('/offices/' + edit.id, 'PUT', { name: edit.name, email: edit.email || null, city: edit.city || null, state: edit.state || null }); setEdit(null);
@@ -153,8 +154,12 @@ function OfficesPage(p: PageProps) {
     </div><div className="vf-inline"><Button type="submit" loading={p.busy}>Salvar escritório</Button><Button kind="tertiary" onClick={() => setEdit(null)}>Cancelar</Button></div></form></Card>}
     <div className="vf-platform-list">{data?.map((o) => <Card key={o.id}>
       <div className="vf-platform-row"><div><h2>{o.name}</h2><p className="vf-muted">{o.email ?? 'Sem e-mail'} · {[o.city, o.state].filter(Boolean).join(' / ') || 'Localidade não informada'}</p></div>
-        {p.owner && <Button kind="secondary" onClick={() => setEdit(o)}>Editar</Button>}</div>
-      <div className="vf-inline"><Tag>{o.customers} clientes</Tag><Tag>{o.collaborators} colaboradores</Tag></div>
+        <div className="vf-inline"><Button kind="secondary" onClick={() => { setDetail(o.id); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>Ver ficha</Button>
+          {p.owner && <Button kind="tertiary" onClick={() => setEdit(o)}>Editar</Button>}</div></div>
+      <div className="vf-inline">{o.blockedAt && <Tag tone="danger">Acesso suspenso</Tag>}
+        {!o.contractExpiresAt ? <Tag>Sem contrato</Tag> : o.contractExpiresAt < today ? <Tag tone="warning">Plano vencido em {o.contractExpiresAt.split('-').reverse().join('/')}</Tag> : <Tag tone="success">Plano até {o.contractExpiresAt.split('-').reverse().join('/')}</Tag>}
+        <Tag>{o.customers} clientes</Tag><Tag>{o.collaborators} colaboradores</Tag>
+        <span className="vf-muted">Último acesso: {o.lastLoginAt ? formatDateTimeBr(o.lastLoginAt) : 'nunca'}</span></div>
     </Card>)}</div>
     <div className="vf-inline"><Button kind="secondary" disabled={page === 0} onClick={() => setPage(page - 1)}>Anterior</Button><span>Página {page + 1}</span>
       <Button kind="secondary" disabled={(data?.length ?? 0) < 100} onClick={() => setPage(page + 1)}>Próxima</Button></div>
@@ -211,13 +216,16 @@ function ContractTag({ contract }: { contract: { status: string; startsAt: strin
 }
 
 function ContractsPage(p: PageProps) {
-  const [page, setPage] = useState(0); const [officeSearch, setOfficeSearch] = useState('');
-  const list = useData<Contract[]>(`/contracts?offset=${page * 100}`, p.revision);
+  const [page, setPage] = useState(0); const [officeSearch, setOfficeSearch] = useState(''); const [filter, setFilter] = useState('');
+  const list = useData<Contract[]>(`/contracts?offset=${page * 100}${filter ? '&officeId=' + filter : ''}`, p.revision);
   const offices = useData<Office[]>(`/offices?limit=500&search=${encodeURIComponent(officeSearch)}`, p.revision);
   const [form, setForm] = useState<Contract | null>(null);
   const newContract = () => setForm({ id: '', officeId: offices.data?.[0]?.id ?? '', name: 'Acesso ao Verifco', plan: 'basic', declarationLimit: 100, year: Number(todayIso().slice(0, 4)), startsAt: todayIso(), expiresAt: '', hasBackup: false, status: 'active' });
   return <DataState error={list.error || offices.error} loading={!list.data || !offices.data}>
-    {p.owner && <Button icon={<Plus size={16} />} onClick={newContract}>Novo contrato</Button>}
+    <div className="vf-platform-row"><Select aria-label="Filtrar por escritório" value={filter} options={[{ value: '', label: 'Todos os escritórios' }, ...(offices.data?.map((o) => ({ value: o.id, label: o.name })) ?? [])]}
+      onChange={(e) => { setFilter(e.target.value); setPage(0); }} />
+      {p.owner && <Button icon={<Plus size={16} />} onClick={newContract}>Novo contrato</Button>}</div>
+    {!list.data?.length && <Card><p className="vf-muted">Nenhum contrato{filter ? ' para este escritório' : ''}.</p></Card>}
     {form && <Card title={form.id ? 'Editar contrato' : 'Novo contrato'}><form className="vf-stack" onSubmit={(e) => { e.preventDefault(); void p.action(async () => {
       const { id, officeName: _officeName, ...body } = form; await request(id ? '/contracts/' + id : '/contracts', id ? 'PUT' : 'POST', body); setForm(null);
     }); }}><Input label="Localizar escritório pelo nome" value={officeSearch} onChange={(e) => setOfficeSearch(e.target.value)} /><div className="vf-platform-form-grid">
@@ -227,7 +235,8 @@ function ContractsPage(p: PageProps) {
         ...(offices.data?.map((o) => ({ value: o.id, label: o.name })) ?? []),
       ]} onChange={(e) => setForm({ ...form, officeId: e.target.value })} />
       <Input label="Nome do contrato" required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-      <Input label="Plano" required value={form.plan} onChange={(e) => setForm({ ...form, plan: e.target.value })} />
+      <Input label="Plano" required list="vf-platform-plans" help="Nome livre: aparece para o escritório em Meu escritório › Contratos." value={form.plan} onChange={(e) => setForm({ ...form, plan: e.target.value })} />
+      <datalist id="vf-platform-plans">{['trial', 'basic', 'profissional', 'ilimitado'].map((v) => <option key={v} value={v} />)}</datalist>
       <Input label="Exercício" type="number" min={2000} max={2100} required value={form.year} onChange={(e) => setForm({ ...form, year: Number(e.target.value) })} />
       <Input label="Início" type="date" required value={form.startsAt} onChange={(e) => setForm({ ...form, startsAt: e.target.value })} />
       <Input label="Término" type="date" required min={form.startsAt} value={form.expiresAt} onChange={(e) => setForm({ ...form, expiresAt: e.target.value })} />
@@ -246,22 +255,39 @@ function ContractsPage(p: PageProps) {
 function TeamPage(p: PageProps & { me: Account }) {
   const { data, error } = useData<Account[]>('/users', p.revision);
   const [form, setForm] = useState({ name: '', email: '', password: '', role: 'developer' }); const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState<{ id: string; name: string; role: string } | null>(null); const [reset, setReset] = useState<{ id: string; name: string; password: string } | null>(null);
+  const ROLES = [{ value: 'developer', label: 'Desenvolvedor — acompanha a operação' }, { value: 'owner', label: 'Proprietário — administra a plataforma' }];
   return <DataState error={error} loading={!data}><Button icon={<Plus size={16} />} onClick={() => setOpen(true)}>Adicionar à equipe</Button>
+    {editing && <Card title="Editar conta do sistema"><form className="vf-stack" onSubmit={(e) => { e.preventDefault(); void p.action(async () => {
+      await request('/users/' + editing.id, 'PUT', { name: editing.name, role: editing.role }); setEditing(null);
+    }, 'Conta atualizada.'); }}><div className="vf-platform-form-grid"><Input label="Nome" required value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} />
+      <Select label="Perfil" disabled={editing.id === p.me.id} help={editing.id === p.me.id ? 'Você não pode mudar o seu próprio perfil.' : 'Ao mudar o perfil, as sessões abertas da conta são encerradas.'} value={editing.role} options={ROLES} onChange={(e) => setEditing({ ...editing, role: e.target.value })} />
+    </div><div className="vf-inline"><Button type="submit" loading={p.busy}>Salvar</Button><Button kind="tertiary" onClick={() => setEditing(null)}>Cancelar</Button></div></form></Card>}
+    {reset && <Card title={`Redefinir a senha de ${reset.name}`}><form className="vf-stack" onSubmit={(e) => { e.preventDefault(); void p.action(async () => {
+      await request('/users/' + reset.id + '/password', 'PUT', { password: reset.password }); setReset(null);
+    }, 'Senha redefinida. As sessões abertas da conta foram encerradas.'); }}>
+      <Input label="Senha nova" type="password" autoComplete="new-password" minLength={12} required help="Pelo menos 12 caracteres. Entregue a senha por um canal seguro e peça para a pessoa trocar em Minha conta." value={reset.password} onChange={(e) => setReset({ ...reset, password: e.target.value })} />
+      <div className="vf-inline"><Button type="submit" loading={p.busy} disabled={reset.password.length < 12}>Redefinir senha</Button><Button kind="tertiary" onClick={() => setReset(null)}>Cancelar</Button></div></form></Card>}
     {open && <Card title="Nova conta do sistema"><form className="vf-stack" onSubmit={(e) => { e.preventDefault(); void p.action(async () => {
       await request('/users', 'POST', form); setOpen(false); setForm({ name: '', email: '', password: '', role: 'developer' });
     }); }}><div className="vf-platform-form-grid"><Input label="Nome" required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
       <Input label="E-mail" type="email" required value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
       <Input label="Senha inicial" type="password" autoComplete="new-password" minLength={12} required value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
-      <Select label="Perfil" value={form.role} options={[{ value: 'developer', label: 'Desenvolvedor — acompanha a operação' }, { value: 'owner', label: 'Proprietário — administra a plataforma' }]} onChange={(e) => setForm({ ...form, role: e.target.value })} />
+      <Select label="Perfil" value={form.role} options={ROLES} onChange={(e) => setForm({ ...form, role: e.target.value })} />
     </div><div className="vf-inline"><Button type="submit" loading={p.busy}>Criar conta</Button><Button kind="tertiary" onClick={() => setOpen(false)}>Cancelar</Button></div></form></Card>}
-    <div className="vf-platform-list">{data?.map((user) => <Card key={user.id}><div className="vf-platform-row"><div><h2>{user.name}</h2><p className="vf-muted">{user.email}</p></div><div className="vf-inline">
+    <div className="vf-platform-list">{data?.map((user) => <Card key={user.id}><div className="vf-platform-row"><div><h2>{user.name}</h2><p className="vf-muted">{user.email} · último acesso: {user.lastLoginAt ? formatDateTimeBr(user.lastLoginAt) : 'nunca'}</p></div><div className="vf-inline">
       <Tag>{user.role === 'owner' ? 'Proprietário' : 'Desenvolvedor'}</Tag><Tag tone={user.isActive ? 'success' : 'neutral'}>{user.isActive ? 'Ativa' : 'Desativada'}</Tag>
+      <Button kind="tertiary" disabled={p.busy} onClick={() => { setReset(null); setEditing({ id: user.id, name: user.name, role: user.role }); }}>Editar</Button>
+      {user.id !== p.me.id && <Button kind="tertiary" disabled={p.busy} onClick={() => { setEditing(null); setReset({ id: user.id, name: user.name, password: '' }); }}>Redefinir senha</Button>}
       {user.id !== p.me.id && <Button kind="secondary" disabled={p.busy} onClick={() => p.confirm(user.isActive ? 'Desativar esta conta do sistema?' : 'Reativar esta conta do sistema?', () => request('/users/' + user.id + '/active', 'PUT', { isActive: !user.isActive }))}>{user.isActive ? 'Desativar' : 'Reativar'}</Button>}
     </div></div></Card>)}</div>
   </DataState>;
 }
 function AuditPage({ revision }: { revision: number }) {
   const { data, error } = useData<{ id: string; actor: string; action: string; createdAt: string }[]>('/audit', revision);
-  const labels: Record<string, string> = { 'platform.login': 'Entrou no sistema', 'platform.logout': 'Saiu do sistema', 'platform.bootstrap': 'Criou a administração', 'office.update': 'Alterou escritório', 'contract.create': 'Criou contrato', 'contract.update': 'Alterou contrato', 'ai.create': 'Criou conexão de IA', 'ai.update': 'Alterou conexão de IA', 'ai.default': 'Escolheu a IA padrão', 'ai.test': 'Testou conexão de IA', 'ai.delete': 'Excluiu conexão de IA', 'platform.user.create': 'Criou conta do sistema', 'platform.user.active': 'Alterou acesso de conta' };
+  const labels: Record<string, string> = { 'platform.login': 'Entrou no sistema', 'platform.logout': 'Saiu do sistema', 'platform.bootstrap': 'Criou a administração', 'office.update': 'Alterou escritório', 'contract.create': 'Criou contrato', 'contract.update': 'Alterou contrato', 'ai.create': 'Criou conexão de IA', 'ai.update': 'Alterou conexão de IA', 'ai.default': 'Escolheu a IA padrão', 'ai.test': 'Testou conexão de IA', 'ai.delete': 'Excluiu conexão de IA', 'platform.user.create': 'Criou conta do sistema', 'platform.user.active': 'Alterou acesso de conta',
+    'platform.user.update': 'Alterou nome ou perfil de conta', 'platform.user.password': 'Redefiniu a senha de outra conta', 'platform.password.change': 'Trocou a própria senha', 'platform.password.cli': 'Senha redefinida pelo servidor',
+    'office.block': 'Suspendeu o acesso de um escritório', 'office.unblock': 'Liberou o acesso de um escritório', 'job.retry': 'Recolocou uma tarefa na fila', 'job.dismiss': 'Dispensou tarefas com falha',
+    'settings.update': 'Alterou as configurações do sistema', 'email.test': 'Testou o e-mail do sistema' };
   return <DataState error={error} loading={!data}><Card title="Últimas 200 ações"><div className="vf-platform-audit">{data?.map((item) => <div key={item.id}><History size={17} /><div><strong>{labels[item.action] ?? item.action}</strong><p className="vf-muted">{item.actor} · {formatDateTimeBr(item.createdAt)}</p></div></div>)}</div></Card></DataState>;
 }

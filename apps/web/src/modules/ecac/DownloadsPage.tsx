@@ -1,23 +1,29 @@
 import { useState, type ReactNode } from 'react';
 import { Link } from 'react-router';
 import { Download, FolderSync, Globe, Laptop, Monitor, Puzzle, Terminal } from 'lucide-react';
-import { Alert, Button, Card, Tabs, useToast } from '../../ds';
+import { Button, Card, Tag, Tabs, useToast } from '../../ds';
 import { PageHeader } from '../../app/Shell';
 import { api } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { apiBaseUrl } from './ui';
 
 type Os = 'windows' | 'macos' | 'linux';
-type Browser = 'chrome' | 'edge' | 'opera' | 'safari';
+type Browser = 'chrome' | 'edge' | 'opera';
+
+/** Versões dos pacotes que a Central entrega (apps/sync e apps/extension). */
+export const SYNC_VERSION = '0.3.0';
+export const EXTENSION_VERSION = '0.2.0';
 
 const SYNC_FOLDER: Record<Os, string> = { windows: 'C:\\Verifco\\sincronizador', macos: '~/Verifco/sincronizador', linux: '~/verifco-sincronizador' };
-const TERMINAL: Record<Os, string> = { windows: 'Prompt de Comando (ou PowerShell)', macos: 'Terminal', linux: 'terminal' };
+const TERMINAL: Record<Os, string> = { windows: 'Prompt de Comando', macos: 'Terminal', linux: 'terminal' };
+/** Atalho da linha de comando em cada sistema (os dois arquivos vêm no .zip). */
+const CLI: Record<Os, string> = { windows: 'verifco-sync', macos: 'sh verifco-sync.sh', linux: 'sh verifco-sync.sh' };
 const AUTOSTART: Record<Os, string> = {
-  windows: 'Para iniciar junto com o Windows, crie uma tarefa no Agendador de Tarefas que rode “npm start” nessa pasta ao fazer logon.',
-  macos: 'Para iniciar junto com o macOS, use um LaunchAgent (exemplo no README do sincronizador).',
-  linux: 'Para iniciar junto com a sessão, use um serviço de usuário do systemd (exemplo no README do sincronizador).',
+  windows: 'cria uma tarefa agendada que inicia o sincronizador ao fazer logon no Windows, sem abrir janela.',
+  macos: 'mostra o LaunchAgent a criar para iniciar junto com o macOS (nada é gravado no sistema).',
+  linux: 'mostra o serviço de usuário do systemd a criar para iniciar junto com a sessão (nada é gravado no sistema).',
 };
-const EXT_PAGE: Record<Exclude<Browser, 'safari'>, string> = { chrome: 'chrome://extensions', edge: 'edge://extensions', opera: 'opera://extensions' };
+const EXT_PAGE: Record<Browser, string> = { chrome: 'chrome://extensions', edge: 'edge://extensions', opera: 'opera://extensions' };
 
 export function DownloadsPage() {
   const { can } = useAuth();
@@ -26,6 +32,8 @@ export function DownloadsPage() {
   const [browser, setBrowser] = useState<Browser>(() => (/Edg\//.test(navigator.userAgent) ? 'edge' : /OPR\//.test(navigator.userAgent) ? 'opera' : 'chrome'));
   const [busy, setBusy] = useState<string | null>(null);
   const base = apiBaseUrl();
+  const web = window.location.origin;
+  const robot = can('ecac.robot') ? <Link to="/admin/robo">Meu escritório › Robô</Link> : 'Meu escritório › Robô';
 
   const download = async (pkg: 'sync' | 'extension') => {
     setBusy(pkg);
@@ -46,7 +54,13 @@ export function DownloadsPage() {
         crumbs={[{ label: 'Início', to: '/' }, { label: 'Central de downloads' }]}
       />
       <div className="vf-grid" style={{ '--cols': 2, alignItems: 'start' } as React.CSSProperties}>
-        <Card title={<span className="vf-inline"><FolderSync size={20} /> Sincronizador Verifco</span>}>
+        <Card
+          title={
+            <span className="vf-inline">
+              <FolderSync size={20} /> Sincronizador Verifco <Tag>versão {SYNC_VERSION}</Tag>
+            </span>
+          }
+        >
           <div className="vf-stack">
             <span className="vf-muted">
               Roda no computador onde o programa IRPF é usado. Envia ao Verifco os arquivos das declarações (.DEC, .REC, .DBK) e das pré-preenchidas, que ficam guardados nos documentos do cliente identificado pelo CPF do nome do arquivo. O conteúdo desses arquivos não é lido; o recibo (.REC) marca a declaração como transmitida.
@@ -76,30 +90,39 @@ export function DownloadsPage() {
                   </div>
                 </div>
               </Step>
-              <Step n={3} title="Instale as dependências">
-                No {TERMINAL[os]}, dentro da pasta: <Code>npm install</Code>
+              <Step n={3} title="Configure com o assistente">
+                Crie um token do tipo “Sincronizador” em {robot}. No {TERMINAL[os]}, dentro da pasta, rode:
+                <Code>{`${CLI[os]} configurar`}</Code>
+                O assistente pergunta o endereço do Verifco (<span className="vf-mono">{web}</span>), o token e as pastas, e testa a conexão. Na primeira vez, o atalho{' '}
+                <span className="vf-mono">{os === 'windows' ? 'verifco-sync.cmd' : 'verifco-sync.sh'}</span> instala as dependências sozinho.
               </Step>
-              <Step n={4} title="Conecte ao Verifco">
-                Crie um token do tipo “Sincronizador” em {can('ecac.robot') ? <Link to="/admin/robo">Meu escritório › Robô</Link> : 'Meu escritório › Robô'} e rode:
-                <Code>{`npm run config -- --url ${base} --token vfk_...`}</Code>
-                <Code>npm run testar</Code>
+              <Step n={4} title="Confira as pastas observadas">
+                <Code>{`${CLI[os]} pastas`}</Code>
+                Por padrão, observamos as pastas do programa IRPF do ano atual e do anterior que existirem neste computador. Para incluir outra:{' '}
+                <Code>{`${CLI[os]} config --pasta "${os === 'windows' ? 'D:\\Declaracoes' : '~/Declaracoes'}"`}</Code>
               </Step>
-              <Step n={5} title="Confira as pastas observadas">
-                <Code>npm run pastas</Code>
-                Por padrão, observamos as pastas do programa IRPF do ano atual e do anterior que existirem neste computador. Para incluir outra: <Code>{`npm run config -- --pasta "${os === 'windows' ? 'D:\\Declaracoes' : '~/Declaracoes'}"`}</Code>
+              <Step n={5} title="Inicie">
+                <Code>{`${CLI[os]} iniciar`}</Code>
+                Faz uma varredura inicial e depois envia cada arquivo novo ou alterado.
               </Step>
-              <Step n={6} title="Inicie">
-                <Code>npm start</Code>
-                Faz uma varredura inicial e depois envia cada arquivo novo ou alterado. {AUTOSTART[os]}
+              <Step n={6} title="Inicie junto com o computador (opcional)">
+                <Code>{`${CLI[os]} instalar`}</Code>
+                Este comando {AUTOSTART[os]}
               </Step>
             </ol>
           </div>
         </Card>
 
-        <Card title={<span className="vf-inline"><Puzzle size={20} /> Extensão Verifco</span>}>
+        <Card
+          title={
+            <span className="vf-inline">
+              <Puzzle size={20} /> Extensão Verifco <Tag>versão {EXTENSION_VERSION}</Tag>
+            </span>
+          }
+        >
           <div className="vf-stack">
             <span className="vf-muted">
-              Abre os serviços do eCAC a partir da aba “Ações eCAC” do cliente. A leitura automática das páginas ainda não está disponível; os dados que o SERPRO não fornece devem ser lançados na aba eCAC do cliente.
+              Abre os serviços do eCAC a partir da aba “Ações eCAC” do cliente e envia ao Verifco o que você escolher. Tudo é feito por ação sua: a extensão não lê as páginas sozinha nem preenche nada no eCAC. Funciona no Chrome, no Edge e no Opera; não há versão para Safari.
             </span>
             <Tabs<Browser>
               value={browser}
@@ -108,46 +131,56 @@ export function DownloadsPage() {
                 { value: 'chrome', label: 'Chrome', icon: <Globe size={16} /> },
                 { value: 'edge', label: 'Edge', icon: <Globe size={16} /> },
                 { value: 'opera', label: 'Opera', icon: <Globe size={16} /> },
-                { value: 'safari', label: 'Safari', icon: <Globe size={16} /> },
               ]}
             />
-            {browser === 'safari' ? (
-              <div className="vf-stack">
-                <Alert tone="warning" title="Em breve">
-                  A versão para Safari ainda não está disponível. Use o Chrome, o Edge ou o Opera.
-                </Alert>
-                <div>
-                  <Button kind="secondary" disabled title="Em breve">
-                    Acessar
-                  </Button>
-                </div>
-              </div>
-            ) : (
-              <ol className="vf-ecac-timeline">
-                <Step n={1} title="Baixe e descompacte a extensão">
-                  <div className="vf-stack" style={{ '--gap': '8px' } as React.CSSProperties}>
-                    <span>Guarde a pasta descompactada num lugar fixo: o navegador carrega a extensão a partir dela.</span>
-                    <div>
-                      <Button size="sm" icon={<Download />} loading={busy === 'extension'} onClick={() => void download('extension')}>
-                        Baixar extensão (.zip)
-                      </Button>
-                    </div>
+            <ol className="vf-ecac-timeline">
+              <Step n={1} title="Baixe e descompacte a extensão">
+                <div className="vf-stack" style={{ '--gap': '8px' } as React.CSSProperties}>
+                  <span>Guarde a pasta descompactada num lugar fixo: o navegador carrega a extensão a partir dela.</span>
+                  <div>
+                    <Button size="sm" icon={<Download />} loading={busy === 'extension'} onClick={() => void download('extension')}>
+                      Baixar extensão (.zip)
+                    </Button>
                   </div>
-                </Step>
-                <Step n={2} title="Ative o modo do desenvolvedor">
-                  Abra <span className="vf-mono">{EXT_PAGE[browser]}</span> na barra de endereços e ligue “Modo do desenvolvedor”.
-                </Step>
-                <Step n={3} title="Carregue sem compactação">
-                  Clique em “Carregar sem compactação” (ou “Carregar expandida”) e escolha a pasta descompactada.
-                </Step>
-                <Step n={4} title="Conecte ao Verifco">
-                  Clique no ícone da extensão, informe o endereço da API <span className="vf-mono">{base}</span>, o endereço desta página e um token do tipo “Extensão”. Use “Testar conexão”.
-                </Step>
-                <Step n={5} title="Use no cliente">
-                  Na aba “Ações eCAC” de um cliente, clique em “Acessar”. A extensão abre o serviço do eCAC numa nova aba.
-                </Step>
-              </ol>
-            )}
+                </div>
+              </Step>
+              <Step n={2} title="Ative o modo do desenvolvedor">
+                Abra <span className="vf-mono">{EXT_PAGE[browser]}</span> na barra de endereços e ligue “Modo do desenvolvedor”.
+              </Step>
+              <Step n={3} title="Carregue sem compactação">
+                Clique em “Carregar sem compactação” (ou “Carregar expandida”) e escolha a pasta descompactada.
+              </Step>
+              <Step n={4} title="Conecte ao Verifco">
+                Clique no ícone da extensão, abra “Configuração” e informe o endereço do Verifco (<span className="vf-mono">{web}</span>) e um token do tipo “Extensão”, criado em {robot}.
+                {base !== web && (
+                  <>
+                    {' '}
+                    Em “Endereço da API”, informe <span className="vf-mono">{base}</span>.
+                  </>
+                )}{' '}
+                Use “Salvar” e “Testar conexão”.
+              </Step>
+              <Step n={5} title="Use no cliente">
+                Na aba “Ações eCAC” de um cliente, clique em “Acessar”. A extensão abre o serviço do eCAC numa nova aba, com um aviso do cliente em atendimento.
+              </Step>
+            </ol>
+            <div className="vf-stack" style={{ '--gap': '8px' } as React.CSSProperties}>
+              <strong className="vf-text-sm-bold">O que dá para enviar pela extensão</strong>
+              <ul className="vf-muted" style={{ margin: 0, paddingLeft: 20 }}>
+                <li>
+                  <strong>Enviar arquivo ao cliente:</strong> no ícone da extensão, escolha o cliente, o arquivo (até 25 MB), o exercício e a categoria; dá para marcar que é a pré-preenchida.
+                </li>
+                <li>
+                  <strong>Registrar esta página:</strong> guarda o título, o endereço e o texto da página aberta (ou do trecho selecionado) e, se você quiser, uma imagem da tela.
+                </li>
+                <li>
+                  <strong>Situação da declaração e CND:</strong> formulários para registrar a situação da declaração (com o número do recibo) e a CND (situação, validade e código de controle).
+                </li>
+                <li>
+                  <strong>Botão direito do mouse:</strong> “Enviar seleção ao Verifco”, “Enviar este link/arquivo ao Verifco” e, num PDF aberto, “Enviar este PDF ao Verifco”.
+                </li>
+              </ul>
+            </div>
           </div>
         </Card>
       </div>

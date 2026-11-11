@@ -1,3 +1,4 @@
+import { effectiveSettings } from '../../services/platform-settings';
 import { and, asc, count, eq, isNull, ne, sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -143,7 +144,7 @@ export async function adminRoutes(app: FastifyInstance) {
       validUntil: usage.validUntil,
       daysLeft: usage.daysLeft,
       lastExpiredAt: usage.lastExpiredAt,
-      supportEmail: app.ctx.config.SUPPORT_EMAIL || null,
+      supportEmail: (await effectiveSettings(app.ctx)).supportEmail,
     };
   });
 
@@ -229,15 +230,22 @@ export async function adminRoutes(app: FastifyInstance) {
     await db.insert(passwordResets).values({ userId: target.id, tokenHash: sha256(token), expiresAt: new Date(Date.now() + 7 * 86400_000) });
     const link = `${app.ctx.config.WEB_URL}/redefinir-senha?token=${token}&convite=1`;
     const office = await db.query.offices.findFirst({ where: eq(offices.id, by.officeId) });
-    await app.ctx.providers.email
+    const emailSent = await app.ctx.providers.email
       .send(by.officeId, {
         to: target.email,
         toName: target.name,
+        system: true,
         subject: `Convite para o Verifco — ${office?.name ?? ''}`,
         html: `<p>Olá, ${escapeHtml(target.name)}.</p><p>${escapeHtml(by.name)} convidou você para acessar o Verifco do escritório ${escapeHtml(office?.name ?? '')}.</p><p>Defina sua senha em: <a href="${link}">${link}</a> (válido por 7 dias).</p>`,
       })
-      .catch((err) => req.log.warn({ err }, 'falha ao enviar convite'));
-    return link;
+      .then(() => true)
+      .catch((err) => {
+        req.log.warn({ err }, 'falha ao enviar convite');
+        return false;
+      });
+    // Sem e-mail, quem convidou recebe o link para entregar por outro meio: sem isso o colaborador
+    // ficaria sem como entrar e ninguém saberia por quê.
+    return { emailSent, inviteLink: !emailSent || exposeDevSecrets(app.ctx.config) ? link : undefined };
   }
 
   app.get('/employees', async (req) => {
@@ -282,10 +290,10 @@ export async function adminRoutes(app: FastifyInstance) {
       .insert(users)
       .values({ officeId: user.officeId, name: body.name, email: body.email.toLowerCase(), roleId: body.roleId, passwordHash: null })
       .returning();
-    const link = await sendInvite(req, user, row);
-    await audit(req, 'create', 'employee', row.id, { email: row.email });
+    const invite = await sendInvite(req, user, row);
+    await audit(req, 'create', 'employee', row.id, { email: row.email, emailSent: invite.emailSent });
     reply.status(201);
-    return { id: row.id, name: row.name, email: row.email, roleId: row.roleId, inviteLink: exposeDevSecrets(app.ctx.config) ? link : undefined };
+    return { id: row.id, name: row.name, email: row.email, roleId: row.roleId, ...invite };
   });
 
   /** Reenvia o convite de quem ainda não definiu a senha (o link anterior deixa de valer). */
@@ -297,9 +305,9 @@ export async function adminRoutes(app: FastifyInstance) {
     if (target.passwordHash) throw badRequest('Este colaborador já definiu a senha. Ele pode usar “Esqueci minha senha”.');
     if (!target.isActive) throw badRequest('Ative o colaborador antes de reenviar o convite.');
     await db.update(passwordResets).set({ usedAt: new Date() }).where(and(eq(passwordResets.userId, target.id), isNull(passwordResets.usedAt)));
-    const link = await sendInvite(req, user, target);
-    await audit(req, 'resend_invite', 'employee', target.id);
-    return { ok: true, inviteLink: exposeDevSecrets(app.ctx.config) ? link : undefined };
+    const invite = await sendInvite(req, user, target);
+    await audit(req, 'resend_invite', 'employee', target.id, { emailSent: invite.emailSent });
+    return { ok: true, ...invite };
   });
 
   /** Quem não é dono só administra colaboradores cuja função não passa das próprias permissões. */

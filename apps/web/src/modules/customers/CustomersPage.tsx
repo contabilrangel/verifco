@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { useQueryClient } from '@tanstack/react-query';
-import { ChevronDown, Download, FileSpreadsheet, Filter, Mail, Package, Plus, Search, StickyNote, Tag as TagIcon, Trash2, UserCog, Users } from 'lucide-react';
+import { AlertTriangle, ChevronDown, Download, FileSpreadsheet, Filter, Mail, Package, Plus, RefreshCw, Search, StickyNote, Tag as TagIcon, Trash2, UserCog, Users } from 'lucide-react';
 import { CND_STATUS, DECLARATION_SUBSTATUS, PROCURATION_STATUS, isValidCpfCnpj } from '@verifco/shared';
 import {
+  Alert,
   Button,
   Card,
   Checkbox,
@@ -21,7 +22,7 @@ import {
   useToast,
 } from '../../ds';
 import { PageHeader } from '../../app/Shell';
-import { api, qs } from '../../lib/api';
+import { ApiError, api, errorMessage, qs } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { useAction, useApi, useDebounced } from '../../lib/hooks';
 import { formatCpfCnpj, procurationLabel, procurationTone, stageLabel, stageTone, substatusLabel } from '../../lib/format';
@@ -42,6 +43,13 @@ export interface CustomerListItem {
   procuratorName: string | null;
   groups: { id: string; name: string }[];
   declaration: { id: string; stage: string; substatus: string } | null;
+}
+
+interface CustomerList {
+  data: CustomerListItem[];
+  total: number;
+  page: number;
+  pages: number;
 }
 
 interface Facets {
@@ -89,6 +97,75 @@ const EMPTY: Filters = {
   stage: [],
 };
 
+const STAGES = ['not_started', 'negotiation', 'filling', 'transmitted', 'finished'] as const;
+
+/**
+ * A busca, os filtros, a ordem e a página ficam no endereço (?busca=ana&etapa=filling&pagina=2):
+ * voltar/avançar do navegador, recarregar e os favoritos preservam a lista como estava.
+ */
+const SEARCH_PARAM = 'busca';
+const PAGE_PARAM = 'pagina';
+const SORT_PARAM = 'ordem';
+const FILTER_PARAMS: Record<keyof Filters, string> = {
+  responsible: 'responsavel',
+  groups: 'grupos',
+  noGroup: 'sem-grupo',
+  email: 'email',
+  status: 'situacao',
+  procurator: 'procurador',
+  procurationStatus: 'procuracao',
+  mailbox: 'caixa-postal',
+  govbrRequired: 'govbr',
+  expiring: 'expirando',
+  cnd: 'cnd',
+  stage: 'etapa',
+};
+
+/** Ordem da lista (parâmetro `sort` de GET /customers) e o valor que vai no endereço. */
+const SORTS = [
+  { value: 'name', param: '', label: 'Nome (A–Z)' },
+  { value: 'created', param: 'cadastro', label: 'Cadastro mais recente' },
+  { value: 'updated', param: 'atualizacao', label: 'Atualização mais recente' },
+] as const;
+type Sort = (typeof SORTS)[number]['value'];
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const oneOf = (v: string | null, allowed: readonly string[]) => (v && allowed.includes(v) ? v : '');
+const listOf = (v: string | null, ok: (x: string) => boolean) => [...new Set((v ?? '').split(',').filter((x) => x && ok(x)))];
+
+/** Filtros do endereço; valores desconhecidos (link antigo ou digitado errado) são ignorados. */
+export function filtersFromParams(p: URLSearchParams): Filters {
+  const get = (k: keyof Filters) => p.get(FILTER_PARAMS[k]);
+  return {
+    responsible: listOf(get('responsible'), (x) => UUID.test(x)),
+    groups: listOf(get('groups'), (x) => UUID.test(x)),
+    noGroup: get('noGroup') === '1',
+    email: oneOf(get('email'), ['with', 'without']),
+    status: oneOf(get('status'), ['active', 'inactive']),
+    procurator: oneOf(get('procurator'), ['with', 'without']),
+    procurationStatus: listOf(get('procurationStatus'), (x) => x in PROCURATION_STATUS),
+    mailbox: get('mailbox') === '1',
+    govbrRequired: get('govbrRequired') === '1',
+    expiring: get('expiring') === '1',
+    cnd: listOf(get('cnd'), (x) => x in CND_STATUS),
+    stage: listOf(get('stage'), (x) => (STAGES as readonly string[]).includes(x)),
+  };
+}
+
+/** Grava os filtros no endereço (só os preenchidos). */
+export function filtersToParams(p: URLSearchParams, f: Filters) {
+  for (const k of Object.keys(FILTER_PARAMS) as (keyof Filters)[]) {
+    const v = f[k];
+    const text = Array.isArray(v) ? v.join(',') : v === true ? '1' : v || '';
+    if (text) p.set(FILTER_PARAMS[k], text);
+    else p.delete(FILTER_PARAMS[k]);
+  }
+}
+
+/** Filtros no formato da API (GET /customers e `filters` de POST /customers/export): listas separadas por vírgula. */
+const apiFilters = (f: Filters): Record<string, string | boolean | undefined> =>
+  Object.fromEntries((Object.keys(f) as (keyof Filters)[]).map((k) => [k, Array.isArray(f[k]) ? (f[k] as string[]).join(',') || undefined : f[k] || undefined]));
+
 const toggle = (list: string[], v: string) => (list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
 
 /** Status da declaração para a ação em massa: "Finalizado" só para quem pode finalizar. */
@@ -97,6 +174,17 @@ const substatusOptions = (canFinish: boolean) =>
     .filter(([v]) => canFinish || v !== 'finished')
     .map(([v, label]) => ({ value: v, label }));
 
+/** Linhas por página da lista. */
+const PAGE_SIZE = 25;
+/** Máximo de clientes por chamada das ações que recebem ids (POST /customers/bulk, /customers/labels, /documents/zip). */
+export const BULK_MAX = 2000;
+/** Clientes por página ao reunir os ids de "todos os resultados" (máximo de `pageSize` da API). */
+const IDS_PAGE_SIZE = 500;
+/** A mala direta recebe a seleção pelo endereço: acima disto, o endereço fica longo demais. */
+const MAILING_MAX = 200;
+
+const n = (v: number) => v.toLocaleString('pt-BR');
+
 export function CustomersPage() {
   const { can } = useAuth();
   const { year } = useYear();
@@ -104,41 +192,134 @@ export function CustomersPage() {
   const qc = useQueryClient();
   const toast = useToast();
   const [params, setParams] = useSearchParams();
-  const [search, setSearch] = useState(params.get('busca') ?? '');
-  const debounced = useDebounced(search);
-  const [page, setPage] = useState(1);
-  const [filters, setFilters] = useState<Filters>(EMPTY);
+  const urlSearch = params.get(SEARCH_PARAM) ?? '';
+  const [search, setSearch] = useState(urlSearch);
+  const debounced = useDebounced(search).trim();
+  const paramsKey = params.toString();
+  const filters = useMemo(() => filtersFromParams(new URLSearchParams(paramsKey)), [paramsKey]);
+  const page = Math.max(1, Math.floor(Number(params.get(PAGE_PARAM))) || 1);
+  const sort: Sort = SORTS.find((o) => o.param && o.param === params.get(SORT_PARAM))?.value ?? 'name';
   const [draft, setDraft] = useState<Filters>(EMPTY);
   const [showFilters, setShowFilters] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  /** "Selecionar todos os N resultados": vale para todos os clientes da busca e dos filtros, não só os da página. */
+  const [allMatching, setAllMatching] = useState(false);
+  const [working, setWorking] = useState(false);
   const [showNew, setShowNew] = useState(false);
   const [bulk, setBulk] = useState<null | 'status' | 'responsible' | 'procurator' | 'groups' | 'delete' | 'substatus'>(null);
 
-  useEffect(() => {
-    const b = params.get('busca');
-    if (b !== null && b !== search) setSearch(b);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [params]);
-  useEffect(() => setPage(1), [debounced, filters, year]);
+  /** Muda o endereço mantendo os demais parâmetros. `replace` não cria entrada no histórico (digitação). */
+  const update = (change: (p: URLSearchParams) => void, replace = false) =>
+    setParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        change(next);
+        return next;
+      },
+      { replace },
+    );
 
-  const query = qs({ search: debounced, year, page, pageSize: 25, ...filters, noGroup: filters.noGroup || undefined, mailbox: filters.mailbox || undefined, govbrRequired: filters.govbrRequired || undefined, expiring: filters.expiring || undefined });
-  const list = useApi<{ data: CustomerListItem[]; total: number; page: number; pages: number }>(['customers', query], `/customers${query}`);
+  // campo de busca -> endereço (depois da pausa na digitação)
+  const written = useRef(urlSearch);
+  useEffect(() => {
+    if (debounced === (params.get(SEARCH_PARAM) ?? '')) return;
+    written.current = debounced;
+    update((p) => {
+      if (debounced) p.set(SEARCH_PARAM, debounced);
+      else p.delete(SEARCH_PARAM);
+      p.delete(PAGE_PARAM);
+    }, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debounced]);
+  // endereço -> campo de busca, quando muda por fora (voltar/avançar, busca da barra superior)
+  useEffect(() => {
+    if (urlSearch === written.current) return;
+    written.current = urlSearch;
+    setSearch(urlSearch);
+  }, [urlSearch]);
+
+  // outro exercício: volta à primeira página
+  const shownYear = useRef(year);
+  useEffect(() => {
+    if (shownYear.current === year) return;
+    shownYear.current = year;
+    update((p) => p.delete(PAGE_PARAM), true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [year]);
+
+  /** O que define "os resultados": busca, exercício e filtros, no formato da API. */
+  const criteria = useMemo(() => ({ search: urlSearch || undefined, year, ...apiFilters(filters) }), [urlSearch, year, filters]);
+  const criteriaKey = JSON.stringify(criteria);
+  // mudou a busca ou os filtros: "todos os resultados" já não é a mesma lista
+  useEffect(() => setAllMatching(false), [criteriaKey]);
+
+  const query = qs({ ...criteria, page, pageSize: PAGE_SIZE, sort: sort === 'name' ? undefined : sort });
+  const list = useApi<CustomerList>(['customers', query], `/customers${query}`);
   const facets = useApi<Facets>(['customers', 'facets'], '/customers/facets');
-  const activeCount = useMemo(
-    () => Object.entries(filters).filter(([, v]) => (Array.isArray(v) ? v.length : Boolean(v))).length,
-    [filters],
-  );
+  const activeCount = useMemo(() => Object.values(filters).filter((v) => (Array.isArray(v) ? v.length : Boolean(v))).length, [filters]);
+
+  // página além do fim (endereço antigo, clientes excluídos): vai para a última
+  const lastPage = list.data?.pages;
+  useEffect(() => {
+    if (lastPage && page > lastPage) update((p) => (lastPage > 1 ? p.set(PAGE_PARAM, String(lastPage)) : p.delete(PAGE_PARAM)), true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastPage, page]);
 
   const rows = list.data?.data ?? [];
-  const allOnPage = rows.length > 0 && rows.every((r) => selected.has(r.id));
-  const ids = [...selected];
+  const total = list.data?.total ?? 0;
+  const allOnPage = rows.length > 0 && rows.every((r) => allMatching || selected.has(r.id));
+  const count = allMatching ? total : selected.size;
+  const narrowed = Boolean(urlSearch) || activeCount > 0;
 
-  const runBulk = useAction((body: { action: string; value?: unknown }) => api.post('/customers/bulk', { ids, year, ...body }), {
-    success: (r: any) => `${r.affected} cliente(s) atualizado(s).`,
+  const clearSelection = () => {
+    setAllMatching(false);
+    setSelected(new Set());
+  };
+
+  /**
+   * Ids dos clientes da ação. Com "todos os resultados", reúne os ids pela própria listagem
+   * (mesma busca e filtros), página a página: as rotas de ação em massa só aceitam ids.
+   */
+  const targetIds = async (max = BULK_MAX): Promise<string[]> => {
+    if (!allMatching) return [...selected];
+    if (total > max) throw new ApiError(400, `Esta ação aceita até ${n(max)} clientes por vez e a seleção tem ${n(total)}. Refine a busca ou os filtros.`);
+    const ids: string[] = [];
+    for (let p = 1; ; p++) {
+      const r = await api.get<CustomerList>(`/customers${qs({ ...criteria, page: p, pageSize: IDS_PAGE_SIZE })}`);
+      ids.push(...r.data.map((c) => c.id));
+      if (!r.data.length || p >= r.pages) break;
+    }
+    if (!ids.length) throw new ApiError(400, 'Nenhum cliente atende mais à busca e aos filtros.');
+    return ids;
+  };
+
+  /** Roda uma ação do menu mostrando o erro num aviso (download recusado, seleção grande demais, sem conexão). */
+  const act = async (fn: () => Promise<void>, fallback: string) => {
+    setWorking(true);
+    try {
+      await fn();
+    } catch (e) {
+      toast.error(errorMessage(e, fallback));
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const openMailing = (kit: boolean) =>
+    act(async () => {
+      if (allMatching && total > MAILING_MAX) {
+        throw new ApiError(400, `Para enviar a mais de ${MAILING_MAX} clientes de uma vez, abra a Mala direta e escolha os destinatários por filtros.`);
+      }
+      const ids = await targetIds(MAILING_MAX);
+      navigate(`/comunicacao/mala-direta?${kit ? 'tipo=kit&' : ''}clientes=${ids.join(',')}`);
+    }, 'Não foi possível abrir a mala direta.');
+
+  const runBulk = useAction(async (body: { action: string; value?: unknown }) => api.post<{ affected: number }>('/customers/bulk', { ids: await targetIds(), year, ...body }), {
+    success: (r) => `${r.affected} cliente(s) atualizado(s).`,
     invalidate: [['customers']],
     onSuccess: () => {
       setBulk(null);
-      setSelected(new Set());
+      clearSelection();
     },
   });
 
@@ -162,16 +343,7 @@ export function CustomersPage() {
       <Card flush>
         <div className="vf-inline" style={{ padding: 16, borderBottom: '1px solid var(--color-border)' }}>
           <div className="vf-grow" style={{ maxWidth: 420 }}>
-            <Input
-              aria-label="Buscar"
-              placeholder="Buscar por nome, CPF ou e-mail"
-              icon={<Search />}
-              value={search}
-              onChange={(e) => {
-                setSearch(e.target.value);
-                if (params.get('busca')) setParams({});
-              }}
-            />
+            <Input aria-label="Buscar" placeholder="Buscar por nome, CPF ou e-mail" icon={<Search />} value={search} onChange={(e) => setSearch(e.target.value)} />
           </div>
           <Button
             kind="secondary"
@@ -184,32 +356,55 @@ export function CustomersPage() {
             Filtros{activeCount ? ` (${activeCount})` : ''}
           </Button>
           {activeCount > 0 && (
-            <Button kind="tertiary" onClick={() => setFilters(EMPTY)}>
+            <Button
+              kind="tertiary"
+              onClick={() =>
+                update((p) => {
+                  filtersToParams(p, EMPTY);
+                  p.delete(PAGE_PARAM);
+                })
+              }
+            >
               Limpar filtros
             </Button>
           )}
+          <div className="vf-cus-sort">
+            <Select
+              aria-label="Ordenar por"
+              value={sort}
+              onChange={(e) =>
+                update((p) => {
+                  const param = SORTS.find((o) => o.value === e.target.value)?.param;
+                  if (param) p.set(SORT_PARAM, param);
+                  else p.delete(SORT_PARAM);
+                  p.delete(PAGE_PARAM);
+                })
+              }
+              options={SORTS.map((o) => ({ value: o.value, label: o.label }))}
+            />
+          </div>
           <div className="vf-grow" />
-          {selected.size > 0 && <span className="vf-muted">{selected.size} selecionado(s)</span>}
+          {count > 0 && <span className="vf-muted">{n(count)} selecionado(s)</span>}
           <Menu
             trigger={(t) => (
-              <Button kind="secondary" onClick={t} disabled={!selected.size} icon={<ChevronDown />}>
+              <Button kind="secondary" onClick={t} disabled={!count} loading={working} icon={<ChevronDown />}>
                 Ações
               </Button>
             )}
           >
             {(close) => (
               <>
-                <MenuItem icon={<Package />} onClick={() => (close(), navigate(`/comunicacao/mala-direta?tipo=kit&clientes=${ids.join(',')}`))}>
+                <MenuItem icon={<Package />} onClick={() => (close(), void openMailing(true))}>
                   Kit pós-declaração
                 </MenuItem>
-                <MenuItem icon={<Mail />} onClick={() => (close(), navigate(`/comunicacao/mala-direta?clientes=${ids.join(',')}`))}>
+                <MenuItem icon={<Mail />} onClick={() => (close(), void openMailing(false))}>
                   Mala direta
                 </MenuItem>
                 <MenuItem
                   icon={<TagIcon />}
-                  onClick={async () => {
+                  onClick={() => {
                     close();
-                    await api.download('/customers/labels', 'etiquetas.pdf', { ids });
+                    void act(async () => api.download('/customers/labels', 'etiquetas.pdf', { ids: await targetIds() }), 'Não foi possível gerar as etiquetas.');
                   }}
                 >
                   Imprimir etiquetas
@@ -231,9 +426,10 @@ export function CustomersPage() {
                 <div className="vf-menu__sep" />
                 <MenuItem
                   icon={<FileSpreadsheet />}
-                  onClick={async () => {
+                  onClick={() => {
                     close();
-                    await api.download('/customers/export', 'clientes.xlsx', { ids, filters: { year } });
+                    // com todos os resultados, a exportação vai pelos filtros (a rota aceita), sem lista de ids
+                    void act(() => api.download('/customers/export', 'clientes.xlsx', allMatching ? { filters: criteria } : { ids: [...selected], filters: { year } }), 'Não foi possível exportar para Excel.');
                   }}
                 >
                   Exportar para Excel
@@ -241,13 +437,9 @@ export function CustomersPage() {
                 {can('customer.download_documents') && (
                   <MenuItem
                     icon={<Download />}
-                    onClick={async () => {
+                    onClick={() => {
                       close();
-                      try {
-                        await api.download('/documents/zip', 'documentos.zip', { customerIds: ids, year });
-                      } catch (e) {
-                        toast.error(e instanceof Error ? e.message : 'Falha no download.');
-                      }
+                      void act(async () => api.download('/documents/zip', 'documentos.zip', { customerIds: await targetIds(), year }), 'Não foi possível baixar os documentos.');
                     }}
                   >
                     Baixar documentos
@@ -255,7 +447,7 @@ export function CustomersPage() {
                 )}
                 {can('customer.delete') && (
                   <MenuItem icon={<Trash2 />} danger onClick={() => (close(), setBulk('delete'))}>
-                    Excluir selecionados
+                    {allMatching ? 'Excluir todos os resultados' : 'Excluir selecionados'}
                   </MenuItem>
                 )}
               </>
@@ -263,15 +455,49 @@ export function CustomersPage() {
           </Menu>
         </div>
 
+        {rows.length > 0 && (allMatching || (allOnPage && total > rows.length)) && (
+          <div className="vf-cus-selectall" role="status">
+            {allMatching ? (
+              <>
+                <span>
+                  Todos os {n(total)} clientes {narrowed ? 'da busca e dos filtros' : 'da carteira'} estão selecionados.
+                </span>
+                <Button kind="tertiary" size="sm" onClick={clearSelection}>
+                  Limpar seleção
+                </Button>
+              </>
+            ) : (
+              <>
+                <span>Os {rows.length} clientes desta página estão selecionados.</span>
+                <Button kind="tertiary" size="sm" onClick={() => setAllMatching(true)}>
+                  Selecionar todos os {n(total)} resultados
+                </Button>
+              </>
+            )}
+          </div>
+        )}
+
         {list.isLoading ? (
           <Loading />
+        ) : list.isError ? (
+          // erro não é "nenhum cliente": diz o que houve e deixa tentar de novo
+          <EmptyState
+            icon={<AlertTriangle />}
+            title="Não foi possível carregar os clientes"
+            description={errorMessage(list.error, 'Tente de novo em instantes.')}
+            action={
+              <Button kind="secondary" icon={<RefreshCw />} loading={list.isFetching} onClick={() => void list.refetch()}>
+                Tentar de novo
+              </Button>
+            }
+          />
         ) : rows.length === 0 ? (
           <EmptyState
             icon={<Users />}
-            title={debounced || activeCount ? 'Nenhum cliente encontrado' : 'Nenhum cliente cadastrado'}
-            description={debounced || activeCount ? 'Revise a busca ou os filtros.' : 'Cadastre clientes um a um ou importe uma planilha.'}
+            title={narrowed ? 'Nenhum cliente encontrado' : 'Nenhum cliente cadastrado'}
+            description={narrowed ? 'Revise a busca ou os filtros.' : 'Cadastre clientes um a um ou importe uma planilha.'}
             action={
-              !debounced && !activeCount && can('customer.create') ? (
+              !narrowed && can('customer.create') ? (
                 <div className="vf-inline">
                   <Button onClick={() => setShowNew(true)}>Novo cliente</Button>
                   <Button kind="secondary" onClick={() => navigate('/importacoes/novos-clientes')}>
@@ -291,13 +517,14 @@ export function CustomersPage() {
                       type="checkbox"
                       aria-label="Selecionar todos da página"
                       checked={allOnPage}
-                      onChange={() =>
+                      onChange={() => {
+                        setAllMatching(false);
                         setSelected((s) => {
-                          const n = new Set(s);
-                          rows.forEach((r) => (allOnPage ? n.delete(r.id) : n.add(r.id)));
-                          return n;
-                        })
-                      }
+                          const next = new Set(s);
+                          rows.forEach((r) => (allOnPage ? next.delete(r.id) : next.add(r.id)));
+                          return next;
+                        });
+                      }}
                     />
                   </th>
                   <th>Cliente</th>
@@ -314,15 +541,21 @@ export function CustomersPage() {
                       <input
                         type="checkbox"
                         aria-label={`Selecionar ${c.name}`}
-                        checked={selected.has(c.id)}
-                        onChange={() =>
+                        checked={allMatching || selected.has(c.id)}
+                        onChange={() => {
+                          if (allMatching) {
+                            // desmarcar um cliente desfaz "todos os resultados": ficam os outros desta página
+                            setAllMatching(false);
+                            setSelected(new Set(rows.filter((r) => r.id !== c.id).map((r) => r.id)));
+                            return;
+                          }
                           setSelected((s) => {
-                            const n = new Set(s);
-                            if (n.has(c.id)) n.delete(c.id);
-                            else n.add(c.id);
-                            return n;
-                          })
-                        }
+                            const next = new Set(s);
+                            if (next.has(c.id)) next.delete(c.id);
+                            else next.add(c.id);
+                            return next;
+                          });
+                        }}
                       />
                     </td>
                     <td>
@@ -363,7 +596,9 @@ export function CustomersPage() {
             </table>
           </div>
         )}
-        {list.data && list.data.total > 0 && <Pagination page={list.data.page} pages={list.data.pages} total={list.data.total} onChange={setPage} />}
+        {list.data && list.data.total > 0 && (
+          <Pagination page={list.data.page} pages={list.data.pages} total={list.data.total} onChange={(p) => update((q) => (p > 1 ? q.set(PAGE_PARAM, String(p)) : q.delete(PAGE_PARAM)))} />
+        )}
       </Card>
 
       <Drawer
@@ -377,7 +612,10 @@ export function CustomersPage() {
             </Button>
             <Button
               onClick={() => {
-                setFilters(draft);
+                update((p) => {
+                  filtersToParams(p, draft);
+                  p.delete(PAGE_PARAM);
+                });
                 setShowFilters(false);
               }}
             >
@@ -386,12 +624,18 @@ export function CustomersPage() {
           </>
         }
       >
-        {!f ? (
+        {facets.isError ? (
+          <Alert tone="danger" title="Não foi possível carregar os filtros.">
+            <Button kind="secondary" size="sm" loading={facets.isFetching} onClick={() => void facets.refetch()}>
+              Tentar de novo
+            </Button>
+          </Alert>
+        ) : !f ? (
           <Loading />
         ) : (
           <div className="vf-stack" style={{ '--gap': '24px' } as React.CSSProperties}>
             <FilterSection title="Declaração no exercício">
-              {(['not_started', 'negotiation', 'filling', 'transmitted', 'finished'] as const).map((s) => (
+              {STAGES.map((s) => (
                 <Checkbox key={s} label={stageLabel(s)} checked={draft.stage.includes(s)} onChange={() => setDraft((d) => ({ ...d, stage: toggle(d.stage, s) }))} />
               ))}
             </FilterSection>
@@ -444,7 +688,7 @@ export function CustomersPage() {
         }}
       />
 
-      <BulkDialogs kind={bulk} count={selected.size} loading={runBulk.isPending} onClose={() => setBulk(null)} onRun={(action, value) => runBulk.mutate({ action, value })} />
+      <BulkDialogs kind={bulk} count={count} loading={runBulk.isPending} onClose={() => setBulk(null)} onRun={(action, value) => runBulk.mutate({ action, value })} />
     </>
   );
 }

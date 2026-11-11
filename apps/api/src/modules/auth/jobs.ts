@@ -2,6 +2,8 @@ import { eq } from 'drizzle-orm';
 import { escapeHtml } from '@verifco/shared';
 import type { AppContext } from '../../context';
 import { jobs, offices, users } from '../../db/schema';
+import type { JobRow } from '../../jobs/queue';
+import { notify } from '../../services/notify';
 
 /** E-mail com o link de redefinição de senha (o token vai cifrado no job e é apagado após o envio). */
 export const PASSWORD_RESET_JOB = 'auth.password_reset';
@@ -20,6 +22,22 @@ export interface EmailChangedPayload extends Record<string, unknown> {
 }
 
 export function registerJobs(ctx: AppContext) {
+  /**
+   * E-mail da conta que não saiu depois de todas as tentativas: o token cifrado é apagado do job
+   * e o escritório é avisado no sino (quem pediu o link não tem como saber que ele não vai chegar).
+   */
+  async function mailFailed(job: JobRow, error: string, what: string) {
+    const userId = typeof job.payload.userId === 'string' ? job.payload.userId : null;
+    await ctx.db.update(jobs).set({ payload: { userId } }).where(eq(jobs.id, job.id));
+    const user = userId ? await ctx.db.query.users.findFirst({ where: eq(users.id, userId) }) : null;
+    if (!user) return;
+    await notify(ctx.db, {
+      officeId: user.officeId,
+      title: 'E-mail da conta não enviado',
+      body: `Não foi possível enviar ${what} para ${user.name} (${user.email}): ${error.slice(0, 200)} Confira o envio de e-mail em Meu escritório › Integrações.`,
+      link: '/admin/integracoes',
+    });
+  }
   ctx.jobs.register(PASSWORD_RESET_JOB, async (job) => {
     const user = await ctx.db.query.users.findFirst({ where: eq(users.id, String(job.payload.userId)) });
     const sealed = job.payload.token;
@@ -29,13 +47,14 @@ export function registerJobs(ctx: AppContext) {
     await ctx.providers.email.send(user.officeId, {
       to: user.email,
       toName: user.name,
+      system: true,
       subject: 'Redefinição de senha — Verifco',
       html: `<p>Olá, ${escapeHtml(user.name)}.</p><p>Para criar uma nova senha, acesse: <a href="${link}">${link}</a></p><p>O link vale por 1 hora. Se não foi você, ignore este e-mail.</p>`,
     });
     // enviado: o token não fica guardado nem cifrado
     await ctx.db.update(jobs).set({ payload: { userId: user.id } }).where(eq(jobs.id, job.id));
     return { sent: true };
-  });
+  }, { onFailed: (job, error) => mailFailed(job, error, 'o link de redefinição de senha') });
 
   ctx.jobs.register(LOCKOUT_NOTICE_JOB, async (job) => {
     const user = await ctx.db.query.users.findFirst({ where: eq(users.id, String(job.payload.userId)) });
@@ -43,11 +62,12 @@ export function registerJobs(ctx: AppContext) {
     await ctx.providers.email.send(user.officeId, {
       to: user.email,
       toName: user.name,
+      system: true,
       subject: 'Tentativas de acesso bloqueadas — Verifco',
       html: `<p>Olá, ${escapeHtml(user.name)}.</p><p>Registramos várias tentativas de entrar na sua conta do Verifco com a senha errada. Por segurança, o login com este e-mail ficou bloqueado por 15 minutos.</p><p>Se não foi você, recomendamos trocar a senha em “Esqueci minha senha” ou em Minha conta.</p>`,
     });
     return { sent: true };
-  });
+  }, { onFailed: (job, error) => mailFailed(job, error, 'o aviso de tentativas de acesso bloqueadas') });
 
   ctx.jobs.register(EMAIL_CHANGED_JOB, async (job) => {
     const p = job.payload as Partial<EmailChangedPayload>;
@@ -58,9 +78,10 @@ export function registerJobs(ctx: AppContext) {
     await ctx.providers.email.send(user.officeId, {
       to: p.oldEmail,
       toName: user.name,
+      system: true,
       subject: 'Seu e-mail de acesso ao Verifco foi alterado',
       html: `<p>Olá, ${escapeHtml(user.name)}.</p><p>${escapeHtml(String(p.changedBy ?? ''))} alterou o e-mail de acesso da sua conta no Verifco (escritório ${escapeHtml(office?.name ?? '')}) de ${escapeHtml(p.oldEmail)} para ${escapeHtml(String(p.newEmail ?? ''))}.</p><p>Se você não reconhece esta alteração, fale com o dono da conta do escritório.</p>`,
     });
     return { sent: true };
-  });
+  }, { onFailed: (job, error) => mailFailed(job, error, 'o aviso de troca do e-mail de acesso') });
 }

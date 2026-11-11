@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { useQueryClient } from '@tanstack/react-query';
-import { Bitcoin, Briefcase, Building2, Gem, Landmark, Megaphone, Radar, Receipt, RefreshCw, Tractor, TrendingUp, Users } from 'lucide-react';
+import { Bitcoin, Briefcase, Building2, Gem, Landmark, Megaphone, Printer, Radar, Receipt, RefreshCw, Tractor, TrendingUp, Users } from 'lucide-react';
 import { OPPORTUNITY_STATUS, type OpportunityCategory } from '@verifco/shared';
-import { Alert, Button, Card, Drawer, EmptyState, Loading, Progress, Select, Tabs, Tag, useToast, type Tone } from '../../ds';
+import { Alert, Button, Card, Drawer, EmptyState, Loading, Pagination, Progress, Select, Tabs, Tag, usePagination, usePrint, useToast, type Tone } from '../../ds';
 import { PageHeader } from '../../app/Shell';
 import { api } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
@@ -186,6 +186,9 @@ function OpportunitiesDrawer({ category, year, onClose, onCampaign }: { category
   const key = ['radar-opps', year, category.category];
   const list = useApi<Opportunity[]>(key, `/radar/opportunities?year=${year}&category=${category.category}`);
   const rows = (list.data ?? []).filter((o) => status === 'all' || o.status === status);
+  // 50 clientes por página (a API devolve a lista inteira); a impressão sai com todos
+  const { printing, print } = usePrint();
+  const pg = usePagination(rows, { resetKey: status, all: printing });
 
   const change = async (o: Opportunity, s: string) => {
     try {
@@ -204,9 +207,14 @@ function OpportunitiesDrawer({ category, year, onClose, onCampaign }: { category
       onClose={onClose}
       width={760}
       footer={
-        <Button icon={<Megaphone />} onClick={onCampaign} disabled={!category.active}>
-          Campanha para os ativos
-        </Button>
+        <>
+          <Button kind="secondary" icon={<Printer />} onClick={print} disabled={!rows.length}>
+            Imprimir
+          </Button>
+          <Button icon={<Megaphone />} onClick={onCampaign} disabled={!category.active}>
+            Campanha para os ativos
+          </Button>
+        </>
       }
     >
       <div className="vf-stack">
@@ -232,7 +240,7 @@ function OpportunitiesDrawer({ category, year, onClose, onCampaign }: { category
                 </tr>
               </thead>
               <tbody>
-                {rows.map((o) => (
+                {pg.rows.map((o) => (
                   <tr key={o.id}>
                     <td>
                       <Link to={`/clientes/${o.customerId}`} className="vf-text-sm-bold">
@@ -256,6 +264,7 @@ function OpportunitiesDrawer({ category, year, onClose, onCampaign }: { category
             </table>
           </div>
         )}
+        {rows.length > 0 && <Pagination page={pg.page} pages={pg.pages} total={pg.total} onChange={pg.setPage} />}
       </div>
     </Drawer>
   );

@@ -2,7 +2,7 @@ import fp from 'fastify-plugin';
 import jwt from '@fastify/jwt';
 import { eq } from 'drizzle-orm';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { customers, roles, users } from '../db/schema';
+import { customers, offices, roles, users } from '../db/schema';
 import { platformUsers } from '../db/platform-schema';
 
 export type UserToken = { typ: 'user'; sub: string; oid: string; tv: number };
@@ -21,6 +21,13 @@ export const authPlugin = fp(async (app: FastifyInstance) => {
   app.decorateRequest('auth', null);
   app.decorateRequest('customerAuth', null);
   app.decorateRequest('platformAuth', null);
+  app.decorateRequest('officeBlocked', false);
+
+  /** Escritório suspenso no painel do sistema: o token continua válido, mas não autentica. */
+  const blocked = async (officeId: string) => {
+    const [row] = await app.ctx.db.select({ blockedAt: offices.blockedAt }).from(offices).where(eq(offices.id, officeId));
+    return Boolean(row?.blockedAt);
+  };
 
   app.addHook('onRequest', async (req: FastifyRequest) => {
     const header = req.headers.authorization;
@@ -40,6 +47,10 @@ export const authPlugin = fp(async (app: FastifyInstance) => {
     } else if (payload.typ === 'user') {
       const user = await db.query.users.findFirst({ where: eq(users.id, payload.sub) });
       if (!user || !user.isActive || user.officeId !== payload.oid || user.tokenVersion !== payload.tv) return;
+      if (await blocked(user.officeId)) {
+        req.officeBlocked = true;
+        return;
+      }
       const role = user.roleId ? await db.query.roles.findFirst({ where: eq(roles.id, user.roleId) }) : null;
       req.auth = {
         kind: 'user',
@@ -54,6 +65,10 @@ export const authPlugin = fp(async (app: FastifyInstance) => {
     } else if (payload.typ === 'customer') {
       const customer = await db.query.customers.findFirst({ where: eq(customers.id, payload.cid) });
       if (!customer || customer.officeId !== payload.oid || customer.deletedAt) return;
+      if (await blocked(customer.officeId)) {
+        req.officeBlocked = true;
+        return;
+      }
       req.customerAuth = { kind: 'customer', customerId: customer.id, officeId: customer.officeId, scope: payload.scope };
     }
   });

@@ -1,16 +1,20 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
-import { Bell, ChevronRight, CircleHelp, LogOut, Menu as MenuIcon, PanelLeftClose, PanelLeftOpen, RefreshCw, Search, Settings, Star, User, X } from 'lucide-react';
+import { ArrowRight, Bell, ChevronRight, CircleHelp, LogOut, Menu as MenuIcon, PanelLeftClose, PanelLeftOpen, RefreshCw, Search, Settings, Star, User, X } from 'lucide-react';
 import { Alert, Avatar, Button, ConfirmDialog, IconButton, Loading, Menu, MenuItem, Modal, Select, cx, useToast } from '../ds';
-import { api } from '../lib/api';
+import { api, errorMessage, qs } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { useBrowserNotifications } from '../lib/deviceNotifications';
-import { useAction, useApi, useMediaQuery } from '../lib/hooks';
+import { formatCpfCnpj } from '../lib/format';
+import { useAction, useApi, useDebounced, useMediaQuery } from '../lib/hooks';
 import { YEAR_OPTIONS, YEAR_OPTIONS_SHORT, useYear } from '../lib/year';
 import type { RobotOverview } from '../modules/ecac/types';
+import { NOTIFICATIONS_KEY, fetchNotifications, markAllNotificationsRead, markNotificationRead, notificationPath, type AppNotification } from '../modules/notifications/api';
+import { ErrorBoundary } from './ErrorBoundary';
 import { favoriteLabel, isCurrentFavorite, visibleFavorites, type Favorite } from './favorites';
 import { visibleNav, type NavGroup } from './nav';
+import { PlanBanner } from './PlanBanner';
 import './shell.css';
 
 /** Seção "Favoritos" do menu lateral: atalhos gravados pela estrela do cabeçalho das páginas. */
@@ -150,16 +154,259 @@ function NavGroupItem({ group }: { group: NavGroup }) {
   );
 }
 
-interface Notification {
+/** Quantos clientes a busca global sugere enquanto a pessoa digita. */
+export const SEARCH_SUGGESTIONS = 8;
+const SEARCH_MIN_CHARS = 2;
+
+interface SearchHit {
   id: string;
-  title: string;
-  body: string | null;
-  link: string | null;
-  readAt: string | null;
-  createdAt: string;
+  name: string;
+  cpfCnpj: string;
+  email: string | null;
 }
 
-export function Shell() {
+/**
+ * Busca global de clientes (nome, CPF/CNPJ ou e-mail). Enquanto a pessoa digita, sugere os
+ * primeiros clientes; ↓/↑ escolhem, Enter abre o escolhido. Enter sem escolher (ou a última opção)
+ * abre a lista de clientes com a busca, como sempre. Esc fecha as sugestões.
+ */
+export function GlobalSearch() {
+  const { can } = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const listId = useId();
+  const box = useRef<HTMLFormElement>(null);
+  const [text, setText] = useState('');
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(-1);
+  const typed = text.trim();
+  const term = useDebounced(typed, 250);
+  const suggest = can('customer.list');
+  const ready = suggest && term.length >= SEARCH_MIN_CHARS;
+  const q = useQuery({
+    queryKey: ['customers', 'suggestions', term],
+    queryFn: () => api.get<{ data?: SearchHit[] }>(`/customers${qs({ search: term, pageSize: SEARCH_SUGGESTIONS })}`),
+    enabled: ready,
+    retry: false,
+    staleTime: 30_000,
+  });
+  const waiting = term !== typed || (ready && q.isLoading);
+  const hits = ready && term === typed && Array.isArray(q.data?.data) ? q.data.data.slice(0, SEARCH_SUGGESTIONS) : [];
+  const show = open && suggest && typed.length >= SEARCH_MIN_CHARS;
+  // opções: os clientes sugeridos e, por último, "ver todos os resultados"
+  const count = hits.length + 1;
+
+  useEffect(() => setActive(-1), [term]);
+  // mudou de página: fecha as sugestões
+  useEffect(() => setOpen(false), [location.pathname, location.search]);
+  useEffect(() => {
+    if (!show) return;
+    const onMouse = (e: MouseEvent) => box.current && !box.current.contains(e.target as Node) && setOpen(false);
+    document.addEventListener('mousedown', onMouse);
+    return () => document.removeEventListener('mousedown', onMouse);
+  }, [show]);
+
+  const openList = () => {
+    setOpen(false);
+    navigate(`/clientes?busca=${encodeURIComponent(typed)}`);
+  };
+  const openCustomer = (c: SearchHit) => {
+    setOpen(false);
+    setText('');
+    navigate(`/clientes/${c.id}`);
+  };
+  const choose = (i: number) => (hits[i] ? openCustomer(hits[i]) : openList());
+
+  return (
+    <form
+      ref={box}
+      className="topbar__search"
+      role="search"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (show && active >= 0) choose(active);
+        else openList();
+      }}
+    >
+      <div className="vf-input-group vf-input-group--icon">
+        <Search />
+        <input
+          className="vf-input"
+          placeholder="Busque por nome, CPF ou e-mail"
+          value={text}
+          aria-label="Buscar clientes"
+          role="combobox"
+          aria-autocomplete="list"
+          aria-expanded={show}
+          aria-controls={show ? listId : undefined}
+          aria-activedescendant={show && active >= 0 ? `${listId}-${active}` : undefined}
+          autoComplete="off"
+          onChange={(e) => {
+            setText(e.target.value);
+            setOpen(true);
+          }}
+          onFocus={() => setOpen(true)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape' && show) {
+              // fecha só as sugestões (não o diálogo que estiver aberto por baixo)
+              e.preventDefault();
+              e.stopPropagation();
+              setOpen(false);
+              setActive(-1);
+            } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+              if (!suggest || typed.length < SEARCH_MIN_CHARS) return;
+              e.preventDefault();
+              if (!show) return setOpen(true);
+              setActive((i) => (e.key === 'ArrowDown' ? (i + 1) % count : (i <= 0 ? count : i) - 1));
+            }
+          }}
+        />
+      </div>
+      {show && (
+        <ul className="topbar__results" id={listId} role="listbox" aria-label="Clientes encontrados">
+          {waiting && !hits.length ? (
+            <li className="topbar__results-note" role="presentation">
+              Buscando...
+            </li>
+          ) : q.isError ? (
+            <li className="topbar__results-note" role="presentation">
+              Não foi possível buscar agora. Tecle Enter para abrir a lista de clientes.
+            </li>
+          ) : !hits.length ? (
+            <li className="topbar__results-note" role="presentation">
+              Nenhum cliente encontrado para “{typed}”.
+            </li>
+          ) : (
+            hits.map((c, i) => (
+              // mousedown não tira o foco do campo; o clique escolhe
+              <li key={c.id} id={`${listId}-${i}`} role="option" aria-selected={active === i} className="topbar__result" onMouseDown={(e) => e.preventDefault()} onMouseEnter={() => setActive(i)} onClick={() => openCustomer(c)}>
+                <span className="topbar__result-name">{c.name}</span>
+                <span className="topbar__result-meta">
+                  {formatCpfCnpj(c.cpfCnpj)}
+                  {c.email ? ` · ${c.email}` : ''}
+                </span>
+              </li>
+            ))
+          )}
+          <li
+            id={`${listId}-${hits.length}`}
+            role="option"
+            aria-selected={active === hits.length}
+            className="topbar__result topbar__result--all"
+            onMouseDown={(e) => e.preventDefault()}
+            onMouseEnter={() => setActive(hits.length)}
+            onClick={openList}
+          >
+            Ver todos os resultados
+            <ArrowRight aria-hidden />
+          </li>
+        </ul>
+      )}
+      <span className="sr-only" role="status">
+        {show && !waiting && !q.isError ? (hits.length ? `${hits.length} cliente(s) sugerido(s). Use as setas para escolher.` : 'Nenhum cliente encontrado.') : ''}
+      </span>
+    </form>
+  );
+}
+
+/** Notificações mostradas no sino; as demais ficam em "Ver todas" (/notificacoes). */
+export const BELL_ITEMS = 8;
+
+/**
+ * Sino da barra superior: últimas notificações, marcar como lidas e o caminho para a página completa.
+ * A consulta fica aqui (e não no Shell): o React Query só redesenha quem lê cada campo do resultado,
+ * e é o sino que precisa saber de erro e carregamento.
+ */
+export function NotificationsBell() {
+  const { me } = useAuth();
+  const navigate = useNavigate();
+  const toast = useToast();
+  const [marking, setMarking] = useState(false);
+  // os campos são lidos aqui, no desenho do sino: o conteúdo do menu é desenhado depois, pelo Menu,
+  // e o React Query só avisa das mudanças nos campos que já foram lidos
+  const { data, isError, isLoading, isFetching, refetch } = useQuery({ queryKey: NOTIFICATIONS_KEY, queryFn: fetchNotifications, refetchInterval: 60_000, retry: false });
+  const list: AppNotification[] = Array.isArray(data) ? data : [];
+  const unread = list.filter((n) => !n.readAt).length;
+  // avisos do sistema neste navegador, se ligado em Conta › Preferências
+  useBrowserNotifications(Array.isArray(data) ? data : undefined, me?.user.notificationPrefs, navigate);
+
+  const markAll = async () => {
+    setMarking(true);
+    try {
+      await markAllNotificationsRead();
+      await refetch();
+    } catch (e) {
+      toast.error(errorMessage(e, 'Não foi possível marcar as notificações como lidas. Tente de novo.'));
+    } finally {
+      setMarking(false);
+    }
+  };
+
+  return (
+    <Menu
+      trigger={(toggle) => (
+        <IconButton label="Notificações" onClick={toggle} dot={unread > 0}>
+          <Bell />
+        </IconButton>
+      )}
+    >
+      {(close) => (
+        <div className="topbar__bell">
+          <div className="topbar__bell-head">
+            <strong>Notificações</strong>
+            {unread > 0 && (
+              <button type="button" className="vf-btn vf-btn--tertiary vf-btn--sm" disabled={marking} onClick={() => void markAll()}>
+                Marcar todas como lidas
+              </button>
+            )}
+          </div>
+          {isError && (
+            // erro não é "nenhuma notificação": diz o que houve e deixa tentar de novo
+            <div className="topbar__bell-note" role="alert">
+              <div className="vf-stack" style={{ '--gap': '8px' } as React.CSSProperties}>
+                <span>{list.length ? 'Não foi possível atualizar as notificações.' : 'Não foi possível carregar as notificações.'}</span>
+                <div>
+                  <button type="button" className="vf-btn vf-btn--secondary vf-btn--sm" disabled={isFetching} onClick={() => void refetch()}>
+                    Tentar de novo
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+          {isLoading ? <div className="topbar__bell-note">Carregando...</div> : !isError && list.length === 0 ? <div className="topbar__bell-note">Nenhuma notificação.</div> : null}
+          {list.slice(0, BELL_ITEMS).map((n) => (
+            <MenuItem
+              key={n.id}
+              onClick={async () => {
+                close();
+                if (!n.readAt) await markNotificationRead(n.id).catch(() => {});
+                void refetch();
+                const to = notificationPath(n);
+                if (to) navigate(to);
+              }}
+            >
+              <div className="vf-stack" style={{ '--gap': '2px', fontWeight: n.readAt ? 500 : 700 } as React.CSSProperties}>
+                <span>{n.title}</span>
+                {n.body && <span className="vf-text-xs vf-muted">{n.body}</span>}
+              </div>
+            </MenuItem>
+          ))}
+          <div className="topbar__bell-foot">
+            <Link to="/notificacoes" onClick={close}>
+              {list.length > BELL_ITEMS ? `Ver todas (${list.length})` : 'Ver todas'}
+            </Link>
+          </div>
+        </div>
+      )}
+    </Menu>
+  );
+}
+
+/**
+ * Moldura das páginas do escritório: menu lateral, barra superior e o conteúdo da rota.
+ * `children` substitui o conteúdo da rota (usado pelo 404 de endereços fora das rotas do Shell).
+ */
+export function Shell({ children }: { children?: ReactNode }) {
   const { me, logout, can, refresh } = useAuth();
   const { year, setYear } = useYear();
   const navigate = useNavigate();
@@ -168,7 +415,6 @@ export function Shell() {
   const narrow = useMediaQuery('(max-width: 600px)');
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [search, setSearch] = useState('');
 
   const removeFavorite = async (f: Favorite) => {
     try {
@@ -180,16 +426,6 @@ export function Shell() {
   };
 
   useEffect(() => setMobileOpen(false), [location.pathname]);
-
-  const notifications = useQuery({
-    queryKey: ['notifications'],
-    queryFn: () => api.get<Notification[]>('/notifications'),
-    refetchInterval: 60_000,
-    retry: false,
-  });
-  const unread = (notifications.data ?? []).filter((n) => !n.readAt).length;
-  // avisos do sistema neste navegador, se ligado em Conta › Preferências
-  useBrowserNotifications(notifications.data, me?.user.notificationPrefs, navigate);
 
   return (
     <div className={cx('shell', collapsed && 'shell--collapsed', mobileOpen && 'shell--mobile-open')}>
@@ -216,19 +452,7 @@ export function Shell() {
               <MenuIcon />
             </IconButton>
           </span>
-          <form
-            className="topbar__search"
-            role="search"
-            onSubmit={(e) => {
-              e.preventDefault();
-              navigate(`/clientes?busca=${encodeURIComponent(search.trim())}`);
-            }}
-          >
-            <div className="vf-input-group vf-input-group--icon">
-              <Search />
-              <input className="vf-input" placeholder="Busque por nome, CPF ou e-mail e tecle Enter" value={search} onChange={(e) => setSearch(e.target.value)} aria-label="Buscar clientes" />
-            </div>
-          </form>
+          <GlobalSearch />
           <div className="vf-grow" />
           <div className="topbar__year">
             <Select aria-label="Ano-exercício" value={String(year)} onChange={(e) => setYear(Number(e.target.value))} options={narrow ? YEAR_OPTIONS_SHORT : YEAR_OPTIONS} />
@@ -237,50 +461,7 @@ export function Shell() {
           <IconButton label="Ajuda" onClick={() => navigate('/ajuda')}>
             <CircleHelp />
           </IconButton>
-          <Menu
-            trigger={(toggle) => (
-              <IconButton label="Notificações" onClick={toggle} dot={unread > 0}>
-                <Bell />
-              </IconButton>
-            )}
-          >
-            {(close) => (
-              <div style={{ width: 340, maxHeight: 420, overflowY: 'auto' }}>
-                <div className="vf-inline vf-between" style={{ padding: '8px 12px' }}>
-                  <strong>Notificações</strong>
-                  {unread > 0 && (
-                    <button
-                      type="button"
-                      className="vf-btn vf-btn--tertiary vf-btn--sm"
-                      onClick={async () => {
-                        await api.post('/notifications/read-all');
-                        void notifications.refetch();
-                      }}
-                    >
-                      Marcar todas como lidas
-                    </button>
-                  )}
-                </div>
-                {(notifications.data ?? []).length === 0 && <div className="vf-muted" style={{ padding: 12 }}>Nenhuma notificação.</div>}
-                {(notifications.data ?? []).map((n) => (
-                  <MenuItem
-                    key={n.id}
-                    onClick={async () => {
-                      close();
-                      if (!n.readAt) await api.post(`/notifications/${n.id}/read`).catch(() => {});
-                      void notifications.refetch();
-                      if (n.link) navigate(n.link);
-                    }}
-                  >
-                    <div className="vf-stack" style={{ '--gap': '2px', fontWeight: n.readAt ? 500 : 700 } as React.CSSProperties}>
-                      <span>{n.title}</span>
-                      {n.body && <span className="vf-text-xs vf-muted">{n.body}</span>}
-                    </div>
-                  </MenuItem>
-                ))}
-              </div>
-            )}
-          </Menu>
+          <NotificationsBell />
           <Menu
             trigger={(toggle) => (
               <button type="button" onClick={toggle} style={{ border: 0, background: 'none', cursor: 'pointer', padding: 0 }} aria-label="Menu do usuário">
@@ -309,8 +490,10 @@ export function Shell() {
             )}
           </Menu>
         </header>
+        <PlanBanner />
         <main className="content">
-          <Outlet />
+          {/* um erro ao desenhar a página fica dentro do conteúdo; navegar para outra página desfaz */}
+          <ErrorBoundary resetKey={location.pathname}>{children ?? <Outlet />}</ErrorBoundary>
         </main>
         <footer className="footer">Verifco · gestão de IRPF para escritórios contábeis</footer>
       </div>
