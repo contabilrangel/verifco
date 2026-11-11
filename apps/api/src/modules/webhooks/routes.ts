@@ -1,13 +1,24 @@
 import { and, eq } from 'drizzle-orm';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { integrations } from '../../db/schema';
 import { safeEqual } from '../../lib/crypto';
 import { parse } from '../../lib/http';
 import { handleAsaasWebhook, type AsaasWebhookEvent } from '../../integrations/asaas';
-import { decryptSecrets } from '../../integrations/store';
-import type { WhatsAppSecrets } from '../../integrations/whatsapp';
-import { applyDeliveryStatuses, normalizeEvolution, normalizeMeta, storeInbound, validMetaSignature } from '../../integrations/whatsapp-inbound';
+import { decryptSecrets, type IntegrationRow } from '../../integrations/store';
+import { downloadInboundMedia, type WhatsAppSecrets } from '../../integrations/whatsapp';
+import {
+  MEDIA_MAX_BYTES,
+  WHATSAPP_MEDIA_JOB,
+  applyDeliveryStatuses,
+  mediaJobFailed,
+  normalizeEvolution,
+  normalizeEvolutionStatuses,
+  normalizeMeta,
+  runMediaJob,
+  storeInbound,
+  validMetaSignature,
+} from '../../integrations/whatsapp-inbound';
 import { WHATSAPP_WEBHOOK_RULE, allow } from '../../services/rate-limit';
 
 const asaasEvent = z
@@ -25,8 +36,14 @@ const asaasEvent = z
   })
   .passthrough();
 
-/** Corpo do webhook do WhatsApp: mensagens de texto são pequenas (a Evolution deve enviar sem base64). */
-const WHATSAPP_BODY_LIMIT = 512 * 1024;
+/** Corpo do webhook da Meta: texto, ids de mídia e situações (o arquivo nunca vem no corpo). */
+const META_BODY_LIMIT = 512 * 1024;
+/**
+ * Corpo do webhook da Evolution: com "Webhook Base64" ligado na instância, o arquivo vem dentro
+ * do evento (um anexo de 20 MB ocupa um terço a mais em base64). Só é lido depois de conferido o
+ * token da URL (e o do cabeçalho, quando configurado).
+ */
+const WHATSAPP_BODY_LIMIT = Math.ceil(MEDIA_MAX_BYTES / 3) * 4 + 512 * 1024;
 
 /**
  * Webhooks públicos (sem login). Cada escritório tem uma URL própria com token aleatório;
@@ -63,9 +80,21 @@ export async function webhooksRoutes(app: FastifyInstance) {
   });
 
   /**
+   * `whatsapp.media` `{ messageId, media }`: baixa do provedor o arquivo de uma mensagem recebida e
+   * o anexa à mensagem (enfileirado pelo webhook, que assim responde sem esperar o download).
+   * Registrado aqui, junto do webhook que o enfileira; no máximo dois por escritório de cada vez,
+   * porque cada arquivo (até 20 MB) passa pela memória.
+   */
+  ctx.jobs.register(WHATSAPP_MEDIA_JOB, (job) => runMediaJob(ctx, job, (officeId, media) => downloadInboundMedia(ctx, officeId, media)), {
+    perOffice: 2,
+    onFailed: (job) => mediaJobFailed(ctx, job),
+  });
+
+  /**
    * WhatsApp (Evolution API ou Cloud API da Meta): as respostas dos clientes entram na conversa
-   * do cliente do escritório dono do token, localizado pelo celular. Na Meta, o GET confirma o
-   * endereço (hub.verify_token) e cada POST vem assinado com a chave secreta do app.
+   * do cliente do escritório dono do token, localizado pelo celular; a mídia vira anexo da
+   * mensagem e os avisos de entrega atualizam os envios. Na Meta, o GET confirma o endereço
+   * (hub.verify_token) e cada POST vem assinado com a chave secreta do app.
    */
   await app.register(async (scope) => {
     // a assinatura da Meta é o HMAC do corpo exato: o JSON é lido à mão, depois de conferida
@@ -90,38 +119,61 @@ export async function webhooksRoutes(app: FastifyInstance) {
       return reply.header('Content-Type', 'text/plain; charset=utf-8').send(challenge);
     });
 
-    scope.post('/webhooks/whatsapp/:token', { bodyLimit: WHATSAPP_BODY_LIMIT }, async (req, reply) => {
-      const row = await findRow(req);
-      if (!row) return reply.status(401).send({ error: 'Webhook não autorizado.' });
-      const config = row.publicConfig as { mode?: string; instance?: string; phoneNumberId?: string };
-      const secrets = decryptSecrets(ctx, row) as WhatsAppSecrets;
-      const meta = config.mode === 'meta';
-      const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.from('');
-      if (meta) {
-        const signature = req.headers['x-hub-signature-256'];
-        if (!secrets.appSecret || typeof signature !== 'string' || !validMetaSignature(raw, signature, secrets.appSecret)) {
-          return reply.status(401).send({ error: 'Assinatura do webhook inválida.' });
+    /** Integração dona do token, achada antes de o corpo ser lido (quem não tem o token não envia 27 MB). */
+    const rows = new WeakMap<FastifyRequest, IntegrationRow>();
+    const tooLarge = { error: 'Os dados enviados passam do tamanho permitido.' };
+
+    scope.post(
+      '/webhooks/whatsapp/:token',
+      {
+        bodyLimit: WHATSAPP_BODY_LIMIT,
+        onRequest: async (req, reply) => {
+          const row = await findRow(req);
+          if (!row) return reply.status(401).send({ error: 'Webhook não autorizado.' });
+          if ((row.publicConfig as { mode?: string }).mode === 'meta') {
+            if (Number(req.headers['content-length']) > META_BODY_LIMIT) return reply.status(413).send(tooLarge);
+          } else {
+            const expected = (decryptSecrets(ctx, row) as WhatsAppSecrets).webhookAuthToken;
+            if (expected && !safeEqual(String(req.headers.authorization ?? ''), `Bearer ${expected}`)) {
+              return reply.status(401).send({ error: 'Token de autenticação do webhook inválido.' });
+            }
+          }
+          rows.set(req, row);
+        },
+      },
+      async (req, reply) => {
+        const row = rows.get(req);
+        if (!row) return reply.status(401).send({ error: 'Webhook não autorizado.' });
+        const config = row.publicConfig as { mode?: string; instance?: string; phoneNumberId?: string };
+        const secrets = decryptSecrets(ctx, row) as WhatsAppSecrets;
+        const meta = config.mode === 'meta';
+        const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.from('');
+        if (meta) {
+          if (raw.length > META_BODY_LIMIT) return reply.status(413).send(tooLarge);
+          const signature = req.headers['x-hub-signature-256'];
+          if (!secrets.appSecret || typeof signature !== 'string' || !validMetaSignature(raw, signature, secrets.appSecret)) {
+            return reply.status(401).send({ error: 'Assinatura do webhook inválida.' });
+          }
         }
-      } else if (secrets.webhookAuthToken && !safeEqual(String(req.headers.authorization ?? ''), `Bearer ${secrets.webhookAuthToken}`)) {
-        return reply.status(401).send({ error: 'Token de autenticação do webhook inválido.' });
-      }
-      if (!(await allow(ctx, `whatsapp-webhook:${row.id}`, WHATSAPP_WEBHOOK_RULE))) {
-        return reply.status(429).send({ error: 'Muitas requisições. Aguarde alguns instantes e tente de novo.' });
-      }
-      let payload: unknown;
-      try {
-        payload = JSON.parse(raw.toString('utf8'));
-      } catch {
-        return reply.status(400).send({ error: 'Dados inválidos: o corpo da requisição não é um JSON válido.' });
-      }
-      // integração desativada: confirma o recebimento (o provedor não reenvia) e ignora
-      if (!row.enabled) return { received: true, stored: 0 };
-      if (meta) {
-        const { messages, statuses } = normalizeMeta(payload, config.phoneNumberId);
-        await applyDeliveryStatuses(ctx, row.officeId, statuses);
-        return { received: true, ...(await storeInbound(ctx, row.officeId, messages)) };
-      }
-      return { received: true, ...(await storeInbound(ctx, row.officeId, normalizeEvolution(payload, config.instance))) };
-    });
+        if (!(await allow(ctx, `whatsapp-webhook:${row.id}`, WHATSAPP_WEBHOOK_RULE))) {
+          return reply.status(429).send({ error: 'Muitas requisições. Aguarde alguns instantes e tente de novo.' });
+        }
+        let payload: unknown;
+        try {
+          payload = JSON.parse(raw.toString('utf8'));
+        } catch {
+          return reply.status(400).send({ error: 'Dados inválidos: o corpo da requisição não é um JSON válido.' });
+        }
+        // integração desativada: confirma o recebimento (o provedor não reenvia) e ignora
+        if (!row.enabled) return { received: true, stored: 0 };
+        if (meta) {
+          const { messages, statuses } = normalizeMeta(payload, config.phoneNumberId);
+          await applyDeliveryStatuses(ctx, row.officeId, statuses);
+          return { received: true, ...(await storeInbound(ctx, row.officeId, messages)) };
+        }
+        await applyDeliveryStatuses(ctx, row.officeId, normalizeEvolutionStatuses(payload, config.instance));
+        return { received: true, ...(await storeInbound(ctx, row.officeId, normalizeEvolution(payload, config.instance))) };
+      },
+    );
   });
 }

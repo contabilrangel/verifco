@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { ArrowRight, Bell, ChevronRight, CircleHelp, LogOut, Menu as MenuIcon, PanelLeftClose, PanelLeftOpen, RefreshCw, Search, Settings, Star, User, X } from 'lucide-react';
@@ -10,11 +10,13 @@ import { formatCpfCnpj } from '../lib/format';
 import { useAction, useApi, useDebounced, useMediaQuery } from '../lib/hooks';
 import { YEAR_OPTIONS, YEAR_OPTIONS_SHORT, useYear } from '../lib/year';
 import type { RobotOverview } from '../modules/ecac/types';
+import { MessagesNavItem } from '../modules/messages/NavItem';
 import { NOTIFICATIONS_KEY, fetchNotifications, markAllNotificationsRead, markNotificationRead, notificationPath, type AppNotification } from '../modules/notifications/api';
 import { ErrorBoundary } from './ErrorBoundary';
 import { favoriteLabel, isCurrentFavorite, visibleFavorites, type Favorite } from './favorites';
 import { visibleNav, type NavGroup } from './nav';
 import { PlanBanner } from './PlanBanner';
+import { EmailBanner } from './EmailBanner';
 import './shell.css';
 
 /** Seção "Favoritos" do menu lateral: atalhos gravados pela estrela do cabeçalho das páginas. */
@@ -435,7 +437,11 @@ export function Shell({ children }: { children?: ReactNode }) {
         </div>
         <FavoritesNav favorites={me?.favorites} onRemove={(f) => void removeFavorite(f)} />
         {visibleNav(can).map((g) => (
-          <NavGroupItem key={g.id} group={g} />
+          <Fragment key={g.id}>
+            <NavGroupItem group={g} />
+            {/* caixa de mensagens (com o selo de não lidas), logo abaixo de Clientes, para quem lê as conversas */}
+            {g.id === 'clientes' && can('customer.list') && <MessagesNavItem />}
+          </Fragment>
         ))}
         <div className="sidebar__footer">
           <button type="button" className="sidebar__link" onClick={() => setCollapsed((c) => !c)} title={collapsed ? 'Expandir menu' : 'Recolher menu'}>
@@ -491,6 +497,7 @@ export function Shell({ children }: { children?: ReactNode }) {
           </Menu>
         </header>
         <PlanBanner />
+        <EmailBanner />
         <main className="content">
           {/* um erro ao desenhar a página fica dentro do conteúdo; navegar para outra página desfaz */}
           <ErrorBoundary resetKey={location.pathname}>{children ?? <Outlet />}</ErrorBoundary>

@@ -10,6 +10,34 @@
 .ck-chat-box .vf-bubble--other { background: var(--color-surface); border: 1px solid var(--color-border); }
 .ck-composer { display: flex; flex-direction: column; gap: var(--size-spacing-03); }
 .ck-composer .vf-textarea { min-height: 72px; }
+.ck-composer-actions { flex-wrap: wrap; row-gap: var(--size-spacing-02); }
+/* anexos de uma mensagem: links dentro da bolha (herdam a cor do texto dela) */
+.ck-chat-files { list-style: none; margin: var(--size-spacing-02) 0 0; padding: 0; display: flex; flex-direction: column; gap: var(--size-spacing-01); }
+.ck-chat-files:first-child { margin-top: 0; }
+.ck-chat-file {
+  display: inline-flex; align-items: center; gap: var(--size-spacing-02); max-width: 100%; padding: 0; border: 0; background: none;
+  color: inherit; font: var(--text-sm-bold); text-align: left; cursor: pointer; white-space: normal;
+}
+.ck-chat-file svg { width: 16px; height: 16px; flex-shrink: 0; }
+.ck-chat-file__name { text-decoration: underline; overflow-wrap: anywhere; }
+.ck-chat-file__size { font: var(--text-xs-regular); opacity: 0.75; white-space: nowrap; }
+.ck-chat-file:disabled { cursor: default; opacity: 0.6; }
+.ck-chat-file:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; border-radius: var(--border-radius-xs); }
+/* arquivos escolhidos, antes de enviar */
+.ck-composer-files { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--size-spacing-02); }
+.ck-composer-file {
+  display: inline-flex; align-items: center; gap: var(--size-spacing-02); max-width: 100%; padding: var(--size-spacing-01) var(--size-spacing-02);
+  background: var(--color-surface-low); border: 1px solid var(--color-border); border-radius: var(--border-radius-sm); font: var(--text-sm-regular);
+}
+.ck-composer-file > svg { width: 16px; height: 16px; flex-shrink: 0; color: var(--color-text-low); }
+.ck-composer-file__name { overflow-wrap: anywhere; }
+.ck-composer-file__remove {
+  display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; border: 0; background: none;
+  border-radius: var(--border-radius-xs); color: var(--color-text-low); cursor: pointer; flex-shrink: 0;
+}
+.ck-composer-file__remove:hover:not(:disabled) { background: var(--color-gray-20); color: var(--color-danger); }
+.ck-composer-file__remove:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+.ck-composer-file__remove svg { width: 16px; height: 16px; }
 
 /* ---------- Páginas públicas ---------- */
 .ck-public .public-page__header { position: sticky; top: 0; z-index: var(--zindex-1); padding: var(--size-spacing-03) var(--size-spacing-04); }

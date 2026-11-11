@@ -1,0 +1,40 @@
+/* Caixa de mensagens do escritório. Só tokens do design system. */
+
+/* ---------- Item do menu lateral ---------- */
+.msg-nav { position: relative; }
+/* vermelho como o ponto do sino: aparece no fundo escuro do menu e no item ativo (azul) */
+.msg-nav__badge { margin-left: auto; background: var(--color-danger); }
+.shell--collapsed .msg-nav__badge { position: absolute; top: 2px; right: var(--size-spacing-02); min-width: 16px; height: 16px; padding: 0 var(--size-spacing-01); }
+
+/* ---------- Lista de conversas + conversa aberta ---------- */
+.msg-layout { display: grid; grid-template-columns: minmax(280px, 380px) minmax(0, 1fr); gap: var(--size-spacing-05); align-items: start; }
+.msg-layout__thread { min-width: 0; display: flex; flex-direction: column; gap: var(--size-spacing-03); }
+.msg-filters { display: flex; flex-direction: column; gap: var(--size-spacing-03); padding: var(--size-spacing-03) var(--size-spacing-04) var(--size-spacing-04); border-bottom: 1px solid var(--color-border); }
+.msg-list { list-style: none; margin: 0; padding: 0; max-height: min(70vh, 720px); overflow-y: auto; }
+.msg-thread {
+  display: flex; align-items: center; gap: var(--size-spacing-03); padding: var(--size-spacing-03) var(--size-spacing-04);
+  border-bottom: 1px solid var(--color-border); color: var(--color-text-medium); text-decoration: none;
+}
+.msg-thread:hover { background: var(--color-surface-low); text-decoration: none; }
+.msg-thread:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
+.msg-thread--active, .msg-thread--active:hover { background: var(--color-interactive-low); }
+.msg-thread__main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.msg-thread__line { display: flex; align-items: center; justify-content: space-between; gap: var(--size-spacing-02); min-width: 0; }
+.msg-thread__name { font: var(--text-sm-regular); color: var(--color-text-high); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.msg-thread__time { font: var(--text-xs-regular); color: var(--color-text-low); white-space: nowrap; flex-shrink: 0; }
+.msg-thread__preview { font: var(--text-xs-regular); color: var(--color-text-low); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.msg-thread__preview svg { width: 12px; height: 12px; margin-right: var(--size-spacing-01); vertical-align: -1px; }
+.msg-thread .vf-badge { flex-shrink: 0; }
+/* não lidas em destaque */
+.msg-thread--unread .msg-thread__name { font: var(--text-sm-bold); }
+.msg-thread--unread .msg-thread__preview { font: var(--text-xs-bold); color: var(--color-text-high); }
+.msg-thread--unread .msg-thread__time { color: var(--color-interactive); font: var(--text-xs-bold); }
+.msg-back { display: none; align-self: flex-start; }
+
+@media (max-width: 900px) {
+  /* uma coluna: a lista ou a conversa aberta */
+  .msg-layout { grid-template-columns: minmax(0, 1fr); }
+  .msg-layout--open .msg-layout__list, .msg-layout__placeholder { display: none; }
+  .msg-back { display: inline-flex; }
+  .msg-list { max-height: none; }
+}

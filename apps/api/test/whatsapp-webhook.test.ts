@@ -91,8 +91,20 @@ describe('webhook do WhatsApp: Evolution API', () => {
     await post(office.token, upsert('3EB0AAA2', '551187654321@s.whatsapp.net', { extendedTextMessage: { text: 'Sem o nove' } }));
     await post(office.token, upsert('3EB0AAA3', '98765432101234@lid', { imageMessage: { caption: 'foto do recibo' } }, { remoteJidAlt: '5511987654321@s.whatsapp.net' }));
     await post(office.token, upsert('3EB0AAA4', '5521976543210@s.whatsapp.net', { documentMessage: { fileName: 'informe.pdf' } }));
-    expect((await conversation(maria)).map((m) => m.body).sort()).toEqual(['Segue o informe de rendimentos.', 'Sem o nove', '[Imagem] foto do recibo'].sort());
+    // a legenda é o texto da mensagem; o arquivo é buscado depois, pela fila (test/whatsapp-media.test.ts)
+    expect((await conversation(maria)).map((m) => m.body).sort()).toEqual(['Segue o informe de rendimentos.', 'Sem o nove', 'foto do recibo'].sort());
     expect((await conversation(joao)).map((m) => m.body)).toEqual(['[Documento: informe.pdf]']);
+    // a instância não tem mais os arquivos: as mensagens ficam, com o motivo
+    const gone = (async () => new Response(JSON.stringify({ status: 400, response: { message: ['Message not found'] } }), { status: 400, headers: { 'content-type': 'application/json' } })) as typeof fetch;
+    const realFetch = env.providers.fetch;
+    env.providers.fetch = gone;
+    try {
+      await env.ctx.jobs.drain();
+    } finally {
+      env.providers.fetch = realFetch;
+    }
+    expect((await conversation(maria)).map((m) => m.body)).toContain('foto do recibo\n[Imagem não recebida: não foi possível baixar o arquivo: Evolution API respondeu com erro (HTTP 400): Message not found.]');
+    expect((await conversation(joao)).map((m) => m.body)).toEqual(['[Documento não recebido (informe.pdf): não foi possível baixar o arquivo: Evolution API respondeu com erro (HTTP 400): Message not found.]']);
     // a sequência de mensagens gera um aviso só enquanto ele não é lido
     expect((await accountant.api.get('/api/notifications')).body.filter((n: any) => n.title === 'Nova mensagem de Maria pelo WhatsApp')).toHaveLength(1);
   });

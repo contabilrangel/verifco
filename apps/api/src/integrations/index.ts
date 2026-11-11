@@ -22,11 +22,15 @@ export interface ProviderDeps {
  * - WhatsApp: Evolution API ou WhatsApp Cloud API (Meta), conforme o modo;
  * - IA: conexão global escolhida pelo proprietário (ou `ANTHROPIC_API_KEY` legado).
  */
+/** Maior resposta aceita de um endereço informado pelo escritório. */
+const USER_URL_MAX_BYTES = 28 * 1024 * 1024;
+
 export function createProviders(ctx: AppContext, deps: ProviderDeps = {}): Providers {
   const providers: Providers = {
     fetch: deps.fetch ?? ((input, init) => globalThis.fetch(input, init)),
     // com fetch injetado (testes) usa o mesmo; em produção, o que bloqueia a rede interna
-    userUrlFetch: deps.fetch ?? createPublicOnlyFetch('evolution'),
+    // o teto cobre a mídia do WhatsApp (até 20 MB; em base64 dentro de JSON, cerca de 27 MB)
+    userUrlFetch: deps.fetch ?? createPublicOnlyFetch('evolution', undefined, USER_URL_MAX_BYTES),
     email: createEmailSender(ctx, deps.createTransport ?? defaultTransportFactory),
     whatsapp: createWhatsAppSender(ctx, () => providers.fetch, () => providers.userUrlFetch ?? providers.fetch),
     ai: createAiProvider(ctx, () => providers.fetch),

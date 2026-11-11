@@ -5,7 +5,7 @@ import { Alert, Button, Card, Input, Modal, PasswordInput, Tag, useToast } from 
 import { errorMessage } from '../lib/api';
 
 /** QR code em SVG (o conteúdo é o endereço `otpauth://` devolvido pela API). */
-export function QrCode({ value, size = 184 }: { value: string; size?: number }) {
+export function QrCode({ value, size = 184, label = 'QR code para o aplicativo autenticador' }: { value: string; size?: number; label?: string }) {
   const cells = useMemo(() => {
     const qr = qrcode(0, 'M');
     qr.addData(value);
@@ -18,7 +18,7 @@ export function QrCode({ value, size = 184 }: { value: string; size?: number }) 
   const margin = 4;
   const total = cells.n + margin * 2;
   return (
-    <svg role="img" aria-label="QR code para o aplicativo autenticador" width={size} height={size} viewBox={`0 0 ${total} ${total}`} shapeRendering="crispEdges" style={{ background: '#fff', borderRadius: 8 }}>
+    <svg role="img" aria-label={label} width={size} height={size} viewBox={`0 0 ${total} ${total}`} shapeRendering="crispEdges" style={{ background: '#fff', borderRadius: 8 }}>
       <rect width={total} height={total} fill="#fff" />
       {cells.dark.map(([r, c]) => (
         <rect key={`${r}-${c}`} x={c + margin} y={r + margin} width={1} height={1} fill="#000" />

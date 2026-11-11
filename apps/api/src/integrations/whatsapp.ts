@@ -4,13 +4,21 @@
  * Evolution API v2 (https://doc.evolution-api.com/v2/api-reference):
  * - POST {url}/message/sendText/{instância} `{ number, text }`, cabeçalho `apikey`.
  * - POST {url}/message/sendMedia/{instância} `{ number, mediatype, mimetype, media (base64 puro), fileName, caption }`.
- * - GET {url}/instance/connectionState/{instância} → `{ instance: { state: 'open' } }`.
+ * - GET {url}/instance/connectionState/{instância} → `{ instance: { state: 'open' | 'connecting' | 'close' } }`.
+ * - GET {url}/instance/connect/{instância} → `{ pairingCode, code, base64 (data:image/png), count }`
+ *   (QR Code para ler no celular) ou, já conectada, `{ instance: { state: 'open' } }`.
+ * - GET {url}/instance/fetchInstances?instanceName={instância} → `[{ name, connectionStatus, ownerJid, profileName }]`
+ *   (na v1, `[{ instance: { instanceName, owner, profileName, status } }]`): o número conectado.
+ * - POST {url}/chat/getBase64FromMediaMessage/{instância} `{ message: { key: { id } }, convertToMp4: false }`
+ *   → `{ base64, mimetype, fileName }`: o arquivo de uma mensagem recebida.
  *
  * Meta WhatsApp Cloud API (https://developers.facebook.com/docs/whatsapp/cloud-api/reference/messages
  * e .../reference/media), cabeçalho `Authorization: Bearer <token>`:
  * - POST https://graph.facebook.com/{versão}/{phone-number-id}/messages
  *   `{ messaging_product: 'whatsapp', to, type: 'text'|'document', ... }` → `messages[0].id`.
  * - POST .../{phone-number-id}/media (multipart: messaging_product, type, file) → `{ id }`.
+ * - GET https://graph.facebook.com/{versão}/{media-id} → `{ url, mime_type, sha256, file_size, id }`; o
+ *   arquivo sai de `url` (lookaside.fbsbx.com, válida por 5 minutos) com o mesmo `Authorization`.
  * Mensagens livres só valem dentro da janela de 24 h aberta pelo cliente. Fora dela, com um
  * modelo aprovado configurado para o tipo de envio, vai `type: 'template'`
  * `{ template: { name, language: { code }, components: [header (documento), body (parâmetros)] } }`
@@ -32,11 +40,12 @@ import {
 import type { AppContext } from '../context';
 import { messages } from '../db/schema';
 import { baseTemplateValues } from '../services/delivery';
-import { IntegrationError, ensureOk, httpRequest } from './http';
-import { assertSafeBaseUrl } from './ssrf';
+import type { RateRule } from '../services/rate-limit';
+import { IntegrationError, PROVIDER_LABELS, ensureOk, httpRequest } from './http';
+import { assertSafeBaseUrl, ResponseTooLargeError } from './ssrf';
 import type { OutgoingWhatsApp, WhatsAppSender } from './providers';
 import { loadIntegration, type LoadedIntegration } from './store';
-import { customersByPhone } from './whatsapp-inbound';
+import { MEDIA_MAX_BYTES, MEDIA_TOO_LARGE, MediaRefused, customersByPhone, type DownloadedMedia, type InboundMediaRef } from './whatsapp-inbound';
 
 export interface WhatsAppConfig {
   mode: 'evolution' | 'meta';
@@ -77,6 +86,115 @@ const describeMetaError = (data: unknown) => {
   return [e.message, e.error_data?.details, e.code ? `código ${e.code}` : null].filter(Boolean).join(' – ');
 };
 
+type Obj = Record<string, unknown>;
+const obj = (v: unknown): Obj | null => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Obj) : null);
+const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+
+/**
+ * Requisição cuja resposta é lida só até `maxBytes` (arquivo recebido pelo WhatsApp): o que passa
+ * disso é recusado com `MediaRefused`, sem ir inteiro para a memória. Não segue redirecionamento.
+ */
+async function fetchCapped(
+  fetchImpl: typeof fetch,
+  provider: string,
+  url: string,
+  req: { method?: string; headers?: Record<string, string>; body?: unknown; opaqueErrors?: boolean },
+  maxBytes: number,
+): Promise<{ status: number; ok: boolean; headers: Headers; data: Buffer }> {
+  const label = PROVIDER_LABELS[provider] ?? provider;
+  const headers: Record<string, string> = { ...(req.headers ?? {}) };
+  if (req.body !== undefined) headers['Content-Type'] = 'application/json';
+  try {
+    const res = await fetchImpl(url, {
+      method: req.method ?? (req.body !== undefined ? 'POST' : 'GET'),
+      headers,
+      body: req.body !== undefined ? JSON.stringify(req.body) : undefined,
+      redirect: 'manual',
+      signal: AbortSignal.timeout(MEDIA_TIMEOUT_MS),
+    });
+    const tooLarge = async (cancel: () => Promise<void> | undefined) => {
+      await cancel()?.catch(() => undefined);
+      return new MediaRefused(MEDIA_TOO_LARGE);
+    };
+    if (Number(res.headers.get('content-length')) > maxBytes) throw await tooLarge(() => res.body?.cancel());
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    const reader = res.body?.getReader();
+    while (reader) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > maxBytes) throw await tooLarge(() => reader.cancel());
+      chunks.push(value);
+    }
+    return { status: res.status, ok: res.ok, headers: res.headers, data: Buffer.concat(chunks) };
+  } catch (err) {
+    if (err instanceof MediaRefused) throw err;
+    // o fetch de endereços do escritório (`userUrlFetch`) tem o próprio teto de resposta, menor que o dos anexos
+    if (err instanceof IntegrationError) throw err instanceof ResponseTooLargeError ? new MediaRefused('o arquivo é grande demais para o servidor baixar') : err;
+    const e = err as { name?: string; message?: string; cause?: { code?: string; message?: string } };
+    if (e?.name === 'TimeoutError' || e?.name === 'AbortError') {
+      throw new IntegrationError(provider, `O ${label} não entregou o arquivo em ${Math.round(MEDIA_TIMEOUT_MS / 1000)} segundos.`);
+    }
+    if (req.opaqueErrors) throw new IntegrationError(provider, `Não foi possível conectar ao ${label}. Confira o endereço e a conexão.`);
+    throw new IntegrationError(provider, `Não foi possível conectar ao ${label} (${e?.cause?.code ?? e?.cause?.message ?? e?.message ?? 'erro de rede'}).`);
+  }
+}
+
+const parseJson = (data: Buffer): unknown => {
+  try {
+    return JSON.parse(data.toString('utf8'));
+  } catch {
+    return null;
+  }
+};
+
+/** Resposta JSON com um arquivo em base64 dentro: o base64 de 20 MB mais os outros campos. */
+const BASE64_RESPONSE_LIMIT = Math.ceil(MEDIA_MAX_BYTES / 3) * 4 + 256 * 1024;
+
+export type WhatsAppConnectionState = 'open' | 'connecting' | 'close';
+/** Estado da instância da Evolution e, enquanto ela não conecta, o QR Code para ler no celular. */
+export interface WhatsAppConnection {
+  state: WhatsAppConnectionState;
+  /** Número conectado (só dígitos, com DDI) e o nome do perfil, quando a instância informa. */
+  number: string | null;
+  profileName: string | null;
+  /** QR Code pronto para exibir (`data:image/...;base64,`). */
+  qrImage: string | null;
+  /** Conteúdo do QR Code, para a tela desenhar quando a imagem não vem. */
+  qrCode: string | null;
+  /** Código de pareamento (alternativa ao QR Code), quando a instância devolve. */
+  pairingCode: string | null;
+}
+
+const connectionStateOf = (v: unknown): WhatsAppConnectionState => {
+  const s = str(v)?.toLowerCase();
+  return s === 'open' || s === 'connecting' ? s : 'close';
+};
+
+/** Só imagem em base64 (nunca SVG nem endereço externo): vai direto para um `<img>` na tela. */
+function qrImageOf(v: unknown): string | null {
+  const s = str(v);
+  if (!s || s.length > 300_000) return null;
+  if (/^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/]+=*$/.test(s)) return s;
+  return /^[A-Za-z0-9+/]{100,}=*$/.test(s) ? `data:image/png;base64,${s}` : null;
+}
+
+/** Arquivo só sai de um endereço https da própria Meta (o token de acesso vai junto no cabeçalho). */
+const META_MEDIA_HOSTS = /(^|\.)(fbsbx\.com|facebook\.com|fbcdn\.net|whatsapp\.net|whatsapp\.com)$/i;
+function metaMediaUrl(raw: unknown): string {
+  let url: URL | null = null;
+  try {
+    url = new URL(str(raw) ?? '');
+  } catch {
+    url = null;
+  }
+  if (!url || url.protocol !== 'https:' || url.username || url.password || !META_MEDIA_HOSTS.test(url.hostname)) {
+    throw new MediaRefused('a Meta não informou um endereço de download válido');
+  }
+  return url.toString();
+}
+
 const mediaTypeOf = (mime: string | undefined) => (mime?.startsWith('image/') ? 'image' : mime?.startsWith('video/') ? 'video' : mime?.startsWith('audio/') ? 'audio' : 'document');
 
 export class EvolutionClient {
@@ -100,6 +218,58 @@ export class EvolutionClient {
   async connectionState() {
     const r = await this.request<{ instance?: { state?: string } }>('GET', `/instance/connectionState/${encodeURIComponent(this.instance)}`);
     return r.instance?.state ?? 'unknown';
+  }
+
+  /** Pede a conexão: devolve o QR Code da vez ou, se a instância já está conectada, o estado. */
+  async connect(): Promise<Pick<WhatsAppConnection, 'qrImage' | 'qrCode' | 'pairingCode'> & { state: WhatsAppConnectionState | null }> {
+    const r = obj(await this.request<unknown>('GET', `/instance/connect/${encodeURIComponent(this.instance)}`)) ?? {};
+    const qr = obj(r.qrcode) ?? r;
+    const code = str(qr.code);
+    const pairing = str(qr.pairingCode) ?? str(r.pairingCode);
+    const instance = obj(r.instance);
+    return {
+      state: instance ? connectionStateOf(instance.state ?? instance.status) : null,
+      qrImage: qrImageOf(qr.base64),
+      // conteúdo do QR Code do WhatsApp: texto ASCII curto (a tela desenha o código a partir dele)
+      qrCode: code && /^[\x21-\x7e]{1,2000}$/.test(code) ? code : null,
+      pairingCode: pairing && /^[A-Za-z0-9-]{4,16}$/.test(pairing) ? pairing : null,
+    };
+  }
+
+  /** Número e nome do perfil conectado na instância (`null` quando a instância não informa). */
+  async instanceInfo(): Promise<{ number: string | null; profileName: string | null } | null> {
+    const r = await this.request<unknown>('GET', `/instance/fetchInstances?instanceName=${encodeURIComponent(this.instance)}`);
+    for (const item of Array.isArray(r) ? r : [r]) {
+      const i = obj(obj(item)?.instance) ?? obj(item);
+      if (!i) continue;
+      const name = str(i.name) ?? str(i.instanceName);
+      if (name && name !== this.instance) continue;
+      const jid = str(i.ownerJid) ?? str(i.owner);
+      const number = jid ? onlyDigits(jid.split('@')[0].split(':')[0]) : '';
+      return { number: number.length >= 8 && number.length <= 15 ? number : null, profileName: str(i.profileName)?.slice(0, 100) ?? null };
+    }
+    return null;
+  }
+
+  /** Arquivo de uma mensagem recebida, pedido à instância pela chave da mensagem. */
+  async mediaBase64(key: NonNullable<InboundMediaRef['evolutionKey']>): Promise<DownloadedMedia> {
+    const res = await fetchCapped(
+      this.fetchImpl,
+      'evolution',
+      `${this.baseUrl}/chat/getBase64FromMediaMessage/${encodeURIComponent(this.instance)}`,
+      {
+        method: 'POST',
+        headers: { Accept: 'application/json', apikey: this.apiKey },
+        body: { message: { key: { id: key.id, ...(key.remoteJid ? { remoteJid: key.remoteJid } : {}), fromMe: key.fromMe } }, convertToMp4: false },
+        opaqueErrors: true,
+      },
+      BASE64_RESPONSE_LIMIT,
+    );
+    const body = ensureOk('evolution', { status: res.status, ok: res.ok, data: parseJson(res.data), text: '', headers: res.headers }, describeEvolutionError, { rawBody: false });
+    const r = obj(body) ?? {};
+    const base64 = (str(r.base64) ?? str(obj(r.data)?.base64))?.replace(/^data:[^,]{0,200},/, '');
+    if (!base64) throw new IntegrationError('evolution', 'A Evolution API não devolveu o arquivo da mensagem.');
+    return { data: Buffer.from(base64, 'base64'), mimeType: str(r.mimetype), filename: str(r.fileName) };
   }
 
   async sendText(number: string, text: string) {
@@ -151,6 +321,23 @@ export class MetaWhatsAppClient {
       { headers: this.headers() },
     );
     return ensureOk('meta', res, describeMetaError);
+  }
+
+  /**
+   * Arquivo de uma mensagem recebida: a Graph API informa o endereço (válido por 5 minutos) e o
+   * tamanho; o download sai por `downloadFetch`, o fetch protegido contra rede interna.
+   */
+  async downloadMedia(mediaId: string, downloadFetch: typeof fetch): Promise<DownloadedMedia> {
+    const res = await httpRequest<unknown>(this.fetchImpl, 'meta', `${this.base}/${encodeURIComponent(mediaId)}`, { headers: this.headers() });
+    const info = obj(ensureOk('meta', res, describeMetaError)) ?? {};
+    if (Number(info.file_size) > MEDIA_MAX_BYTES) throw new MediaRefused(MEDIA_TOO_LARGE);
+    // a Meta responde com uma página de erro a clientes sem User-Agent
+    const file = await fetchCapped(downloadFetch, 'meta', metaMediaUrl(info.url), { headers: { ...this.headers(), 'User-Agent': 'Verifco/1.0' } }, MEDIA_MAX_BYTES);
+    if (!file.ok) {
+      const detail = describeMetaError(parseJson(file.data));
+      throw new IntegrationError('meta', `A Meta não entregou o arquivo (HTTP ${file.status})${detail ? `: ${detail.slice(0, 200)}` : ''}.`, file.status);
+    }
+    return { data: file.data, mimeType: str(info.mime_type) };
   }
 
   private async sendMessage(body: Record<string, unknown>) {
@@ -221,6 +408,63 @@ function clientFor(fetchImpl: typeof fetch, loaded: LoadedWhatsApp, userFetch: t
   }
   if (!c.baseUrl || !c.instance || !s.apiKey) throw new IntegrationError('whatsapp', 'Informe a URL, a instância e a API key da Evolution API em Administração › Integrações.');
   return { mode: 'evolution' as const, client: new EvolutionClient(userFetch, c.baseUrl, c.instance, s.apiKey) };
+}
+
+/**
+ * Busca no provedor do escritório o arquivo de uma mensagem recebida (job `whatsapp.media`).
+ * Endereços que vêm do escritório (Evolution) ou do provedor (download da Meta) passam pelo
+ * `userUrlFetch`; nenhum endereço do corpo do webhook é seguido.
+ */
+export async function downloadInboundMedia(
+  ctx: AppContext,
+  officeId: string,
+  media: InboundMediaRef,
+  fetchImpl: typeof fetch = ctx.providers.fetch,
+  userFetch: typeof fetch = ctx.providers.userUrlFetch ?? fetchImpl,
+): Promise<DownloadedMedia> {
+  const loaded = await loadIntegration<WhatsAppConfig, WhatsAppSecrets>(ctx, officeId, 'whatsapp');
+  if (!loaded || !loaded.row.enabled) throw new MediaRefused('a integração do WhatsApp foi desativada antes do download');
+  const c = clientFor(fetchImpl, loaded, userFetch);
+  if (media.metaId && c.mode === 'meta') return c.client.downloadMedia(media.metaId, userFetch);
+  if (media.evolutionKey && c.mode === 'evolution') return c.client.mediaBase64(media.evolutionKey);
+  throw new MediaRefused('a conexão do WhatsApp mudou antes do download');
+}
+
+/** Limites por escritório: consultas do estado (a tela repete a cada poucos segundos) e pedidos de conexão. */
+export const WHATSAPP_CONNECTION_RULE: RateRule = { max: 60, windowSec: 60 };
+export const WHATSAPP_CONNECT_RULE: RateRule = { max: 30, windowSec: 5 * 60 };
+
+/**
+ * Estado da instância da Evolution API; com `connect`, pede a conexão e devolve o QR Code.
+ * Conectada, traz o número e o nome do perfil quando a instância informa.
+ */
+export async function whatsappConnection(
+  ctx: AppContext,
+  loaded: LoadedWhatsApp,
+  opts: { connect?: boolean } = {},
+  fetchImpl: typeof fetch = ctx.providers.fetch,
+  userFetch: typeof fetch = ctx.providers.userUrlFetch ?? fetchImpl,
+): Promise<WhatsAppConnection> {
+  const c = clientFor(fetchImpl, loaded, userFetch);
+  if (c.mode !== 'evolution') {
+    throw new IntegrationError('whatsapp', 'A conexão por QR Code vale só para a Evolution API. Na Cloud API da Meta, o número é conectado no painel da Meta.');
+  }
+  const result: WhatsAppConnection = { state: 'close', number: null, profileName: null, qrImage: null, qrCode: null, pairingCode: null };
+  if (opts.connect) {
+    const { state, ...qr } = await c.client.connect();
+    if (qr.qrImage || qr.qrCode || qr.pairingCode) return { ...result, ...qr, state: 'connecting' };
+    // sem QR Code na resposta: já conectada ou ainda gerando o código
+    result.state = state ?? connectionStateOf(await c.client.connectionState());
+  } else {
+    result.state = connectionStateOf(await c.client.connectionState());
+  }
+  if (result.state === 'open') {
+    // o número é um detalhe: se a instância não informar, o estado conectado vale do mesmo jeito
+    const info = await c.client.instanceInfo().catch(() => null);
+    result.number = info?.number ?? null;
+    result.profileName = info?.profileName ?? null;
+  }
+  return result;
 }
 
 async function deliver(fetchImpl: typeof fetch, loaded: LoadedWhatsApp, msg: OutgoingWhatsApp, userFetch?: typeof fetch) {
@@ -341,7 +585,7 @@ export async function testWhatsApp(
   if (c.mode === 'evolution') {
     const state = await c.client.connectionState();
     if (state !== 'open') {
-      throw new IntegrationError('evolution', `A instância "${loaded.config.instance}" não está conectada (estado: ${state}). Leia o QR Code na Evolution API.`);
+      throw new IntegrationError('evolution', `A instância "${loaded.config.instance}" não está conectada (estado: ${state}). Use o bloco Conectar, nesta tela, para ler o QR Code.`);
     }
     message = `Instância "${loaded.config.instance}" conectada.`;
   } else {

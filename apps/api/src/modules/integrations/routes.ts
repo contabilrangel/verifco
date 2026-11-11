@@ -1,5 +1,5 @@
 import { and, asc, eq } from 'drizzle-orm';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import {
   INTEGRATION_CATALOG,
@@ -15,15 +15,17 @@ import {
 import type { AppContext } from '../../context';
 import { integrations, procurators } from '../../db/schema';
 import { randomToken } from '../../lib/crypto';
-import { badRequest, notFound, forbidden } from '../../lib/errors';
+import { HttpError, badRequest, notFound, forbidden } from '../../lib/errors';
 import { audit, guard, parse, requireUser } from '../../lib/http';
 import { SMTP_ALLOWED_PORTS } from '../../integrations/email';
 import { IntegrationError, errorMessage } from '../../integrations/http';
 import { isInternalHostname, unsafeBaseUrlReason } from '../../integrations/ssrf';
 import { scheduleOmiePoll, type OmieConfig } from '../../integrations/omie';
 import { clearSerproTokens } from '../../integrations/serpro';
-import { decryptSecrets, getIntegrationRow, maskSecret, type IntegrationRow } from '../../integrations/store';
+import { decryptSecrets, getIntegrationRow, loadIntegration, maskSecret, type IntegrationRow } from '../../integrations/store';
 import { testIntegration } from '../../integrations/testers';
+import { WHATSAPP_CONNECTION_RULE, WHATSAPP_CONNECT_RULE, whatsappConnection, type WhatsAppConfig, type WhatsAppSecrets } from '../../integrations/whatsapp';
+import { consume } from '../../services/rate-limit';
 import { requeuePendingBillings } from './jobs';
 import { cancelEcacAutoSync, scheduleEcacAutoSync } from '../ecac/jobs';
 
@@ -259,6 +261,41 @@ export async function integrationRoutes(app: FastifyInstance) {
     }
     await audit(req, 'integration.test', 'integration', row?.id ?? null, { provider, ok });
     return { ok, message, integration: view(ctx, def, updated ?? null) };
+  });
+
+  /**
+   * WhatsApp pela Evolution API, sem sair do Verifco: o GET consulta o estado da instância (a tela
+   * repete a cada poucos segundos) e o POST pede a conexão e devolve o QR Code para ler no celular.
+   * Limite de chamadas por escritório; o erro do provedor volta com a mensagem dele, nunca com a chave.
+   */
+  const whatsappConnectionFor = async (req: FastifyRequest, connect: boolean) => {
+    const user = requireUser(req);
+    await consume(
+      ctx,
+      `whatsapp-${connect ? 'connect' : 'connection'}:${user.officeId}`,
+      connect ? WHATSAPP_CONNECT_RULE : WHATSAPP_CONNECTION_RULE,
+      'Muitas consultas à conexão do WhatsApp. Aguarde um instante e tente de novo.',
+    );
+    const loaded = await loadIntegration<WhatsAppConfig, WhatsAppSecrets>(ctx, user.officeId, 'whatsapp');
+    if (!loaded) throw badRequest('Salve a configuração do WhatsApp antes de conectar.');
+    try {
+      return { loaded, connection: await whatsappConnection(ctx, loaded, { connect }) };
+    } catch (err) {
+      // configuração incompleta ou conexão pela Meta: 400; falha ao falar com a Evolution: 502
+      if (err instanceof IntegrationError) throw new HttpError(err.provider === 'whatsapp' ? 400 : 502, err.message);
+      throw err;
+    }
+  };
+
+  app.get('/integrations/whatsapp/connection', manage, async (req) => (await whatsappConnectionFor(req, false)).connection);
+
+  app.post('/integrations/whatsapp/connect', manage, async (req) => {
+    // `refresh`: a tela buscando o QR Code da vez (o WhatsApp troca o código a cada poucos segundos)
+    const { refresh } = parse(z.object({ refresh: z.boolean().optional() }), req.body ?? {});
+    const { loaded, connection } = await whatsappConnectionFor(req, true);
+    // a auditoria guarda o pedido de conexão, não cada troca do código
+    if (!refresh) await audit(req, 'integration.connect', 'integration', loaded.row.id, { provider: 'whatsapp', state: connection.state });
+    return connection;
   });
 
   /** Gera um novo token para a URL do webhook (a antiga deixa de funcionar). */

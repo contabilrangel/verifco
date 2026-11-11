@@ -142,11 +142,18 @@ export async function resolvePublicAddress(provider: string, hostname: string, r
 
 const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 
+/** Resposta acima do limite de tamanho do `fetch` protegido (o chamador pode tratar à parte). */
+export class ResponseTooLargeError extends IntegrationError {
+  constructor(provider: string) {
+    super(provider, 'A resposta do serviço é grande demais.');
+  }
+}
+
 /**
  * `fetch` para URLs informadas pelo escritório: confere o host antes e durante a conexão,
- * não segue redirecionamentos e limita o tamanho da resposta.
+ * não segue redirecionamentos e limita o tamanho da resposta (5 MB, ou `maxResponseBytes`).
  */
-export function createPublicOnlyFetch(provider: string, resolver?: LookupFn): typeof fetch {
+export function createPublicOnlyFetch(provider: string, resolver?: LookupFn, maxResponseBytes = MAX_RESPONSE_BYTES): typeof fetch {
   return async (input, init) => {
     const request = new Request(input as ConstructorParameters<typeof Request>[0], init);
     const url = new URL(request.url);
@@ -167,7 +174,7 @@ export function createPublicOnlyFetch(provider: string, resolver?: LookupFn): ty
           let size = 0;
           res.on('data', (c: Buffer) => {
             size += c.length;
-            if (size > MAX_RESPONSE_BYTES) req.destroy(new IntegrationError(provider, 'A resposta do serviço é grande demais.'));
+            if (size > maxResponseBytes) req.destroy(new ResponseTooLargeError(provider));
             else chunks.push(c);
           });
           res.on('error', reject);

@@ -33,6 +33,7 @@ import { Alert, Button, Card, Checkbox, ConfirmDialog, IconButton, Input, Loadin
 import { api } from '../../lib/api';
 import { fieldErrors, useAction, useApi } from '../../lib/hooks';
 import { formatDateTime } from '../../lib/format';
+import { WhatsAppConnect } from './WhatsAppConnect';
 
 export interface IntegrationView {
   provider: string;
@@ -268,6 +269,11 @@ function IntegrationCard({ def, view }: { def: IntegrationDef; view: Integration
                   />
                 ))}
               </div>
+              {def.key === 'whatsapp' && form.mode === 'evolution' && (
+                <WhatsAppConnect
+                  ready={view.saved && !dirty && view.config.mode === 'evolution' && Boolean(view.config.baseUrl && view.config.instance) && Boolean(view.secrets.apiKey?.configured)}
+                />
+              )}
               {def.webhook && (
                 <div className="vf-stack" style={{ '--gap': '6px' } as CSSProperties}>
                   <span className="vf-field__label">URL do webhook</span>

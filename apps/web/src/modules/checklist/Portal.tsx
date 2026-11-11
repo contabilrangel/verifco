@@ -22,7 +22,7 @@ import { ApiError, errorMessage } from '../../lib/api';
 import { formatDate, formatMoney } from '../../lib/format';
 import { CustomerPayments } from '../finance/CustomerPayments';
 import type { CustomerPayment } from '../finance/types';
-import { ChatThread, Composer, timeOf, type ChatEntry } from './Chat';
+import { ChatThread, Composer, timeOf, type ChatAttachment, type ChatEntry } from './Chat';
 import { CustomerChecklist } from './CustomerChecklist';
 import { customerClient, formatBytes, maskCpfInput, portalSession, publicApi, type CustomerClient, type PortalSession } from './customerApi';
 import { PublicFrame, type OfficeContact } from './PublicFrame';
@@ -501,19 +501,34 @@ export function PortalChecklist() {
   return <CustomerChecklist checklistId={checklistId} client={client} />;
 }
 
+/** Mensagem do portal com os anexos (o tipo base ainda não os descreve). */
+type PortalChatMessage = PortalMessage & { attachments?: ChatAttachment[] };
+interface PortalConversation {
+  officeName: string;
+  messages: PortalChatMessage[];
+  unread: number;
+}
+
 export function PortalMessages() {
   const { client, session } = usePortal();
   const qc = useQueryClient();
   const toast = useToast();
   const key = ['portal', 'messages'];
-  const q = useQuery({ queryKey: key, queryFn: () => client.get<{ officeName: string; messages: PortalMessage[]; unread: number }>('/portal/messages'), refetchInterval: 20_000 });
+  const q = useQuery({ queryKey: key, queryFn: () => client.get<PortalConversation>('/portal/messages'), refetchInterval: 20_000 });
   const unread = q.data?.unread ?? 0;
   useEffect(() => {
     if (!unread) return;
     void client.post('/portal/messages/read').then(() => qc.invalidateQueries({ queryKey: ['portal'] }));
   }, [unread, client, qc]);
   const send = useMutation({
-    mutationFn: (body: string) => client.post<{ messages: PortalMessage[] }>('/portal/messages', { body }),
+    // com anexo vai como formulário (campo `body` + arquivos); só texto segue em JSON
+    mutationFn: ({ text, files }: { text: string; files: File[] }) => {
+      if (!files.length) return client.post<PortalConversation>('/portal/messages', { body: text });
+      const form = new FormData();
+      form.append('body', text);
+      for (const f of files) form.append('file', f, f.name);
+      return client.post<PortalConversation>('/portal/messages', form);
+    },
     onSuccess: (r) => {
       qc.setQueryData(key, r);
       toast.success('Mensagem enviada ao escritório.');
@@ -527,6 +542,7 @@ export function PortalMessages() {
     mine: m.fromMe,
     body: m.body,
     createdAt: m.createdAt,
+    attachments: m.attachments ?? [],
     meta: [m.fromMe ? 'Você' : q.data!.officeName || session.officeName, timeOf(m.createdAt), m.channel === 'whatsapp' ? 'também no WhatsApp' : null, m.fromMe ? (m.readAt ? 'lida' : 'enviada') : null]
       .filter(Boolean)
       .join(' · '),
@@ -534,8 +550,12 @@ export function PortalMessages() {
   return (
     <Card title={`Conversa com ${q.data.officeName || session.officeName}`}>
       <div className="vf-stack">
-        <ChatThread entries={entries} empty="Escreva sua dúvida. O escritório responde por aqui." />
-        <Composer sending={send.isPending} onSend={(text) => send.mutateAsync(text)} />
+        <ChatThread
+          entries={entries}
+          empty="Escreva sua dúvida. O escritório responde por aqui."
+          onDownload={(m, file) => client.open(`/portal/messages/${m.id}/attachments/${file.fileId}`, file.filename, false).catch((e) => toast.error(errorMessage(e, 'Não foi possível baixar o anexo. Tente de novo.')))}
+        />
+        <Composer sending={send.isPending} onSend={(text, _whatsapp, files) => send.mutateAsync({ text, files })} />
       </div>
     </Card>
   );

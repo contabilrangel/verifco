@@ -93,6 +93,31 @@ describe('WhatsApp em Administração › Integrações (COB-8)', () => {
     expect(within(card).getByRole('button', { name: /Gerar URL do webhook/ })).toBeTruthy();
     // modo Evolution: sem os campos da Meta
     expect(within(card).queryByLabelText('Modelos aprovados (fora da janela de 24 h)')).toBeNull();
+    // sem a API key salva, o bloco Conectar só pede para salvar
+    const connect = within(card).getByRole('region', { name: 'Conectar o WhatsApp' });
+    expect(within(connect).getByText(/Salve a URL, a instância e a API key/)).toBeTruthy();
+    expect(within(connect).queryByRole('button', { name: 'Conectar' })).toBeNull();
+  });
+
+  it('na Evolution com a configuração salva, oferece conectar por QR Code; na Meta, não', async () => {
+    whatsapp = view('whatsapp', {
+      saved: true,
+      enabled: true,
+      status: 'configured',
+      config: { mode: 'evolution', baseUrl: 'https://evo.exemplo.com.br', instance: 'escritorio' },
+      secrets: { apiKey: { configured: true, last4: '1234' } },
+    });
+    renderPage();
+    const card = await openWhatsApp();
+    const connect = within(card).getByRole('region', { name: 'Conectar o WhatsApp' });
+    expect(await within(connect).findByRole('button', { name: 'Conectar' })).toBeTruthy();
+    expect(within(connect).getByText(/marque também o evento MESSAGES_UPDATE/)).toBeTruthy();
+    // alteração ainda não salva: o bloco espera a configuração ser salva
+    fireEvent.change(within(card).getByLabelText(/Nome da instância/), { target: { value: 'outra' } });
+    expect(within(connect).queryByRole('button', { name: 'Conectar' })).toBeNull();
+    // trocando para a Meta, o bloco some
+    fireEvent.change(within(card).getByLabelText(/^Conexão/), { target: { value: 'meta' } });
+    expect(within(card).queryByRole('region', { name: 'Conectar o WhatsApp' })).toBeNull();
   });
 });
 

@@ -347,7 +347,7 @@ export const INTEGRATION_CATALOG: IntegrationDef[] = [
       { text: 'Na sua Evolution API, crie uma instância e conecte o número do escritório lendo o QR Code.', when: whatsappEvolution },
       { text: 'Copie a URL do servidor, o nome da instância e a API key (global ou da instância).', when: whatsappEvolution },
       {
-        text: 'Para receber as respostas dos clientes, cadastre a URL do webhook abaixo na instância (Webhook › URL), com o evento MESSAGES_UPSERT e sem base64.',
+        text: 'Para receber as respostas dos clientes, cadastre a URL do webhook abaixo na instância (Webhook › URL), com os eventos MESSAGES_UPSERT (mensagens recebidas) e MESSAGES_UPDATE (entregue, lido ou falhou) e a opção Webhook Base64 ligada, para as fotos, áudios e documentos chegarem junto com a mensagem. Deixe "Webhook by Events" desligado: ele muda o endereço chamado.',
         when: whatsappEvolution,
       },
       { text: 'No Meta for Developers, crie um app do tipo Empresa e adicione o produto WhatsApp.', when: whatsappMeta },
