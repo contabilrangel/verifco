@@ -50,6 +50,7 @@ do servidor e o roteiro de restauração estão em [docs/RESTAURACAO.md](docs/RE
 ## Documentação
 
 - [Arquitetura e convenções](docs/ARQUITETURA.md)
+- [O que ficou de fora](docs/FORA-DO-ESCOPO.md): limites decididos, funções que não entraram, o que falta validar com serviços reais e pontas soltas
 - [Mapeamento funcional](docs/mapeamento-conferir.md) e [levantamento das telas](docs/especificacao-levantamento.md)
 - Marca: `brand/` (logo, símbolo, ícone e o gerador `gerar-logo.mjs`)
 - Produção: [Implantação completa no Dokploy](docs/DOKPLOY.md) e [backup e restauração](docs/RESTAURACAO.md)
@@ -73,3 +74,6 @@ e os termos de uso.
   testes com respostas simuladas; a primeira ativação com credenciais reais deve ser acompanhada.
 - Contratos e planos são criados pelo proprietário do sistema; não há compra pelo próprio
   escritório.
+
+A lista completa, com o motivo de cada item e o que seria preciso para fazê-lo, está em
+[docs/FORA-DO-ESCOPO.md](docs/FORA-DO-ESCOPO.md).
