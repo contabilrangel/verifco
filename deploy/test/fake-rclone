@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# Dublê do rclone para os testes locais, usado quando o rclone real não está instalado.
+# Só entende caminhos locais e os subcomandos e opções que backup-lib.sh usa; qualquer outro uso
+# falha, para o teste acusar quando os scripts passarem a depender de algo que o dublê não cobre.
+# O CI (job containers) roda os mesmos scripts com o rclone real da imagem de backup.
+set -euo pipefail
+
+unsupported() {
+  echo "fake-rclone: uso não coberto pelo dublê: $*" >&2
+  exit 2
+}
+
+while (($# > 0)); do
+  case "$1" in
+    --config) shift 2 ;;
+    *) break ;;
+  esac
+done
+cmd=${1:-}
+shift || true
+
+case "$cmd" in
+  lsf)
+    recursive=0 mode='' include='' root=''
+    while (($# > 0)); do
+      case "$1" in
+        -R) recursive=1 ;;
+        --files-only) mode=files ;;
+        --dirs-only) mode=dirs ;;
+        --include)
+          include=$2
+          shift
+          ;;
+        -*) unsupported "lsf $1" ;;
+        *) root=$1 ;;
+      esac
+      shift
+    done
+    if [[ ! -d $root ]]; then
+      echo 'ERROR : error listing: directory not found' >&2
+      exit 3
+    fi
+    cd "$root"
+    shopt -s nullglob
+    if [[ $mode == dirs && $recursive == 0 && -z $include ]]; then
+      for entry in */; do echo "$entry"; done
+    elif [[ $mode == files && $recursive == 1 && $include == '/*/manifest.json' ]]; then
+      for entry in */manifest.json; do echo "$entry"; done
+    else
+      unsupported "lsf mode=$mode recursive=$recursive include=$include"
+    fi
+    ;;
+  copy)
+    exclude=''
+    while [[ ${1:-} == -* ]]; do
+      case "$1" in
+        --exclude)
+          exclude=$2
+          shift 2
+          ;;
+        *) unsupported "copy $1" ;;
+      esac
+    done
+    src=$1 dst=$2
+    if [[ -d $src ]]; then
+      mkdir -p "$dst"
+      shopt -s nullglob dotglob
+      for entry in "$src"/*; do
+        [[ -f $entry ]] || unsupported "copy de subpastas"
+        if [[ $(basename "$entry") != "$exclude" ]]; then cp "$entry" "$dst/"; fi
+      done
+    elif [[ -f $src ]]; then
+      mkdir -p "$dst"
+      cp "$src" "$dst/"
+    else
+      echo 'ERROR : directory not found' >&2
+      exit 3
+    fi
+    ;;
+  check)
+    [[ ${1:-} == --one-way && ${2:-} == --size-only ]] || unsupported "check $*"
+    src=$3 dst=$4
+    for entry in "$src"/*; do
+      other=$dst/$(basename "$entry")
+      if [[ ! -f $other || $(stat -c %s "$entry") != "$(stat -c %s "$other")" ]]; then
+        echo "ERROR : $(basename "$entry"): sizes differ" >&2
+        exit 1
+      fi
+    done
+    ;;
+  purge)
+    [[ $# == 1 && -d $1 ]] || {
+      echo 'ERROR : directory not found' >&2
+      exit 3
+    }
+    rm -rf -- "$1"
+    ;;
+  cat)
+    [[ $# == 1 && -f $1 ]] || {
+      echo 'ERROR : file not found' >&2
+      exit 4
+    }
+    cat -- "$1"
+    ;;
+  *) unsupported "$cmd $*" ;;
+esac

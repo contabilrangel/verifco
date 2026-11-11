@@ -20,18 +20,31 @@ escritório; sua área de configurações se chama **Meu escritório**.
 
 ### Criar o primeiro proprietário
 
-Não existe cadastro público nem senha administrativa padrão. No servidor, defina
-`PLATFORM_OWNER_NAME`, `PLATFORM_OWNER_EMAIL` e `PLATFORM_OWNER_PASSWORD` (mínimo 12
-caracteres), juntamente com a configuração real do banco e da aplicação, e execute:
+Não existe cadastro público nem senha administrativa padrão. Em produção, no terminal do
+container **api** (Bash), rode o comando abaixo. Ele pergunta nome, e-mail e senha (mínimo
+de 12 caracteres), sem gravá-los no ambiente do serviço:
 
 ```sh
-pnpm --filter @verifco/api platform:owner
+bash /app/deploy/create-owner.sh
 ```
 
-Esse comando aplica as migrações e cria a primeira conta, com senha protegida por bcrypt.
+O comando chama `node --import tsx src/db/platform-owner.ts` em `/app/apps/api`, com os
+valores em `PLATFORM_OWNER_NAME`, `PLATFORM_OWNER_EMAIL` e `PLATFORM_OWNER_PASSWORD`; é
+essa a forma a usar em uma imagem sem o script (passo a passo em [DOKPLOY.md](DOKPLOY.md)).
+O container de produção roda como usuário `node`, que não tem o `pnpm`: não use
+`pnpm --filter @verifco/api platform:owner` ali. Esse atalho serve apenas ao
+desenvolvimento local, com as três variáveis definidas.
+
+O comando aplica as migrações e cria a primeira conta, com senha protegida por bcrypt.
 Ele recusa execução quando já existe uma conta da plataforma. As próximas contas são
 criadas pelo proprietário em **Equipe do sistema**. As credenciais da prévia local
 são exclusivas do banco de demonstração e não são criadas em instalações normais.
+
+Senha perdida, sem outro proprietário para trocá-la pelo painel: no mesmo terminal,
+`bash /app/deploy/reset-platform-password.sh` pergunta o e-mail da conta e a senha nova
+(variáveis `PLATFORM_USER_EMAIL` e `PLATFORM_USER_PASSWORD`, mínimo de 12 caracteres) e
+encerra as sessões abertas da conta. Com `--reset-2fa` desliga a verificação em duas etapas
+e com `--reactivate` reativa a conta desativada.
 
 ## Conexões de IA
 

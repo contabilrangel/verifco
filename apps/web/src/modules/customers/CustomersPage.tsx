@@ -27,6 +27,7 @@ import { useAuth } from '../../lib/auth';
 import { useAction, useApi, useDebounced } from '../../lib/hooks';
 import { formatCpfCnpj, procurationLabel, procurationTone, stageLabel, stageTone, substatusLabel } from '../../lib/format';
 import { useYear } from '../../lib/year';
+import { DeletedCustomersModal } from './DeletedCustomers';
 
 export interface CustomerListItem {
   id: string;
@@ -206,6 +207,7 @@ export function CustomersPage() {
   const [allMatching, setAllMatching] = useState(false);
   const [working, setWorking] = useState(false);
   const [showNew, setShowNew] = useState(false);
+  const [showDeleted, setShowDeleted] = useState(false);
   const [bulk, setBulk] = useState<null | 'status' | 'responsible' | 'procurator' | 'groups' | 'delete' | 'substatus'>(null);
 
   /** Muda o endereço mantendo os demais parâmetros. `replace` não cria entrada no histórico (digitação). */
@@ -332,11 +334,18 @@ export function CustomersPage() {
         description="Carteira do escritório com procurações, grupos e status da declaração no exercício selecionado."
         crumbs={[{ label: 'Início', to: '/' }, { label: 'Clientes' }]}
         actions={
-          can('customer.create') && (
-            <Button icon={<Plus />} onClick={() => setShowNew(true)}>
-              Novo cliente
-            </Button>
-          )
+          <>
+            {can('customer.delete') && (
+              <Button kind="tertiary" icon={<Trash2 />} onClick={() => setShowDeleted(true)}>
+                Excluídos
+              </Button>
+            )}
+            {can('customer.create') && (
+              <Button icon={<Plus />} onClick={() => setShowNew(true)}>
+                Novo cliente
+              </Button>
+            )}
+          </>
         }
       />
 
@@ -687,6 +696,8 @@ export function CustomersPage() {
           navigate(`/clientes/${id}/identificacao`);
         }}
       />
+
+      {showDeleted && <DeletedCustomersModal onClose={() => setShowDeleted(false)} />}
 
       <BulkDialogs kind={bulk} count={count} loading={runBulk.isPending} onClose={() => setBulk(null)} onRun={(action, value) => runBulk.mutate({ action, value })} />
     </>

@@ -25,11 +25,14 @@ Em **Credentials**, copie a **Internal Connection URL** do primeiro para
 `DATABASE_URL` e a do segundo para `PLATFORM_DATABASE_URL`. Não use o IP público
 da VM nem `localhost` nessas URLs. Não configure uma porta externa para os bancos.
 O Dokploy fornece as conexões e os recursos de backup em cada serviço; backups
-agendados ainda precisam de um destino e de uma política de retenção.
+agendados ainda precisam de um destino e de uma política de retenção. O backup cifrado
+dos dois bancos e dos arquivos mantido neste repositório, e o roteiro de restauração,
+estão em [RESTAURACAO.md](RESTAURACAO.md).
 
 Na aplicação **Verifco completo**, use o caminho
 `./compose.dokploy-managed.yml` e o modelo de ambiente
-`deploy/dokploy-managed.env.example`. O Compose contém apenas **web, API e worker**.
+`deploy/dokploy-managed.env.example`. O Compose contém apenas **web, API e worker**
+(e o serviço opcional `backup`, criado só com o perfil `backup`).
 API e worker participam de `dokploy-network` para acessar os bancos gerenciados,
 além de `backend` para comunicação com a web (a web chama a API pelo apelido `verifco-api`,
 que só existe na rede `backend`). A rede externa deve existir no servidor
@@ -102,11 +105,29 @@ Preencha no Dokploy as variáveis de `deploy/dokploy.env.example`:
 - `ENCRYPTION_KEY`: outros 32 bytes aleatórios em base64; preserve a chave entre
   atualizações, pois protege as credenciais já armazenadas.
 - `SMTP_URL` e `SMTP_FROM`: opcionais para e-mails padrão. Os escritórios também
-  podem configurar seu próprio SMTP.
+  podem configurar seu próprio SMTP. `SMTP_REQUIRED=true` faz a API recusar iniciar
+  sem `SMTP_URL`.
+
+As demais variáveis são opcionais e valem para as duas variantes; cada modelo de ambiente
+traz todas, comentadas com o padrão:
+
+- `SIGNUP_ENABLED` (padrão `true`): `false` fecha o cadastro público em `/cadastro`.
+- `SUPPORT_EMAIL`: contato mostrado aos escritórios.
+- `SENTRY_DSN`: destino dos erros 500 e das falhas finais da fila.
+- `STORAGE_DRIVER` (`local` ou `s3`) e `S3_*`: onde ficam os arquivos. O padrão `local`
+  usa o volume `uploads`.
+- `RETENTION_JOBS_DAYS`, `RETENTION_DELETED_CUSTOMERS_DAYS` e `RETENTION_BACKUPS_DAYS`:
+  prazos de retenção da aplicação, em dias.
+- `TRUST_PROXY` (padrão `2`), `JOB_CONCURRENCY` (padrão `4`) e `RATE_LIMIT`: ajustes que
+  o Compose antes fixava; sem a variável, o comportamento é o mesmo de sempre.
+- `ANTHROPIC_API_KEY` e `AI_MODEL`: configuração legada de IA, usada só enquanto não há
+  conexão padrão em `/sistema/ia`.
+- `COMPOSE_PROFILES=backup` e `BACKUP_*`: backup automático, em [RESTAURACAO.md](RESTAURACAO.md).
 
 Não coloque os valores reais no Git. Banco e arquivos ficam nos volumes persistentes
 `database`, `platform-database` e `uploads`. **Fresh Volumes** apaga os dados; não use para atualizações.
-Preserve cópias externas dos três volumes e da chave de criptografia.
+Preserve cópias externas dos três volumes e da chave de criptografia: o serviço `backup`
+faz as cópias dos bancos e dos arquivos; as chaves são guardadas à parte, fora da VM.
 
 ## Separação dos dados
 
@@ -137,7 +158,8 @@ Não use `localhost` para conectar a outro container.
 
 ### Atualização de uma instalação existente
 
-Faça backup antes de atualizar e mantenha a mesma `ENCRYPTION_KEY`. As migrações
+Faça backup antes de atualizar (com o serviço `backup` ativo, `backup.sh now` no terminal
+desse container) e mantenha a mesma `ENCRYPTION_KEY`. As migrações
 operacionais preservam as quatro tabelas administrativas antigas em
 `legacy_platform` antes de remover as cópias públicas. A primeira inicialização
 transfere IDs, hashes, chaves cifradas, configuração e auditoria para o banco
@@ -164,8 +186,18 @@ no próprio banco e refletida na URL correspondente.
    dois PostgreSQL prontos em seus serviços independentes. Na alternativa com bancos
    no Compose, confira os cinco componentes no próprio Compose. A API aplica as migrações dos dois bancos antes
    de aceitar conexões; o worker espera a API para evitar migrações simultâneas.
+   API e worker só ficam saudáveis quando `GET /ready` responde 200: os dois bancos
+   respondem e, no worker, o laço da fila está vivo. `/health` continua existindo e
+   informa apenas que o processo está de pé.
 4. No terminal do container `api`, crie o proprietário sem guardar a senha no Git
-   nem no ambiente permanente. Digite os valores de forma interativa:
+   nem no ambiente permanente. O comando pergunta nome, e-mail e senha (mínimo de 12
+   caracteres, digitada duas vezes):
+
+```sh
+bash /app/deploy/create-owner.sh
+```
+
+   Em uma imagem anterior a esse script, o equivalente manual é:
 
 ```sh
 cd /app/apps/api
@@ -188,9 +220,30 @@ os contadores acessam `/entrar` e criam os escritórios em `/cadastro`. Nenhuma 
 de demonstração é criada automaticamente. Configure as chaves reais de IA no
 painel do proprietário em `/sistema/ia`.
 
+Se ninguém consegue mais entrar em `/sistema` para trocar uma senha pelo painel,
+redefina-a no mesmo terminal do container `api`. O comando pergunta o e-mail da conta
+e a senha nova:
+
+```sh
+bash /app/deploy/reset-platform-password.sh
+```
+
+As sessões abertas da conta são encerradas. Acrescente `--reset-2fa` para desligar a
+verificação em duas etapas (aparelho perdido) e `--reactivate` para reativar uma conta
+desativada.
+
 A extensão e o sincronizador acompanham a imagem da API para os downloads. São
 instalados no navegador/computador do contador, onde ficam eCAC e arquivos IRPF;
 não precisam de serviços extras no servidor.
+
+## Backup e restauração
+
+Os dois Composes trazem o serviço opcional `backup`, que só existe com o perfil `backup`
+(`COMPOSE_PROFILES=backup` no Environment). Ele copia os dois bancos e o volume `uploads`
+uma vez por dia, cifra com uma chave pública age e envia a um bucket fora da VM. A
+configuração, a guarda das chaves, o roteiro de restauração em VM nova e o ensaio estão
+em [RESTAURACAO.md](RESTAURACAO.md). Enquanto o perfil não for ativado e um ensaio não
+for registrado, a instalação não tem backup.
 
 ## Verificação automatizada
 
@@ -198,4 +251,8 @@ O CI valida as duas variantes: bancos dentro do Compose e bancos independentes n
 rede externa `dokploy-network`. Constrói as imagens e usa valores exclusivos de
 teste, confere a web, a navegação `/sistema`, os cabeçalhos de segurança e o
 encaminhamento autenticado da API, verifica que as tabelas operacionais e administrativas estão em bancos
-diferentes e encerra os containers. A implantação real ainda depende de DNS e ambiente.
+diferentes e encerra os containers. Também constrói a imagem de backup, faz um backup
+cifrado com uma chave gerada na hora, confere-o com `restore.sh --check` e, na variante
+com bancos no Compose, restaura em dois bancos novos e confere as tabelas. A implantação
+real ainda depende de DNS e ambiente; o envio para um bucket S3 e o ensaio de restauração
+são ações do operador, descritas em [RESTAURACAO.md](RESTAURACAO.md).

@@ -24,6 +24,7 @@ import { assertCanSetSubstatus, changeSubstatus, getOrCreateDeclarations } from 
 import { queueDelivery } from '../../services/delivery';
 import { PdfBuilder, loadBranding } from '../../services/pdf';
 import { CERTIFICATE_TYPES, readUploads } from '../../services/uploads';
+import { purgeCustomer } from '../../services/purge';
 import { buildWorkbook } from '../../services/xlsx';
 import { exposeDevSecrets } from '../../config';
 
@@ -375,6 +376,58 @@ export async function customerRoutes(app: FastifyInstance) {
     const done = await softDeleteCustomers([c.id], user.officeId);
     await audit(req, 'delete', 'customer', c.id, { name: c.name, ...done });
     return { ok: true };
+  });
+
+  // ---------------------------------------------------------------- lixeira
+  /**
+   * Clientes excluídos, ainda recuperáveis: ficam guardados pelo prazo de retenção e depois são
+   * eliminados em definitivo pela rotina diária (com documentos, declarações e cobranças).
+   */
+  app.get('/customers/deleted', { preHandler: guard('customer.delete') }, async (req) => {
+    const user = requireUser(req);
+    const days = app.ctx.config.RETENTION_DELETED_CUSTOMERS_DAYS;
+    const rows = await db
+      .select({ id: customers.id, name: customers.name, cpfCnpj: customers.cpfCnpj, deletedAt: customers.deletedAt })
+      .from(customers)
+      .where(and(eq(customers.officeId, user.officeId), isNotNull(customers.deletedAt)))
+      .orderBy(desc(customers.deletedAt))
+      .limit(500);
+    return {
+      retentionDays: days,
+      data: rows.map((r) => ({ ...r, purgeAt: new Date(r.deletedAt!.getTime() + days * 86_400_000) })),
+    };
+  });
+
+  const deletedCustomer = async (officeId: string, id: string) => {
+    const c = await db.query.customers.findFirst({ where: and(eq(customers.id, id), eq(customers.officeId, officeId), isNotNull(customers.deletedAt)) });
+    if (!c) throw notFound('Cliente excluído');
+    return c;
+  };
+
+  /** Devolve o cliente à lista. Propostas canceladas e o acesso ao portal não voltam sozinhos. */
+  app.post('/customers/:id/restore', { preHandler: guard('customer.delete') }, async (req) => {
+    const user = requireUser(req);
+    const { id } = parse(uuidParam, req.params);
+    const c = await deletedCustomer(user.officeId, id);
+    const dup = await db.query.customers.findFirst({ where: and(eq(customers.officeId, user.officeId), eq(customers.cpfCnpj, c.cpfCnpj), isNull(customers.deletedAt)) });
+    if (dup) throw conflict(`Já existe outro cliente ativo com este CPF/CNPJ (${dup.name}). Exclua ou corrija o outro cadastro antes de restaurar.`);
+    await db.update(customers).set({ deletedAt: null, updatedAt: new Date() }).where(eq(customers.id, c.id));
+    await audit(req, 'restore', 'customer', c.id, { name: c.name });
+    return { ok: true };
+  });
+
+  /**
+   * Eliminação definitiva (pedido do titular, LGPD): apaga o cliente da lixeira com documentos,
+   * declarações, cobranças, mensagens, envios e o conteúdo dos arquivos. Não tem volta; fica só
+   * o registro na auditoria de quem eliminou e quando.
+   */
+  app.delete('/customers/:id/purge', { preHandler: guard('customer.delete') }, async (req) => {
+    const user = requireUser(req);
+    const { id } = parse(uuidParam, req.params);
+    const c = await deletedCustomer(user.officeId, id);
+    const done = await purgeCustomer(app.ctx, user.officeId, c.id);
+    await audit(req, 'purge', 'customer', c.id, { name: c.name, files: done?.files ?? 0, deliveries: done?.deliveries ?? 0 });
+    return { ok: true, files: done?.files ?? 0 };
   });
 
   /** Gera o código de acesso ao portal do cliente e envia por e-mail. */

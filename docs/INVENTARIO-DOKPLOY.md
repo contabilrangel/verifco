@@ -166,7 +166,8 @@ Preservar `JWT_SECRET` e `ENCRYPTION_KEY` existentes entre atualizações e guar
 cópias protegidas fora da VM. A chave de criptografia é necessária para ler as
 credenciais cifradas já armazenadas. O Compose define `NODE_ENV=production`,
 `HOST=0.0.0.0`, `PORT=3333`, `DB_SYNC=migrate`, `STORAGE_DIR=/app/storage`,
-`TRUST_PROXY=2` e `JOB_CONCURRENCY=4`. `WEB_URL` e `API_URL` recebem `APP_URL`.
+`TRUST_PROXY=2` e `JOB_CONCURRENCY=4` (a partir do próximo Deploy, os dois últimos são
+padrões que o Environment pode mudar). `WEB_URL` e `API_URL` recebem `APP_URL`.
 `RUN_WORKER=false` na API e `true` no worker. `SMTP_URL` e `SMTP_FROM` são opcionais;
 não foi validado envio de e-mail durante este inventário.
 
@@ -253,34 +254,59 @@ No Compose: **No volume backups** e **No scheduled tasks**. A tela de backups do
 Compose também indicou ausência de destino S3 configurado. Portanto, não há backup
 automático desses bancos ou do volume de arquivos configurado no Dokploy.
 
-Antes de considerar concluída a recuperação de produção, falta:
+Essa continua sendo a situação da produção. Desde 11/11/2026 o repositório traz a
+ferramenta de backup e o procedimento, descritos em [RESTAURACAO.md](RESTAURACAO.md):
 
-1. Definir um destino de backup fora desta VM e cadastrar suas credenciais no Dokploy.
-2. Configurar agenda e retenção para **os dois bancos** e para o volume **uploads**.
-3. Guardar as chaves da aplicação de forma protegida fora da VM, separadas deste documento.
-4. Testar restauração em ambiente separado, verificando contas, clientes, arquivos
-   e leitura de credenciais cifradas; registrar data, resultado e tempo de recuperação.
+- serviço opcional `backup` nos dois Composes (perfil `backup`): `pg_dump` dos dois
+  bancos e cópia do volume `uploads`, cifrados com chave pública age, enviados a um
+  bucket compatível com S3, com agenda diária (03h), retenção (30 dias, mínimo de 7
+  backups) e healthcheck (falha com mais de 36 h sem backup concluído);
+- `deploy/restore.sh`: listagem, conferência sem restaurar e restauração, com recusa de
+  destino que já tem dados ou que é o banco em uso;
+- roteiro de restauração em VM nova e lista do ensaio, com os campos a registrar;
+- verificação no CI do backup, da conferência e da restauração em bancos novos.
+
+**Nada disso está ativo em produção**: o código depende do próximo Deploy, o perfil
+`backup` não está ligado e não existem bucket nem par de chaves. Antes de considerar
+concluída a recuperação de produção, falta o operador:
+
+1. Criar um destino de backup fora desta VM (bucket e chave de acesso exclusiva),
+   conforme a lista de RESTAURACAO.md.
+2. Gerar o par de chaves age e guardar a chave privada fora da VM. Guardar do mesmo modo
+   as chaves da aplicação (`ENCRYPTION_KEY`, `JWT_SECRET`) e uma cópia do Environment,
+   separadas deste documento.
+3. Preencher `COMPOSE_PROFILES=backup` e as variáveis `BACKUP_*` no Environment, fazer o
+   Deploy e conferir o primeiro backup. Agenda e retenção já têm os padrões acima e cobrem
+   **os dois bancos** e o volume **uploads**.
+4. Fazer o ensaio de restauração em ambiente separado, verificando contas, clientes,
+   arquivos e leitura de credenciais cifradas; registrar data, identificador do backup,
+   tempo de recuperação e resultado.
 5. Registrar capacidade e sistema operacional da VM quando houver acesso autorizado
    ao servidor e confirmar o primeiro login do proprietário em rede sem o bloqueio citado.
+6. Anotar neste inventário o destino dos backups (endpoint, região, bucket e prefixo, sem
+   chaves), a data do primeiro backup conferido e a do último ensaio.
 
 Este levantamento não criou agendas, destinos, credenciais nem alterou a produção.
 
 ## Atualização e recuperação
 
 Para atualizar código, confira o commit no branch de produção, faça backup dos
-dois bancos e dos arquivos, preserve as chaves e clique **Deploy** em **Verifco completo**.
+dois bancos e dos arquivos (com o serviço `backup` ativo, `backup.sh now` no terminal
+desse container), preserve as chaves e clique **Deploy** em **Verifco completo**.
 Não é necessário reimplantar os bancos a cada atualização da aplicação. Aguarde
 **web, API e worker** saudáveis e confira separadamente os dois serviços PostgreSQL.
-Verifique `/health`, os três domínios, autenticação e separação dos dados.
+Verifique `/ready` (bancos e fila) e `/health`, os três domínios, autenticação e separação dos dados.
 
 Comandos administrativos pertencem ao terminal do container **api**, com Bash e
 diretório `/app/apps/api`. O container **web** oferece `/bin/sh`, sem Bash, e não
 tem o comando de criação do proprietário. O primeiro proprietário já existe nesta
 instalação; a criação inicial documentada em DOKPLOY.md serve para instalações novas.
 
-Para recuperar, use backups recentes de cada banco e dos arquivos, junto com as
-chaves preservadas. Não trocar as URLs de plataforma e escritórios. Retornar ao
+Para recuperar, siga o roteiro de [RESTAURACAO.md](RESTAURACAO.md), com backups recentes
+de cada banco e dos arquivos e as chaves preservadas. Não trocar as URLs de plataforma e escritórios. Retornar ao
 Compose antigo exige reconciliar todas as gravações posteriores à troca; manter
-volumes antigos não substitui um plano de restauração. Atualize este inventário
+volumes antigos não substitui um plano de restauração. A criação do proprietário e a
+redefinição de senha da plataforma têm os comandos `bash /app/deploy/create-owner.sh` e
+`bash /app/deploy/reset-platform-password.sh`, disponíveis a partir do próximo Deploy. Atualize este inventário
 após mudanças de domínio, host interno, serviço, rede, volume, política de backup
 ou infraestrutura. Um PR só de documentação não exige Deploy.

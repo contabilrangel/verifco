@@ -182,7 +182,8 @@ export async function syncRoutes(app: FastifyInstance) {
       { filename: row.filename, mimeType: row.mimeType, data },
       { cpf: customer.cpfCnpj, ano: String(body.year), ...(item.originalPath ? { caminho: item.originalPath } : {}) },
     );
-    await db.update(syncInbox).set({ status: 'filed', documentId: result.documentId, resolvedByUserId: user.userId, resolvedAt: new Date() }).where(eq(syncInbox.id, item.id));
+    // o documento do cliente guarda a própria cópia: o arquivo da caixa de entrada sai (a linha vai junto)
+    await ctx.files.remove(user.officeId, item.fileId);
     await audit(req, 'inbox_file', 'sync_inbox', item.id, { customerId: customer.id, year: body.year, filename: item.filename, documentId: result.documentId });
     return { ok: true, documentId: result.documentId, duplicate: result.duplicate, customer: { id: customer.id, name: customer.name }, year: body.year };
   });

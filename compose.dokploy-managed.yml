@@ -16,22 +16,44 @@ x-api: &api
     WEB_URL: ${APP_URL:?Defina APP_URL}
     API_URL: ${APP_URL:?Defina APP_URL}
     CORS_ORIGINS: ${CORS_ORIGINS:-${APP_URL:?Defina APP_URL}}
-    TRUST_PROXY: "2"
+    # Os padrões abaixo repetem os de apps/api/src/config.ts: variável ausente ou vazia no
+    # ambiente do Dokploy não muda o comportamento.
+    TRUST_PROXY: "${TRUST_PROXY:-2}"
+    RATE_LIMIT: "${RATE_LIMIT:-}"
+    SIGNUP_ENABLED: "${SIGNUP_ENABLED:-true}"
+    SUPPORT_EMAIL: ${SUPPORT_EMAIL:-}
     STORAGE_DIR: /app/storage
+    STORAGE_DRIVER: ${STORAGE_DRIVER:-local}
+    S3_ENDPOINT: ${S3_ENDPOINT:-}
+    S3_REGION: ${S3_REGION:-us-east-1}
+    S3_BUCKET: ${S3_BUCKET:-}
+    S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
+    S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
+    S3_FORCE_PATH_STYLE: "${S3_FORCE_PATH_STYLE:-true}"
     RUN_WORKER: "false"
-    JOB_CONCURRENCY: "4"
+    JOB_CONCURRENCY: "${JOB_CONCURRENCY:-4}"
+    RETENTION_JOBS_DAYS: "${RETENTION_JOBS_DAYS:-30}"
+    RETENTION_DELETED_CUSTOMERS_DAYS: "${RETENTION_DELETED_CUSTOMERS_DAYS:-90}"
+    RETENTION_BACKUPS_DAYS: "${RETENTION_BACKUPS_DAYS:-30}"
     SMTP_URL: ${SMTP_URL:-}
     SMTP_FROM: ${SMTP_FROM:-Verifco <nao-responda@verifco.com.br>}
+    SMTP_REQUIRED: "${SMTP_REQUIRED:-false}"
+    SENTRY_DSN: ${SENTRY_DSN:-}
+    ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    AI_MODEL: ${AI_MODEL:-claude-opus-5-5}
   volumes:
     - uploads:/app/storage
   networks:
     - backend
     - dokploy-network
+  # /ready: 200 só com os dois bancos respondendo e, no worker, com o laço da fila vivo
+  # (/health continua existindo e só diz que o processo está de pé). O start_period cobre as
+  # migrações, que a API aplica antes de abrir a porta.
   healthcheck:
-    test: [CMD, node, -e, "fetch('http://127.0.0.1:3333/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+    test: [CMD, node, -e, "fetch('http://127.0.0.1:3333/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
     interval: 15s
     timeout: 5s
-    start_period: 60s
+    start_period: 120s
     retries: 5
 
 services:
@@ -72,6 +94,57 @@ services:
       timeout: 5s
       retries: 5
 
+  # Backup diário dos dois bancos e do volume uploads, cifrado e enviado para fora da VM.
+  # Opcional: só existe com o perfil `backup` (COMPOSE_PROFILES=backup no ambiente do Dokploy).
+  # Configuração, chaves e restauração: docs/RESTAURACAO.md.
+  backup:
+    profiles: [backup]
+    build:
+      context: ./deploy
+      dockerfile: backup.Dockerfile
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    environment:
+      TZ: ${BACKUP_TZ:-America/Sao_Paulo}
+      DATABASE_URL: ${DATABASE_URL:?Defina DATABASE_URL}
+      PLATFORM_DATABASE_URL: ${PLATFORM_DATABASE_URL:?Defina PLATFORM_DATABASE_URL}
+      APP_COMMIT: ${APP_COMMIT:-}
+      # sem ":?": variável obrigatória aqui impediria o deploy de quem não ativou o perfil;
+      # o próprio backup.sh recusa rodar sem chave e sem destino
+      BACKUP_ENCRYPTION: "${BACKUP_ENCRYPTION:-age}"
+      BACKUP_AGE_RECIPIENT: ${BACKUP_AGE_RECIPIENT:-}
+      BACKUP_S3_ENDPOINT: ${BACKUP_S3_ENDPOINT:-}
+      BACKUP_S3_REGION: ${BACKUP_S3_REGION:-}
+      BACKUP_S3_BUCKET: ${BACKUP_S3_BUCKET:-}
+      BACKUP_S3_PREFIX: ${BACKUP_S3_PREFIX:-verifco}
+      BACKUP_S3_ACCESS_KEY_ID: ${BACKUP_S3_ACCESS_KEY_ID:-}
+      BACKUP_S3_SECRET_ACCESS_KEY: ${BACKUP_S3_SECRET_ACCESS_KEY:-}
+      BACKUP_S3_FORCE_PATH_STYLE: "${BACKUP_S3_FORCE_PATH_STYLE:-true}"
+      BACKUP_LOCAL_DIR: ${BACKUP_LOCAL_DIR:-}
+      BACKUP_RETENTION_DAYS: "${BACKUP_RETENTION_DAYS:-30}"
+      BACKUP_KEEP_MIN: "${BACKUP_KEEP_MIN:-7}"
+      BACKUP_SCHEDULE_HOUR: "${BACKUP_SCHEDULE_HOUR:-03}"
+      BACKUP_INCLUDE_STORAGE: "${BACKUP_INCLUDE_STORAGE:-true}"
+    volumes:
+      - uploads:/app/storage:ro
+      - backup-state:/var/lib/verifco-backup
+      - backup-local:/backups
+    # a imagem base (postgres) declara um volume para os dados do servidor, que aqui não existe:
+    # o tmpfs evita um volume anônimo a cada container
+    tmpfs:
+      - /var/lib/postgresql/data
+    # os bancos são serviços independentes do Dokploy, alcançados pela rede externa
+    networks:
+      - dokploy-network
+    # falha quando o último backup concluído tem mais de 36 h; o start_period dá tempo ao primeiro
+    healthcheck:
+      test: [CMD, backup.sh, health]
+      interval: 5m
+      timeout: 15s
+      start_period: 30m
+      retries: 2
+
 networks:
   dokploy-network:
     external: true
@@ -82,3 +155,6 @@ volumes:
   database:
   platform-database:
   uploads:
+  # perfil backup: registro do último backup concluído e destino local opcional (BACKUP_LOCAL_DIR=/backups)
+  backup-state:
+  backup-local:

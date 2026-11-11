@@ -78,6 +78,19 @@ jobs:
       - name: Confere separação real dos bancos PostgreSQL
         run: |
           docker compose exec -T api node --import tsx --input-type=module < .github/scripts/check-databases.mjs
+      # Serviço opcional de backup (perfil `backup`), com a mesma imagem e as mesmas redes da
+      # implantação: backup cifrado, conferência e restauração em bancos novos (docs/RESTAURACAO.md).
+      - name: Constrói a imagem de backup
+        run: |
+          docker compose --profile backup config --quiet
+          docker compose --profile backup build backup
+      - name: Backup cifrado dos dois bancos e dos arquivos
+        run: bash .github/scripts/backup-restore.sh backup
+      - name: Confere o backup sem restaurar
+        run: bash .github/scripts/backup-restore.sh check
+      - name: Restaura o backup em bancos novos
+        if: matrix.database-mode == 'bundled'
+        run: bash .github/scripts/backup-restore.sh restore
       - name: Diagnóstico de falhas
         if: failure()
         run: |

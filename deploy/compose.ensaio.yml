@@ -1,0 +1,7 @@
+# Só para o ensaio de restauração (docs/RESTAURACAO.md), junto com compose.dokploy.yml em uma
+# máquina descartável: publica a web apenas em 127.0.0.1:8080. Nunca use no Dokploy de produção,
+# onde o roteamento e o HTTPS são do Traefik.
+services:
+  web:
+    ports:
+      - "127.0.0.1:8080:80"

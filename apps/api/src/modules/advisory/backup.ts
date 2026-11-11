@@ -258,7 +258,9 @@ export async function backupRoutes(app: FastifyInstance) {
       .where(and(eq(jobs.officeId, user.officeId), eq(jobs.type, 'backup.generate')))
       .orderBy(desc(jobs.createdAt))
       .limit(30);
-    return rows.map((j) => ({ id: j.id, status: j.status, progress: j.progress, error: j.error, result: j.result, createdAt: j.createdAt, finishedAt: j.finishedAt }));
+    // cada backup fica guardado por RETENTION_BACKUPS_DAYS depois de pronto (a rotina diária apaga)
+    const keepMs = app.ctx.config.RETENTION_BACKUPS_DAYS * 86_400_000;
+    return rows.map((j) => ({ id: j.id, status: j.status, progress: j.progress, error: j.error, result: j.result, createdAt: j.createdAt, finishedAt: j.finishedAt, expiresAt: j.finishedAt ? new Date(j.finishedAt.getTime() + keepMs) : null }));
   });
 
   app.post('/backups', { preHandler: guard('backup.download') }, async (req, reply) => {
@@ -288,5 +290,22 @@ export async function backupRoutes(app: FastifyInstance) {
       throw err;
     });
     return sendStoredFile(reply, { filename: row.filename, mimeType: 'application/zip', size: row.size }, stream);
+  });
+
+  /**
+   * Apaga um backup terminado (o .zip sai do armazenamento). A rotina de retenção faz o mesmo
+   * depois de RETENTION_BACKUPS_DAYS; aqui é para quem não quer a cópia guardada no servidor.
+   */
+  app.delete('/backups/:id', { preHandler: guard('backup.download') }, async (req) => {
+    const user = requireUser(req);
+    const { id } = parse(uuidParam, req.params);
+    const job = await db.query.jobs.findFirst({ where: and(eq(jobs.id, id), eq(jobs.officeId, user.officeId), eq(jobs.type, 'backup.generate')) });
+    if (!job) throw notFound('Backup');
+    if (job.status !== 'done' && job.status !== 'failed') throw badRequest('Aguarde o backup terminar para apagá-lo.');
+    const fileId = (job.result as { fileId?: string } | null)?.fileId;
+    if (fileId) await app.ctx.files.remove(user.officeId, fileId);
+    await db.delete(jobs).where(eq(jobs.id, job.id));
+    await audit(req, 'delete', 'backup', id);
+    return { ok: true, retentionDays: app.ctx.config.RETENTION_BACKUPS_DAYS };
   });
 }

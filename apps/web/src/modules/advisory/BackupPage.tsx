@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, Download, HardDriveDownload, ShieldCheck, XCircle } from 'lucide-react';
-import { Alert, Button, Card, ConfirmDialog, EmptyState, Loading, Progress, Tag, useToast } from '../../ds';
+import { CheckCircle2, Download, HardDriveDownload, ShieldCheck, Trash2, XCircle } from 'lucide-react';
+import { Alert, Button, Card, ConfirmDialog, EmptyState, IconButton, Loading, Progress, Tag, useToast } from '../../ds';
 import { PageHeader } from '../../app/Shell';
 import { api } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
@@ -17,6 +17,8 @@ interface BackupJob {
   result: { fileId?: string; filename?: string; size?: number; tables?: Record<string, number>; files?: number } | null;
   createdAt: string;
   finishedAt: string | null;
+  /** Quando a rotina de retenção apaga este backup do servidor. */
+  expiresAt?: string | null;
 }
 
 const INCLUDED = [
@@ -52,6 +54,22 @@ export function BackupPage() {
   const allowed = can('backup.download');
   const [confirm, setConfirm] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [removing, setRemoving] = useState<BackupJob | null>(null);
+  const [removeBusy, setRemoveBusy] = useState(false);
+  const remove = async () => {
+    if (!removing) return;
+    setRemoveBusy(true);
+    try {
+      await api.del(`/backups/${removing.id}`);
+      toast.success('Backup apagado do servidor.');
+      setRemoving(null);
+      await qc.invalidateQueries({ queryKey: ['backups'] });
+    } catch (e) {
+      toast.error(errorMessage(e));
+    } finally {
+      setRemoveBusy(false);
+    }
+  };
   const list = useApi<BackupJob[]>(['backups'], allowed ? '/backups' : null, { refetchInterval: 2000 });
   const running = (list.data ?? []).some((j) => j.status === 'queued' || j.status === 'running');
 
@@ -133,7 +151,10 @@ export function BackupPage() {
                         <td>{formatDateTime(j.createdAt)}</td>
                         <td style={{ minWidth: 180 }}>
                           {j.status === 'done' ? (
-                            <Tag tone="success">Pronto · {formatDateTime(j.finishedAt)}</Tag>
+                            <>
+                              <Tag tone="success">Pronto · {formatDateTime(j.finishedAt)}</Tag>
+                              {j.expiresAt && <div className="vf-text-xs vf-muted">Fica no servidor até {formatDateTime(j.expiresAt)}</div>}
+                            </>
                           ) : j.status === 'failed' ? (
                             <Tag tone="danger">Falhou: {j.error}</Tag>
                           ) : (
@@ -156,6 +177,11 @@ export function BackupPage() {
                           >
                             Baixar
                           </Button>
+                          {(j.status === 'done' || j.status === 'failed') && (
+                            <IconButton label="Apagar backup do servidor" onClick={() => setRemoving(j)}>
+                              <Trash2 />
+                            </IconButton>
+                          )}
                         </td>
                       </tr>
                     );
@@ -166,6 +192,16 @@ export function BackupPage() {
           )}
         </Card>
       </div>
+      <ConfirmDialog
+        open={Boolean(removing)}
+        title="Apagar backup"
+        message="O arquivo .zip deste backup será apagado do servidor. A cópia que você já baixou não é afetada."
+        confirmLabel="Apagar"
+        danger
+        loading={removeBusy}
+        onConfirm={() => void remove()}
+        onClose={() => setRemoving(null)}
+      />
       <ConfirmDialog
         open={confirm}
         title="Gerar backup"
