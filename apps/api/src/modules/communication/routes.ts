@@ -5,6 +5,7 @@ import {
   DELIVERY_CHANNELS,
   DELIVERY_STATUS,
   MAILING_MAX_RECIPIENTS,
+  MAILING_MAX_SCHEDULE_DAYS,
   MAILING_TYPES,
   TEMPLATES,
   currentExerciseYear,
@@ -26,6 +27,7 @@ import { getOfficeSettings } from '../../services/settings';
 import { customerChecklistPdf } from '../checklist/pdf';
 import { buildKitPdf } from '../reports/kit';
 import {
+  cancelScheduledMailing,
   checklistPdfFilename,
   findMailingRequest,
   listMailingRuns,
@@ -382,9 +384,11 @@ export async function communicationRoutes(app: FastifyInstance) {
    * código e anexos também são gerados lá, fora da requisição). Devolve a revisão do pedido; a
    * tela acompanha o andamento em `/mailing/requests/:requestId`. Repetir o mesmo pedido
    * (mesmo `requestId`) devolve o já registrado, sem duplicar envios.
+   * Com `runAt` (data e hora com fuso, no futuro, até 60 dias à frente), o envio fica agendado: os
+   * destinatários e o plano são calculados quando ele rodar, não agora.
    */
   app.post('/mailing/send', async (req, reply) => {
-    const input = parse(mailingSchema.extend({ requestId: z.uuid() }), req.body);
+    const { runAt: runAtText, ...input } = parse(mailingSchema.extend({ requestId: z.uuid(), runAt: z.iso.datetime({ offset: true, error: 'Informe a data e a hora do agendamento.' }).optional() }), req.body);
     const user = typePermission(req, input.type);
     const previous = await findMailingRequest(ctx, user.officeId, input.requestId);
     if (previous) {
@@ -392,17 +396,23 @@ export async function communicationRoutes(app: FastifyInstance) {
       // repetir um pedido que falhou o coloca de novo na fila (sem duplicar o que já foi gravado)
       return { ...(await mailingRequestView(ctx, await retryMailingRequest(ctx, previous))), repeated: true };
     }
+    const runAt = runAtText ? new Date(runAtText) : undefined;
+    if (runAt) {
+      if (!(runAt.getTime() > Date.now())) throw badRequest('Escolha uma data e hora no futuro para o agendamento.');
+      if (runAt.getTime() > Date.now() + MAILING_MAX_SCHEDULE_DAYS * 86_400_000) throw badRequest(`O agendamento pode ser feito para até ${MAILING_MAX_SCHEDULE_DAYS} dias à frente.`);
+    }
     const plan = await planMailing(ctx, user, input);
     const summary = summarize(plan.entries);
     if (!summary.customers) throw badRequest('Nenhum cliente selecionado pode receber este envio.');
-    const job = await requestMailing(ctx, user, input, plan, summary);
-    await audit(req, 'mailing_send', 'mailing', input.requestId, {
+    const job = await requestMailing(ctx, user, { ...input, runAt }, plan, summary);
+    await audit(req, runAt ? 'mailing_schedule' : 'mailing_send', 'mailing', input.requestId, {
       type: input.type,
       channel: input.channel,
       year: input.year,
       customers: summary.customers,
       deliveries: summary.deliveries.total,
       truncated: plan.truncated,
+      ...(runAt ? { runAt: runAt.toISOString() } : {}),
     });
     reply.status(202);
     return { ...(await mailingRequestView(ctx, job)), repeated: false };
@@ -433,6 +443,15 @@ export async function communicationRoutes(app: FastifyInstance) {
     const user = requirePermission(req, ...MAILING_PERMS);
     const { id } = parse(uuidParam, req.params);
     return mailingRunDetail(ctx, user, id);
+  });
+
+  /** Cancela uma mala direta agendada que ainda não começou a ser preparada. */
+  app.post('/mailing/runs/:id/cancel', async (req) => {
+    const user = requirePermission(req, ...MAILING_PERMS);
+    const { id } = parse(uuidParam, req.params);
+    const view = await cancelScheduledMailing(ctx, user, id);
+    await audit(req, 'mailing_cancel', 'mailing', view.requestId, { type: view.type, scheduledFor: view.scheduledFor });
+    return view;
   });
 
   /** Anexo de exemplo (kit ou checklist em PDF) de um cliente, para conferir antes do envio. */

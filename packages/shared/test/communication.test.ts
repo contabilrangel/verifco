@@ -143,4 +143,17 @@ describe('catálogos', () => {
     expect(MAILING_SKIP_REASONS.checklist_locked).toBe('Checklist bloqueado ou só para consulta');
     expect(getMailingType('checklist_digital')?.note).not.toMatch(/portal/);
   });
+
+  it('os tutoriais da procuração e do WhatsApp são tipos de mala direta, com permissões que já existiam', () => {
+    expect(getMailingType('procuration_tutorial')).toMatchObject({ templateKey: 'procuration_tutorial', permission: 'mailing.send_checklist_digital', attachment: null });
+    expect(getMailingType('whatsapp_tutorial')).toMatchObject({ templateKey: 'whatsapp_tutorial', permission: 'mailing.send_monthly', attachment: null });
+    expect(mailingTypeForTemplate('procuration_tutorial')?.key).toBe('procuration_tutorial');
+    expect(mailingTypeForTemplate('whatsapp_tutorial')?.key).toBe('whatsapp_tutorial');
+    expect(MAILING_SKIP_REASONS.no_procurator).toMatch(/Sem procurador/);
+    // nenhum tipo novo criou permissão: cada uma já era de outro tipo
+    for (const key of ['procuration_tutorial', 'whatsapp_tutorial']) {
+      const type = getMailingType(key)!;
+      expect(MAILING_TYPES.some((t) => t.key !== key && t.permission === type.permission)).toBe(true);
+    }
+  });
 });

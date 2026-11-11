@@ -1,3 +1,4 @@
+import { selicTable } from '../../services/indices';
 import { and, asc, count, desc, eq, inArray, isNotNull, isNull, ne, type SQL } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -193,9 +194,10 @@ export async function portalRoutes(app: FastifyInstance) {
       .innerJoin(declarations, eq(declarations.id, darfs.declarationId))
       .where(and(eq(darfs.customerId, auth.customerId), eq(darfs.officeId, auth.officeId), inArray(declarations.exerciseYear, [year, year - 1])))
       .orderBy(desc(declarations.exerciseYear), asc(darfs.quotaNumber), asc(darfs.dueDate));
+    const selic = await selicTable(db);
     const darfList = darfRows.map(({ darf, exerciseYear }) => {
       // quota gerada a partir da 2ª guarda só o principal: `amount` traz o valor com os juros até o vencimento
-      const amount = darfPayable(darf);
+      const amount = darfPayable(darf, selic);
       return {
         id: darf.id,
         exerciseYear,

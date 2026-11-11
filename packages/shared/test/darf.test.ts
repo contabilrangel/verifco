@@ -1,5 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { brazilToday, darfStatus, easterSunday, isBusinessDay, lastBusinessDayOfMonth, maxDarfQuotas, nationalHolidays, planDarfQuotas } from '../src';
+import {
+  SELIC_MONTHLY_PERCENT,
+  brazilToday,
+  darfPayable,
+  darfQuotaAmount,
+  darfStatus,
+  darfValueText,
+  easterSunday,
+  isBusinessDay,
+  lastBusinessDayOfMonth,
+  maxDarfQuotas,
+  nationalHolidays,
+  planDarfQuotas,
+} from '../src';
 
 describe('calendário de dias úteis', () => {
   it('calcula a Páscoa', () => {
@@ -72,5 +85,40 @@ describe('quotas do DARF', () => {
     expect(darfStatus({ dueDate: '2026-05-29' }, '2026-05-29')).toBe('open');
     expect(darfStatus({ dueDate: '2026-05-29', status: 'paid' }, '2026-06-01')).toBe('paid');
     expect(brazilToday(new Date('2026-06-01T02:00:00Z'))).toBe('2026-05-31');
+  });
+});
+
+describe('juros da quota com a Selic informada por quem chama (extraSelic)', () => {
+  // quota 7 que vence em 30/11/2026: Selic de junho a outubro; a tabela fixa vai até setembro
+  const quota = { quotaNumber: 7, principalCents: 100_000, dueDate: '2026-11-30' };
+  const generated = { source: 'generated', quotaNumber: 7, valueCents: 100_000, dueDate: '2026-11-30' };
+
+  it('sem a taxa de um mês, fica só o principal: nada é estimado', () => {
+    expect(SELIC_MONTHLY_PERCENT['2026-10']).toBeUndefined();
+    expect(darfQuotaAmount(quota)).toMatchObject({ totalCents: null, interestPercent: null, missingSelicMonths: ['2026-10'] });
+    expect(darfQuotaAmount({ ...quota, extraSelic: {} })).toMatchObject({ totalCents: null, missingSelicMonths: ['2026-10'] });
+    // valor que não é número não conta como taxa
+    expect(darfQuotaAmount({ ...quota, extraSelic: { '2026-10': Number.NaN } })).toMatchObject({ totalCents: null, missingSelicMonths: ['2026-10'] });
+    expect(darfPayable(generated)).toMatchObject({ totalCents: null });
+  });
+
+  it('a tabela extra completa a fixa e vale antes dela', () => {
+    // 1,12 + 1,22 + 1,09 + 1,08 (fixa) + 1,28 (extra) = 5,79% + 1%
+    expect(darfQuotaAmount({ ...quota, extraSelic: { '2026-10': 1.28 } })).toMatchObject({ selicMonths: ['2026-06', '2026-07', '2026-08', '2026-09', '2026-10'], missingSelicMonths: [], interestPercent: 6.79, totalCents: 106_790 });
+    // mês que as duas têm: vale a extra (o Banco Central pode revisar a taxa)
+    expect(darfQuotaAmount({ ...quota, extraSelic: { '2026-09': 1.18, '2026-10': 1.28 } })).toMatchObject({ interestPercent: 6.89, totalCents: 106_890 });
+    // a tabela extra não muda a 1ª quota (sem juros) nem a 2ª (só 1%)
+    expect(darfQuotaAmount({ quotaNumber: 1, principalCents: 100_000, dueDate: '2026-05-29', extraSelic: { '2026-05': 9 } }).totalCents).toBe(100_000);
+    expect(darfQuotaAmount({ quotaNumber: 2, principalCents: 100_000, dueDate: '2026-06-30', extraSelic: { '2026-05': 9, '2026-06': 9 } }).totalCents).toBe(101_000);
+  });
+
+  it('darfPayable e darfValueText repassam a tabela extra', () => {
+    const extra = { '2026-10': 1.28 };
+    expect(darfPayable(generated, extra)).toMatchObject({ principalCents: 100_000, interestPercent: 6.79, totalCents: 106_790 });
+    expect(darfValueText(generated, extra)).toMatch(/^R\$\s1\.067,90 \(principal de R\$\s1\.000,00 \+ juros de 6,79%: Selic acumulada \+ 1%\)$/);
+    expect(darfValueText(generated)).toMatch(/mais juros \(Selic acumulada \+ 1%; o valor total está na guia\)$/);
+    // quota com o valor da guia (editada, manual, eCAC): a Selic não entra
+    expect(darfPayable({ ...generated, source: 'edited' }, extra)).toBeNull();
+    expect(darfValueText({ ...generated, source: 'manual' }, extra)).toMatch(/^R\$\s1\.000,00$/);
   });
 });

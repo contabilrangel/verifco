@@ -158,21 +158,65 @@ function* walk(value: unknown, depth = 0): Generator<[string, unknown]> {
   }
 }
 
+/** Leitura da procuração: a situação (chave de `PROCURATION_STATUS`) e a validade, quando a resposta traz. */
+export type ProcurationReading =
+  | { status: 'valid' | 'expired'; expiresAt: string }
+  | { status: 'invalid' | 'invalid_permissions'; expiresAt: string | null };
+
 /**
- * Procura a data de expiração da procuração na resposta (campos com "expira" no nome, como
- * `dtexpiracao`). Sem data reconhecível devolve `null`: o registro bruto é guardado, mas o
- * cadastro não muda.
+ * Lista de procurações da resposta do OBTERPROCURACAO41, só nas formas documentadas: a própria
+ * lista (`dados` já convertido), a lista em JSON como texto ou o envelope `{ dados: lista }`.
+ * Qualquer outra forma devolve `null` (não dá para afirmar que a lista está vazia).
  */
-export function interpretProcuration(raw: unknown, today = todayIso()): { status: 'valid' | 'expired'; expiresAt: string } | null {
+function procurationList(raw: unknown, depth = 0): unknown[] | null {
+  if (depth > 2) return null;
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === 'string' && /^\s*[[{]/.test(raw)) {
+    try {
+      return procurationList(JSON.parse(raw), depth + 1);
+    } catch {
+      return null;
+    }
+  }
+  if (raw && typeof raw === 'object' && 'dados' in raw) return procurationList((raw as { dados: unknown }).dados, depth + 1);
+  return null;
+}
+
+/**
+ * Quantos sistemas a procuração autoriza, quando o item informa: a contagem (`nrsistemas`) ou a
+ * lista (`sistemas`). Sem nenhum dos dois (ou com valor fora do esperado), `null`.
+ */
+function systemsCount(item: unknown): number | null {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
+  const o = item as Record<string, unknown>;
+  const n = typeof o.nrsistemas === 'number' ? o.nrsistemas : typeof o.nrsistemas === 'string' && /^\d+$/.test(o.nrsistemas.trim()) ? Number(o.nrsistemas) : null;
+  if (n !== null && Number.isInteger(n) && n >= 0) return n;
+  return Array.isArray(o.sistemas) ? o.sistemas.length : null;
+}
+
+/**
+ * Situação da procuração pela resposta do SERPRO. Só afirma o que a resposta diz com clareza:
+ * - data de expiração (campos com "expira" no nome, como `dtexpiracao`) → `valid` ou `expired`;
+ * - resposta com sucesso e a lista de procurações vazia → `invalid` (não há procuração do cliente
+ *   para o procurador);
+ * - procuração em vigor (ou sem data reconhecida) em que todos os itens informam zero sistemas
+ *   autorizados → `invalid_permissions`.
+ * Qualquer outra forma devolve `null`: o registro bruto é guardado, mas o cadastro não muda.
+ */
+export function interpretProcuration(raw: unknown, today = todayIso()): ProcurationReading | null {
+  const list = procurationList(raw);
+  if (list && list.length === 0) return { status: 'invalid', expiresAt: null };
   const dates: string[] = [];
   for (const [k, v] of walk(raw)) {
     if (!/expira/i.test(k)) continue;
     const iso = normalizeDate(typeof v === 'number' ? String(v) : v);
     if (iso) dates.push(iso);
   }
-  if (!dates.length) return null;
-  const latest = dates.sort().at(-1)!;
-  return { status: latest >= today ? 'valid' : 'expired', expiresAt: latest };
+  const latest = dates.sort().at(-1) ?? null;
+  // vencida é vencida, com ou sem sistemas
+  if (latest && latest < today) return { status: 'expired', expiresAt: latest };
+  if (list?.length && list.every((item) => systemsCount(item) === 0)) return { status: 'invalid_permissions', expiresAt: latest };
+  return latest ? { status: 'valid', expiresAt: latest } : null;
 }
 
 /**

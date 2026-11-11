@@ -4,14 +4,17 @@ import { useQuery } from '@tanstack/react-query';
 import {
   ArrowLeft,
   ArrowRight,
+  CalendarClock,
   CalendarDays,
   Check,
   CircleCheck,
   ClipboardList,
   FileText,
+  KeyRound,
   Mail,
   Megaphone,
   MessageCircle,
+  MessageSquareText,
   Package,
   Paperclip,
   Receipt,
@@ -19,15 +22,15 @@ import {
   TrendingUp,
   Users,
 } from 'lucide-react';
-import { DECLARATION_STAGES, formatPhone, mailingTypeForTemplate, type MailingType, type MailingTypeKey } from '@verifco/shared';
-import { Alert, Button, Card, Checkbox, ConfirmDialog, EmptyState, Loading, Select, Stat, Tag, cx, useToast } from '../../ds';
+import { DECLARATION_STAGES, MAILING_MAX_SCHEDULE_DAYS, formatPhone, mailingTypeForTemplate, type MailingType, type MailingTypeKey } from '@verifco/shared';
+import { Alert, Button, Card, Checkbox, ConfirmDialog, EmptyState, Input, Loading, Select, Stat, Tag, cx, useToast } from '../../ds';
 import { PageHeader } from '../../app/Shell';
 import { ApiError, api } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { useAction, useApi, useDebounced } from '../../lib/hooks';
 import { stageLabel, stageTone } from '../../lib/format';
 import { useYear } from '../../lib/year';
-import { MailingProgress, MailingRunView, RecentMailings, finished, int, names, truncatedText, type MailingRequest } from './MailingRuns';
+import { MailingProgress, MailingRunView, RecentMailings, int, names, pollInterval, scheduledText, truncatedText, type MailingRequest } from './MailingRuns';
 import { MailPreview } from './TemplatesPage';
 import './communication.css';
 
@@ -70,7 +73,16 @@ const ICONS: Record<MailingTypeKey, ReactNode> = {
   monthly: <CalendarDays />,
   budget: <Receipt />,
   kit: <Package />,
+  procuration_tutorial: <KeyRound />,
+  whatsapp_tutorial: <MessageSquareText />,
 };
+
+/** Brasília não tem horário de verão desde 2019: UTC−3. O campo de data e hora do agendamento é sempre nesse horário. */
+const BRASILIA_OFFSET = '-03:00';
+/** Valor de um campo `datetime-local` (AAAA-MM-DDTHH:MM) para o instante, no horário de Brasília. */
+const brasiliaLocal = (date: Date) => new Date(date.getTime() - 3 * 3600_000).toISOString().slice(0, 16);
+/** Data e hora do campo (horário de Brasília) em ISO com fuso, como a API espera; '' sem valor válido. */
+export const scheduleToIso = (local: string) => (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(local) ? `${local}:00${BRASILIA_OFFSET}` : '');
 
 const toggle = (list: string[], v: string) => (list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
 
@@ -95,6 +107,9 @@ export function MailingPage() {
   const [filters, setFilters] = useState<Filters>(EMPTY);
   const [channel, setChannel] = useState<Channel>('email');
   const [sampleId, setSampleId] = useState<string>('');
+  /** Quando enviar: agora ou numa data e hora marcadas (horário de Brasília). */
+  const [when, setWhen] = useState<'now' | 'schedule'>('now');
+  const [scheduleAt, setScheduleAt] = useState('');
   const [confirm, setConfirm] = useState(false);
   const [requestId, setRequestId] = useState(() => crypto.randomUUID());
   const [result, setResult] = useState<MailingRequest | null>(null);
@@ -130,7 +145,19 @@ export function MailingPage() {
   });
   const p = preview.data;
 
-  const send = useAction(() => api.post<MailingRequest>('/mailing/send', { ...body, previewCustomerId: undefined, requestId }), {
+  const runAt = when === 'schedule' ? scheduleToIso(scheduleAt) : '';
+  const runAtTime = runAt ? new Date(runAt).getTime() : Number.NaN;
+  const scheduleError =
+    when !== 'schedule' || !scheduleAt
+      ? null
+      : !(runAtTime > Date.now())
+        ? 'Escolha uma data e hora no futuro.'
+        : runAtTime > Date.now() + MAILING_MAX_SCHEDULE_DAYS * 86_400_000
+          ? `O agendamento pode ser feito para até ${MAILING_MAX_SCHEDULE_DAYS} dias à frente.`
+          : null;
+  const scheduleReady = when === 'now' || (Boolean(runAt) && !scheduleError);
+
+  const send = useAction(() => api.post<MailingRequest>('/mailing/send', { ...body, previewCustomerId: undefined, requestId, ...(runAt ? { runAt } : {}) }), {
     invalidate: [['deliveries'], ['mailing', 'runs']],
     onSuccess: (r) => {
       setConfirm(false);
@@ -139,7 +166,7 @@ export function MailingPage() {
   });
   // o servidor prepara os envios na fila: acompanha até terminar (e, com anexo, até gerar os PDFs)
   const tracking = useApi<MailingRequest>(['mailing', 'request', result?.requestId], result ? `/mailing/requests/${result.requestId}` : null, {
-    refetchInterval: result && !finished(result) ? 1500 : undefined,
+    refetchInterval: result ? pollInterval(result) : undefined,
   });
   useEffect(() => {
     if (tracking.data) setResult(tracking.data);
@@ -152,6 +179,8 @@ export function MailingPage() {
     setStep(1);
     setType('');
     setSampleId('');
+    setWhen('now');
+    setScheduleAt('');
     setParams({});
     setMode('filters');
   };
@@ -177,6 +206,7 @@ export function MailingPage() {
           onRetry={() => send.mutate(undefined)}
           onTrack={() => navigate('/comunicacao/envios')}
           onRestart={restart}
+          onChange={setResult}
         />
       ) : openRun ? (
         <MailingRunView id={openRun} onClose={() => setOpenRun(null)} />
@@ -377,12 +407,46 @@ export function MailingPage() {
                 </>
               )}
 
+              <Card title="Quando enviar">
+                <div className="vf-stack">
+                  <div className="vf-choice-grid">
+                    {(
+                      [
+                        ['now', 'Enviar agora', <Send key="n" />, 'Os envios entram na fila assim que você confirmar.'],
+                        ['schedule', 'Agendar', <CalendarClock key="s" />, 'Escolha o dia e a hora; os destinatários são calculados na hora do envio.'],
+                      ] as ['now' | 'schedule', string, ReactNode, string][]
+                    ).map(([v, label, icon, desc]) => (
+                      <button key={v} type="button" className="vf-choice" aria-pressed={when === v} onClick={() => setWhen(v)}>
+                        {when === v && <CircleCheck className="vf-choice__check" size={20} />}
+                        <span className="vf-choice__icon">{icon}</span>
+                        <span className="vf-choice__title">{label}</span>
+                        <span className="vf-choice__desc">{desc}</span>
+                      </button>
+                    ))}
+                  </div>
+                  {when === 'schedule' && (
+                    <div style={{ maxWidth: 380 }}>
+                      <Input
+                        label="Data e hora do envio (horário de Brasília)"
+                        type="datetime-local"
+                        value={scheduleAt}
+                        min={brasiliaLocal(new Date())}
+                        max={brasiliaLocal(new Date(Date.now() + MAILING_MAX_SCHEDULE_DAYS * 86_400_000))}
+                        onChange={(e) => setScheduleAt(e.target.value)}
+                        error={scheduleError ?? undefined}
+                        help={`Até ${MAILING_MAX_SCHEDULE_DAYS} dias à frente. Quem entrar ou sair da seleção até lá é considerado; você pode cancelar o agendamento antes da hora.`}
+                      />
+                    </div>
+                  )}
+                </div>
+              </Card>
+
               <div className="vf-inline vf-between">
                 <Button kind="secondary" icon={<ArrowLeft />} onClick={() => setStep(2)}>
                   Destinatários
                 </Button>
-                <Button icon={<Send />} disabled={!p || !p.customers || preview.isFetching} onClick={() => setConfirm(true)}>
-                  Enviar para {p?.customers ?? 0} cliente(s)
+                <Button icon={when === 'schedule' ? <CalendarClock /> : <Send />} disabled={!p || !p.customers || preview.isFetching || !scheduleReady} onClick={() => setConfirm(true)}>
+                  {when === 'schedule' ? 'Agendar' : 'Enviar'} para {p?.customers ?? 0} cliente(s)
                 </Button>
               </div>
             </div>
@@ -392,8 +456,8 @@ export function MailingPage() {
 
       <ConfirmDialog
         open={confirm}
-        title="Confirmar envio"
-        confirmLabel="Enviar agora"
+        title={runAt ? 'Confirmar agendamento' : 'Confirmar envio'}
+        confirmLabel={runAt ? 'Agendar' : 'Enviar agora'}
         loading={send.isPending}
         onConfirm={() => send.mutate(undefined)}
         onClose={() => setConfirm(false)}
@@ -403,6 +467,7 @@ export function MailingPage() {
               <span>
                 <strong>{selected?.label}</strong> para <strong>{p.customers}</strong> cliente(s): {p.deliveries.email} e-mail(s) e {p.deliveries.whatsapp} WhatsApp.
               </span>
+              {runAt && <span>{scheduledText(runAt)} (horário de Brasília). Os destinatários são calculados de novo nessa hora.</span>}
               {p.total - p.customers > 0 && <span>{p.total - p.customers} cliente(s) ficarão de fora por falta de contato ou de dados.</span>}
               {p.truncated && <span>Outros {int(p.matched - p.limit)} cliente(s) da seleção ficam de fora pelo limite de {int(p.limit)} por envio.</span>}
               {!can('mailing.list') && <span>Depois do envio, acompanhe a situação com quem tem acesso a E-mails enviados.</span>}

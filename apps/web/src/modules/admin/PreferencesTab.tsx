@@ -6,11 +6,26 @@ import { api } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { useAction, useApi } from '../../lib/hooks';
 import { useYear } from '../../lib/year';
-import { SettingLabel, useAuthedFileUrl, type OfficeData, type OfficeSettings } from './shared';
+import { SettingLabel, useAuthedFileUrl, type OfficeData, type OfficeSettings as BaseSettings } from './shared';
 
 const HEX = /^#[0-9a-fA-F]{6}$/;
 
+/** Lembretes automáticos (rotina diária das 8h): dias de antecedência (0 = não lembrar) e chaves. */
+interface ReminderSettings {
+  reminderDarfCustomerDays: number;
+  reminderInstallmentCustomerDays: number;
+  reminderInstallmentOverdueCustomer: boolean;
+  reminderOfficeDigest: boolean;
+  chargeLinkAutoSend: boolean;
+}
+/** Os mesmos padrões da API, para um escritório cuja resposta ainda não traga as chaves. */
+const REMINDER_DEFAULTS: ReminderSettings = { reminderDarfCustomerDays: 3, reminderInstallmentCustomerDays: 2, reminderInstallmentOverdueCustomer: true, reminderOfficeDigest: true, chargeLinkAutoSend: true };
+export const REMINDER_MAX_DAYS = 30;
+
+type OfficeSettings = BaseSettings & ReminderSettings;
 type BoolKey = { [K in keyof OfficeSettings]: OfficeSettings[K] extends boolean ? K : never }[keyof OfficeSettings];
+type DaysKey = 'reminderDarfCustomerDays' | 'reminderInstallmentCustomerDays';
+const withReminders = (settings: BaseSettings): OfficeSettings => ({ ...REMINDER_DEFAULTS, ...settings });
 
 /** Aba Preferências: comportamento do escritório agrupado por assunto, com uma única ação de salvar. */
 export function PreferencesTab() {
@@ -21,7 +36,7 @@ export function PreferencesTab() {
   const logoUrl = useAuthedFileUrl(office.data?.logoFileId);
 
   useEffect(() => {
-    if (office.data) setForm(office.data.settings);
+    if (office.data) setForm(withReminders(office.data.settings));
   }, [office.data]);
 
   const save = useAction(() => api.put<OfficeSettings>('/office/settings', form), {
@@ -33,13 +48,15 @@ export function PreferencesTab() {
   if (office.isLoading || (office.data && !form)) return <Loading />;
   if (office.isError || !office.data || !form) return <Alert tone="danger" title="Não foi possível carregar as preferências.">Atualize a página para tentar de novo.</Alert>;
 
-  const dirty = JSON.stringify(form) !== JSON.stringify(office.data.settings);
+  const saved = withReminders(office.data.settings);
+  const dirty = JSON.stringify(form) !== JSON.stringify(saved);
   const colorsOk = HEX.test(form.reportTitleColor) && HEX.test(form.reportSubtitleColor) && HEX.test(form.reportLineColor);
   const whatsappOk = form.whatsappServiceNumber === '' || /^[\d\s()+-]{10,30}$/.test(form.whatsappServiceNumber);
   const set = <K extends keyof OfficeSettings>(k: K, v: OfficeSettings[K]) => setForm((f) => (f ? { ...f, [k]: v } : f));
   const toggle = (k: BoolKey, title: ReactNode, help?: ReactNode) => (
     <Switch key={k} label={<SettingLabel title={title} help={help} />} checked={form[k]} disabled={readOnly} onChange={(v) => set(k, v)} />
   );
+  const days = (k: DaysKey, label: string, help: string) => <DaysField key={k} label={label} help={help} value={form[k]} disabled={readOnly} onChange={(v) => set(k, v)} />;
 
   return (
     <div className="vf-stack" style={{ '--gap': '24px' } as React.CSSProperties}>
@@ -64,6 +81,25 @@ export function PreferencesTab() {
               help="Usado na variável de contato por WhatsApp dos templates de e-mail."
               maxLength={30}
             />
+          </Section>
+
+          <Section title="Lembretes" description="Avisos automáticos, enviados todo dia às 8h. Cada aviso sai uma única vez.">
+            <div className="vf-grid" style={{ '--cols': 2 } as React.CSSProperties}>
+              {days('reminderDarfCustomerDays', 'Lembrar o cliente do DARF (dias antes)', 'E-mail ao cliente antes do vencimento de cada quota em aberto. 0 = não lembrar.')}
+              {days('reminderInstallmentCustomerDays', 'Lembrar o cliente dos honorários (dias antes)', 'E-mail ao cliente antes do vencimento de cada parcela em aberto. 0 = não lembrar.')}
+            </div>
+            {toggle(
+              'chargeLinkAutoSend',
+              'Enviar a cobrança ao cliente assim que for emitida',
+              'Quando o provedor (Asaas ou Omie) devolve o link de pagamento da primeira parcela em aberto, o cliente recebe o e-mail de cobrança. Desligado, o envio é feito à mão em Faturamento.',
+            )}
+            {toggle('reminderInstallmentOverdueCustomer', 'Avisar o cliente quando a parcela dos honorários ficar vencida', 'Um e-mail, três dias depois do vencimento, se a parcela continuar em aberto.')}
+            {toggle(
+              'reminderOfficeDigest',
+              'Avisar a equipe no sino sobre vencimentos',
+              'Procuração e certificado A1 perto de vencer, DARF que vence hoje sem pagamento, honorários vencidos, link do checklist perto de expirar e contrato do escritório.',
+            )}
+            <p className="vf-text-xs vf-muted">Os lembretes ao cliente vão só para quem tem e-mail cadastrado; o texto de cada um fica em Comunicação › Templates de e-mail.</p>
           </Section>
 
           <Section title="Robô (eCAC)" description="Consultas feitas pelo robô em nome do escritório.">
@@ -137,7 +173,7 @@ export function PreferencesTab() {
         <div className={`adm-savebar${dirty ? ' adm-savebar--sticky' : ''}`}>
           <span className="vf-muted vf-grow">{dirty ? 'Há alterações não salvas.' : 'Tudo salvo.'}</span>
           {dirty && (
-            <Button kind="tertiary" onClick={() => setForm(office.data!.settings)}>
+            <Button kind="tertiary" onClick={() => setForm(saved)}>
               Descartar
             </Button>
           )}
@@ -156,6 +192,34 @@ function Section({ title, description, children }: { title: string; description:
       <p className="adm-section-desc vf-text-xs">{description}</p>
       <div className="vf-stack">{children}</div>
     </Card>
+  );
+}
+
+/** Dias de antecedência (0 a 30). O campo aceita ficar vazio enquanto se digita; só um número válido muda a preferência. */
+function DaysField({ label, help, value, disabled, onChange }: { label: string; help: string; value: number; disabled?: boolean; onChange: (v: number) => void }) {
+  const [text, setText] = useState(String(value));
+  useEffect(() => setText(String(value)), [value]);
+  const valid = (t: string) => /^\d{1,2}$/.test(t) && Number(t) <= REMINDER_MAX_DAYS;
+  return (
+    <Input
+      label={label}
+      type="number"
+      inputMode="numeric"
+      min={0}
+      max={REMINDER_MAX_DAYS}
+      step={1}
+      value={text}
+      disabled={disabled}
+      help={help}
+      error={valid(text) ? undefined : `Use um número de 0 a ${REMINDER_MAX_DAYS} (0 = não lembrar).`}
+      onChange={(e) => {
+        const t = e.target.value.trim();
+        setText(t);
+        if (valid(t)) onChange(Number(t));
+      }}
+      // saiu do campo com um valor inválido: volta ao último válido
+      onBlur={() => setText(String(value))}
+    />
   );
 }
 

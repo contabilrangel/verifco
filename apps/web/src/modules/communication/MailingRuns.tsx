@@ -1,15 +1,16 @@
-import type { CSSProperties } from 'react';
+import { useState, type CSSProperties } from 'react';
 import { useNavigate } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
-import { ArrowLeft, CircleCheck, Send, XCircle } from 'lucide-react';
+import { ArrowLeft, CalendarClock, CircleCheck, Send, XCircle } from 'lucide-react';
 import { MAILING_MAX_RECIPIENTS, getMailingType, type MailingTypeKey } from '@verifco/shared';
-import { Alert, Button, Card, EmptyState, Loading, Progress, Tag, type Tone } from '../../ds';
+import { Alert, Button, Card, ConfirmDialog, EmptyState, Loading, Progress, Tag, type Tone } from '../../ds';
 import { api, errorMessage, type ApiError } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { useAction } from '../../lib/hooks';
 import { formatDateTime } from '../../lib/format';
 
-type RunStatus = 'queued' | 'running' | 'done' | 'failed';
+/** Situação do pedido: a do job na fila, mais "agendada" (antes do horário marcado) e "cancelada". */
+type RunStatus = 'scheduled' | 'canceled' | 'queued' | 'running' | 'done' | 'failed';
 type DeliveryChannel = 'email' | 'whatsapp';
 type SkipCount = { reason: string; label: string; count: number; names: string[] };
 
@@ -25,6 +26,9 @@ export interface MailingRequest {
   error: string | null;
   createdAt: string;
   finishedAt: string | null;
+  /** Envio agendado: quando roda. Os destinatários são calculados nessa hora. */
+  scheduledFor?: string | null;
+  canceledAt?: string | null;
   customers: number;
   deliveries: { email: number; whatsapp: number; total: number };
   skipped: SkipCount[];
@@ -58,9 +62,15 @@ export interface MailingRunDetail extends MailingRequest {
   };
 }
 
-/** Terminou a preparação e, com anexo, a geração dos PDFs? */
+/** Terminou a preparação e, com anexo, a geração dos PDFs? (A cancelada também terminou.) */
 export const finished = (r: Pick<MailingRequest, 'status' | 'attachments'>) =>
-  r.status === 'failed' || (r.status === 'done' && (!r.attachments || r.attachments.done + r.attachments.failed >= r.attachments.total));
+  r.status === 'failed' || r.status === 'canceled' || (r.status === 'done' && (!r.attachments || r.attachments.done + r.attachments.failed >= r.attachments.total));
+
+/** De quanto em quanto tempo a tela consulta o pedido: a agendada só muda no horário marcado (ou se for cancelada). */
+export const pollInterval = (r: Pick<MailingRequest, 'status' | 'attachments'>): number | false => (finished(r) ? false : r.status === 'scheduled' ? 30_000 : 1500);
+
+/** "Agendado para 12/11/2026 09:00" (horário de Brasília). */
+export const scheduledText = (iso: string) => `Agendado para ${formatDateTime(iso).replace(',', '')}`;
 
 export const int = (n: number) => n.toLocaleString('pt-BR');
 
@@ -71,6 +81,8 @@ export const truncatedText = (matched: number, limit: number) =>
 export const names = (list: string[], count: number) => (count > list.length ? `${list.join(', ')} e mais ${count - list.length}` : list.join(', '));
 
 const STATUS: Record<RunStatus, { label: string; tone: Tone }> = {
+  scheduled: { label: 'Agendada', tone: 'highlight' },
+  canceled: { label: 'Cancelada', tone: 'neutral' },
   queued: { label: 'Na fila', tone: 'neutral' },
   running: { label: 'Preparando', tone: 'primary' },
   done: { label: 'Preparada', tone: 'success' },
@@ -96,6 +108,7 @@ export function MailingProgress({
   onRetry,
   onTrack,
   onRestart,
+  onChange,
   showFailures = true,
 }: {
   request: MailingRequest;
@@ -104,39 +117,65 @@ export function MailingProgress({
   onRetry: () => void;
   onTrack: () => void;
   onRestart: () => void;
+  /** O pedido mudou por uma ação desta tela (agendamento cancelado). */
+  onChange?: (request: MailingRequest) => void;
   /** Os clientes com falha na preparação (o detalhe da mala direta já os lista à parte). */
   showFailures?: boolean;
 }) {
   const { can } = useAuth();
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  // cancelar o agendamento: só enquanto o envio não começou a ser preparado (o servidor confere)
+  const cancel = useAction(() => api.post<MailingRequest>(`/mailing/runs/${r.jobId}/cancel`), {
+    success: 'Agendamento cancelado.',
+    invalidate: [['mailing', 'runs'], ['mailing', 'run', r.jobId], ['mailing', 'request', r.requestId]],
+    onSuccess: (updated) => {
+      setConfirmCancel(false);
+      onChange?.(updated);
+    },
+  });
+  const scheduled = r.status === 'scheduled';
   const done = finished(r);
   const att = r.attachments;
   const generating = r.status === 'done' && !done;
   const title =
     r.status === 'failed'
       ? 'Não foi possível preparar os envios'
-      : r.status !== 'done'
-        ? 'Preparando os envios...'
-        : generating
-          ? 'Gerando os anexos em PDF...'
-          : r.result?.queued
-            ? `${int(r.result.queued)} envio(s) na fila para ${int(r.customers)} cliente(s)`
-            : 'Este envio já tinha sido feito';
+      : r.status === 'canceled'
+        ? 'Agendamento cancelado'
+        : scheduled && r.scheduledFor
+          ? scheduledText(r.scheduledFor)
+          : r.status !== 'done'
+            ? 'Preparando os envios...'
+            : generating
+              ? 'Gerando os anexos em PDF...'
+              : r.result?.queued
+                ? `${int(r.result.queued)} envio(s) na fila para ${int(r.customers)} cliente(s)`
+                : 'Este envio já tinha sido feito';
   const progress = generating && att ? ((att.done + att.failed) / Math.max(1, att.total)) * 100 : r.progress;
   const failed = showFailures ? (r.result?.failed ?? []) : [];
   return (
     <Card>
       <EmptyState
-        icon={r.status === 'failed' ? <XCircle /> : done ? <CircleCheck /> : <Send />}
+        icon={r.status === 'failed' || r.status === 'canceled' ? <XCircle /> : scheduled ? <CalendarClock /> : done ? <CircleCheck /> : <Send />}
         title={title}
         description={
           <div className="vf-stack" style={{ '--gap': '8px' } as CSSProperties}>
-            {!done && <Progress value={progress} />}
+            {!done && !scheduled && <Progress value={progress} />}
             {r.error && <span>{r.error}</span>}
-            <span>
-              {int(r.deliveries.email)} por e-mail e {int(r.deliveries.whatsapp)} por WhatsApp.
-              {r.result && r.result.alreadyQueued > 0 && ` ${int(r.result.alreadyQueued)} já estavam na fila e não foram duplicados.`}
-              {!done && ' Você pode sair desta tela: a preparação continua e os envios aparecem em E-mails enviados.'}
-            </span>
+            {r.status === 'canceled' ? (
+              <span>Nenhuma mensagem foi enviada.</span>
+            ) : scheduled ? (
+              <span>
+                Pela seleção de hoje: {int(r.deliveries.email)} por e-mail e {int(r.deliveries.whatsapp)} por WhatsApp, para {int(r.customers)} cliente(s). Os destinatários são calculados de novo na hora do envio: quem
+                entrar ou sair da seleção até lá é considerado.
+              </span>
+            ) : (
+              <span>
+                {int(r.deliveries.email)} por e-mail e {int(r.deliveries.whatsapp)} por WhatsApp.
+                {r.result && r.result.alreadyQueued > 0 && ` ${int(r.result.alreadyQueued)} já estavam na fila e não foram duplicados.`}
+                {!done && ' Você pode sair desta tela: a preparação continua e os envios aparecem em E-mails enviados.'}
+              </span>
+            )}
             {withAttachment &&
               (att ? (
                 <span>
@@ -144,7 +183,7 @@ export function MailingProgress({
                   {att.failed > 0 && ` (${int(att.failed)} com erro)`}.
                 </span>
               ) : (
-                !done && <span>Os anexos em PDF são gerados um a um e podem levar alguns minutos.</span>
+                !done && !scheduled && <span>Os anexos em PDF são gerados um a um e podem levar alguns minutos.</span>
               ))}
             {r.truncated && <span className="vf-text-xs">{truncatedText(r.matched, MAILING_MAX_RECIPIENTS)}</span>}
             {r.skipped.map((s) => (
@@ -166,14 +205,28 @@ export function MailingProgress({
               <Button loading={retrying} onClick={onRetry}>
                 Tentar de novo
               </Button>
+            ) : scheduled ? (
+              <Button kind="danger" onClick={() => setConfirmCancel(true)}>
+                Cancelar agendamento
+              </Button>
             ) : (
-              can('mailing.list') && <Button onClick={onTrack}>Acompanhar envios</Button>
+              r.status !== 'canceled' && can('mailing.list') && <Button onClick={onTrack}>Acompanhar envios</Button>
             )}
             <Button kind="secondary" onClick={onRestart}>
               Nova mala direta
             </Button>
           </div>
         }
+      />
+      <ConfirmDialog
+        open={confirmCancel}
+        title="Cancelar o agendamento?"
+        confirmLabel="Sim, cancelar o agendamento"
+        danger
+        loading={cancel.isPending}
+        onConfirm={() => cancel.mutate(undefined)}
+        onClose={() => setConfirmCancel(false)}
+        message={r.scheduledFor ? `${scheduledText(r.scheduledFor)}. Se cancelar, nenhuma mensagem deste envio sai; para enviar depois, faça uma nova mala direta.` : 'Nenhuma mensagem deste envio sai.'}
       />
     </Card>
   );
@@ -229,6 +282,7 @@ export function RecentMailings({ onOpen }: { onOpen: (id: string) => void }) {
                   <td style={{ minWidth: 140 }}>
                     <div className="vf-stack" style={{ '--gap': '4px' } as CSSProperties}>
                       <RunStatusTag status={r.status} />
+                      {r.status === 'scheduled' && r.scheduledFor && <span className="vf-text-xs vf-muted">{scheduledText(r.scheduledFor)}</span>}
                       {(r.status === 'queued' || r.status === 'running') && <Progress value={r.progress} />}
                     </div>
                   </td>
@@ -258,7 +312,7 @@ export function MailingRunView({ id, onClose }: { id: string; onClose: () => voi
     refetchInterval: (q) => {
       const r = q.state.data;
       if (!r) return false;
-      if (!finished(r)) return 1500;
+      if (!finished(r)) return pollInterval(r);
       return r.sending.total.queued > 0 ? 5000 : false;
     },
   });
@@ -293,6 +347,7 @@ export function MailingRunView({ id, onClose }: { id: string; onClose: () => voi
           <span className="vf-text-sm vf-muted">
             Pedida em {formatDateTime(r.createdAt)}
             {r.createdBy ? ` por ${r.createdBy}` : ''} · {CHANNELS[r.channel]} · {int(r.customers)} cliente(s)
+            {r.scheduledFor ? ` · ${scheduledText(r.scheduledFor)}` : ''}
           </span>
           <div className="vf-table-wrap">
             <table className="vf-table" aria-label="Envios por canal">

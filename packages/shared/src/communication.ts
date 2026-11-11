@@ -4,7 +4,16 @@
 import { todayIso } from './dates';
 import { formatDate } from './validators';
 
-export type MailingTypeKey = 'checklist_digital' | 'checklist_pdf' | 'planning' | 'marketing' | 'monthly' | 'budget' | 'kit';
+export type MailingTypeKey =
+  | 'checklist_digital'
+  | 'checklist_pdf'
+  | 'planning'
+  | 'marketing'
+  | 'monthly'
+  | 'budget'
+  | 'kit'
+  | 'procuration_tutorial'
+  | 'whatsapp_tutorial';
 
 export interface MailingType {
   key: MailingTypeKey;
@@ -80,6 +89,26 @@ export const MAILING_TYPES: MailingType[] = [
     templateKey: 'customer_document',
     attachment: 'kit',
   },
+  {
+    key: 'procuration_tutorial',
+    label: 'Tutorial da procuração',
+    description: 'Passo a passo para o cliente cadastrar a procuração eletrônica no eCAC.',
+    // pedido operacional de início de temporada, como o convite do checklist
+    permission: 'mailing.send_checklist_digital',
+    templateKey: 'procuration_tutorial',
+    attachment: null,
+    note: 'Cada cliente recebe o CPF/CNPJ do procurador associado a ele. Para quem não tem procurador, vale o procurador padrão do escritório (o da integração SERPRO ou, havendo um só cadastrado, esse). Clientes sem nenhum dos dois ficam de fora.',
+  },
+  {
+    key: 'whatsapp_tutorial',
+    label: 'Tutorial do WhatsApp',
+    description: 'Pede ao cliente que salve o número de atendimento do escritório.',
+    // comunicado geral para a carteira
+    permission: 'mailing.send_monthly',
+    templateKey: 'whatsapp_tutorial',
+    attachment: null,
+    note: 'Usa o WhatsApp de atendimento informado em Meu escritório › Preferências.',
+  },
 ];
 
 export function getMailingType(key: string): MailingType | undefined {
@@ -100,6 +129,7 @@ export const MAILING_SKIP_REASONS = {
   no_budget: 'Sem orçamento no exercício',
   budget_approved: 'Orçamento já aprovado',
   checklist_locked: 'Checklist bloqueado ou só para consulta',
+  no_procurator: 'Sem procurador (nem do cliente, nem padrão do escritório)',
 } as const;
 export type MailingSkipReason = keyof typeof MAILING_SKIP_REASONS;
 
@@ -108,6 +138,12 @@ export type MailingSkipReason = keyof typeof MAILING_SKIP_REASONS;
  * alfabética e a revisão avisa quantos ficaram de fora (refine os filtros para os demais).
  */
 export const MAILING_MAX_RECIPIENTS = 5000;
+
+/** Uma mala direta pode ser agendada para até este número de dias à frente. */
+export const MAILING_MAX_SCHEDULE_DAYS = 60;
+
+/** Mala direta sem o WhatsApp de atendimento nas preferências: o tutorial do WhatsApp é recusado inteiro. */
+export const MAILING_NO_WHATSAPP_NUMBER = 'Informe o WhatsApp de atendimento em Meu escritório › Preferências antes de enviar o tutorial do WhatsApp.';
 
 // ---------------------------------------------------------------------------
 // Relatórios individuais

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { and, eq, inArray, sql } from 'drizzle-orm';
-import { budgets, checklists, customers, darfs, declarationItems, declarations, deliveries, jobs, messages } from '../src/db/schema';
+import { budgets, checklists, customers, darfs, declarationItems, declarations, deliveries, integrations, jobs, messages, procurators, users } from '../src/db/schema';
 import { VALID_CPFS, createEmployee, createTestEnv, registerOffice, type Api, type TestEnv } from './helpers';
 import { pdfContent } from './pdf-text';
 import { customerLogin } from './portal-helpers';
@@ -684,5 +684,249 @@ describe('mala direta em lote (DAD-5)', () => {
     // dentro do limite, sem aviso
     const few = await api.post('/api/mailing/preview', { ...body, filters: { email: 'without' } });
     expect(few.body).toMatchObject({ truncated: false, total: 0 });
+  });
+});
+
+describe('mala direta agendada', () => {
+  const inHours = (h: number) => new Date(Date.now() + h * 3600_000).toISOString();
+  const due = (jobId: string) => env.ctx.db.update(jobs).set({ runAt: new Date(Date.now() - 1000) }).where(eq(jobs.id, jobId));
+  const sentTo = async (officeId: string) => (await env.ctx.db.select().from(deliveries).where(eq(deliveries.officeId, officeId))).map((d) => d.toAddress).sort();
+
+  it('só roda no horário marcado e calcula os destinatários na hora de rodar', async () => {
+    const { api, officeId } = await registerOffice(env);
+    const ana = await customer(api, 0, { name: 'Ana Lima' });
+    const bruno = await customer(api, 1, { name: 'Bruno Reis' });
+    const carla = await customer(api, 2, { name: 'Carla Dias' });
+    const runAt = inHours(2);
+    const requestId = uuid();
+    const body = { type: 'monthly', channel: 'email', year: 2026 };
+    const sent = await api.post('/api/mailing/send', { ...body, requestId, runAt });
+    expect(sent.status).toBe(202);
+    expect(sent.body).toMatchObject({ status: 'scheduled', scheduledFor: runAt, repeated: false, customers: 3, deliveries: { email: 3, whatsapp: 0, total: 3 }, result: null });
+    // repetir o pedido (mesmo requestId) não cria outro agendamento
+    expect((await api.post('/api/mailing/send', { ...body, requestId, runAt: inHours(5) })).body).toMatchObject({ repeated: true, jobId: sent.body.jobId, status: 'scheduled', scheduledFor: runAt });
+    const job = (await env.ctx.db.query.jobs.findFirst({ where: eq(jobs.id, sent.body.jobId) }))!;
+    expect(job.runAt.toISOString()).toBe(runAt);
+    // o pedido guarda a seleção, não os destinatários
+    expect(job.payload).toMatchObject({ customerIds: [], selection: {}, runAt });
+
+    // antes da hora: a fila não prepara nada
+    await env.ctx.jobs.drain();
+    expect(await sentTo(officeId)).toEqual([]);
+    expect((await api.get(`/api/mailing/requests/${requestId}`)).body).toMatchObject({ status: 'scheduled', scheduledFor: runAt });
+    const run = (await api.get('/api/mailing/runs')).body.find((r: any) => r.id === sent.body.jobId);
+    expect(run).toMatchObject({ status: 'scheduled', scheduledFor: runAt, customers: 3 });
+    expect(run.selection).toBeUndefined();
+    expect((await api.get(`/api/mailing/runs/${sent.body.jobId}`)).body).toMatchObject({ status: 'scheduled', scheduledFor: runAt, sending: { total: { total: 0 } } });
+
+    // a carteira muda até lá: cliente novo, um sem e-mail, um excluído
+    const dora = await customer(api, 3, { name: 'Dora Nova' });
+    await env.ctx.db.update(customers).set({ email: null }).where(eq(customers.id, bruno));
+    await env.ctx.db.update(customers).set({ deletedAt: new Date() }).where(eq(customers.id, carla));
+
+    await due(sent.body.jobId);
+    await env.ctx.jobs.drain();
+    expect(await sentTo(officeId)).toEqual(['c0@ex.com', 'c3@ex.com']);
+    const done = (await api.get(`/api/mailing/requests/${requestId}`)).body;
+    // a revisão passa a ser a do momento do envio
+    expect(done).toMatchObject({ status: 'done', scheduledFor: runAt, customers: 2, deliveries: { email: 2, total: 2 }, result: { queued: 2, alreadyQueued: 0, failed: [] } });
+    expect(done.skipped).toEqual([expect.objectContaining({ reason: 'no_email', count: 1 })]);
+    const detail = (await api.get(`/api/mailing/runs/${sent.body.jobId}`)).body;
+    expect(detail.sending.email).toMatchObject({ sent: 2, total: 2 });
+    const payload = (await env.ctx.db.query.jobs.findFirst({ where: eq(jobs.id, sent.body.jobId) }))!.payload as any;
+    expect(payload.customerIds.sort()).toEqual([ana, dora].sort());
+    expect(payload.resolvedAt).toBeTruthy();
+    // rodar o job de novo não refaz a lista nem duplica envios
+    await env.ctx.db.update(jobs).set({ status: 'queued', attempts: 0, runAt: new Date() }).where(eq(jobs.id, sent.body.jobId));
+    await customer(api, 4, { name: 'Eva Depois' });
+    await env.ctx.jobs.drain();
+    expect(await sentTo(officeId)).toEqual(['c0@ex.com', 'c3@ex.com']);
+
+    // clientes escolhidos na lista: valem os que ainda podem receber na hora
+    const picked = await api.post('/api/mailing/send', { ...body, customerIds: [ana, bruno, dora], requestId: uuid(), runAt: inHours(1) });
+    expect(picked.body).toMatchObject({ status: 'scheduled', customers: 2 });
+    await env.ctx.db.update(customers).set({ email: 'bruno@ex.com' }).where(eq(customers.id, bruno));
+    await env.ctx.db.update(customers).set({ email: '' }).where(eq(customers.id, dora));
+    await due(picked.body.jobId);
+    await env.ctx.jobs.drain();
+    expect((await api.get(`/api/mailing/runs/${picked.body.jobId}`)).body).toMatchObject({ status: 'done', customers: 2, result: { queued: 2 } });
+    expect(await sentTo(officeId)).toEqual(['bruno@ex.com', 'c0@ex.com', 'c0@ex.com', 'c3@ex.com']);
+  });
+
+  it('recusa horário no passado, além de 60 dias ou sem fuso; sem runAt o envio é imediato', async () => {
+    const { api } = await registerOffice(env);
+    await customer(api, 0);
+    const body = { type: 'monthly', channel: 'email', year: 2026 };
+    const past = await api.post('/api/mailing/send', { ...body, requestId: uuid(), runAt: inHours(-1) });
+    expect(past.status).toBe(400);
+    expect(past.body.error).toMatch(/no futuro/);
+    const far = await api.post('/api/mailing/send', { ...body, requestId: uuid(), runAt: inHours(61 * 24) });
+    expect(far.status).toBe(400);
+    expect(far.body.error).toMatch(/até 60 dias/);
+    expect((await api.post('/api/mailing/send', { ...body, requestId: uuid(), runAt: '2099-01-01 10:00' })).status).toBe(400);
+    expect((await api.post('/api/mailing/send', { ...body, requestId: uuid(), runAt: '2026-12-01T10:00:00' })).status).toBe(400);
+    expect(await env.ctx.db.select({ id: jobs.id }).from(jobs).where(and(eq(jobs.type, 'mailing.plan'), inArray(jobs.status, ['queued'])))).toHaveLength(0);
+    // com fuso de Brasília, dentro do prazo
+    const ok = await api.post('/api/mailing/send', { ...body, requestId: uuid(), runAt: inHours(59 * 24).replace('Z', '+00:00') });
+    expect(ok.status).toBe(202);
+    expect(ok.body.status).toBe('scheduled');
+    const now = await api.post('/api/mailing/send', { ...body, requestId: uuid() });
+    expect(now.body).toMatchObject({ status: 'queued', scheduledFor: null });
+  });
+
+  it('cancela antes de começar; depois de começar, de outro escritório ou sem permissão, não', async () => {
+    const { api, officeId } = await registerOffice(env);
+    await customer(api, 0);
+    const body = { type: 'monthly', channel: 'email', year: 2026 };
+    const requestId = uuid();
+    const sent = await api.post('/api/mailing/send', { ...body, requestId, runAt: inHours(3) });
+    const other = await registerOffice(env);
+    expect((await other.api.post(`/api/mailing/runs/${sent.body.jobId}/cancel`)).status).toBe(404);
+    const nobody = await createEmployee(env, api, ['customer.list']);
+    expect((await nobody.api.post(`/api/mailing/runs/${sent.body.jobId}/cancel`)).status).toBe(403);
+    // quem só envia outro tipo não acompanha (nem cancela) esta
+    const marketing = await createEmployee(env, api, ['mailing.send_marketing']);
+    expect((await marketing.api.post(`/api/mailing/runs/${sent.body.jobId}/cancel`)).status).toBe(404);
+
+    const canceled = await api.post(`/api/mailing/runs/${sent.body.jobId}/cancel`);
+    expect(canceled.status).toBe(200);
+    expect(canceled.body).toMatchObject({ status: 'canceled', result: null, attachments: null });
+    expect(canceled.body.canceledAt).toBeTruthy();
+    // cancelar de novo devolve a mesma situação; repetir o pedido não o ressuscita
+    expect((await api.post(`/api/mailing/runs/${sent.body.jobId}/cancel`)).body.status).toBe('canceled');
+    expect((await api.post('/api/mailing/send', { ...body, requestId, runAt: inHours(3) })).body).toMatchObject({ repeated: true, status: 'canceled' });
+    expect((await api.get('/api/mailing/runs')).body.find((r: any) => r.id === sent.body.jobId)).toMatchObject({ status: 'canceled' });
+    await due(sent.body.jobId);
+    await env.ctx.jobs.drain();
+    expect(await sentTo(officeId)).toEqual([]);
+
+    // envio imediato não é agendamento
+    const immediate = await api.post('/api/mailing/send', { ...body, requestId: uuid() });
+    const notScheduled = await api.post(`/api/mailing/runs/${immediate.body.jobId}/cancel`);
+    expect(notScheduled.status).toBe(409);
+    expect(notScheduled.body.error).toMatch(/Só uma mala direta agendada/);
+    await env.ctx.jobs.drain();
+    expect(await sentTo(officeId)).toEqual(['c0@ex.com']);
+
+    // agendada que o worker já pegou: tarde demais
+    const started = await api.post('/api/mailing/send', { ...body, requestId: uuid(), runAt: inHours(3) });
+    await env.ctx.db.update(jobs).set({ status: 'running', attempts: 1, lockedAt: new Date() }).where(eq(jobs.id, started.body.jobId));
+    const late = await api.post(`/api/mailing/runs/${started.body.jobId}/cancel`);
+    expect(late.status).toBe(409);
+    expect(late.body.error).toMatch(/já começou/);
+    await env.ctx.db.delete(jobs).where(eq(jobs.id, started.body.jobId));
+  });
+
+  it('quem agendou perdeu a permissão ou foi desativado: o envio não sai e a tela diz por quê', async () => {
+    const { api, officeId } = await registerOffice(env);
+    await customer(api, 0);
+    const sender = await createEmployee(env, api, ['mailing.send_monthly', 'customer.list']);
+    const sent = await sender.api.post('/api/mailing/send', { type: 'monthly', channel: 'email', year: 2026, requestId: uuid(), runAt: inHours(2) });
+    expect(sent.status).toBe(202);
+    await env.ctx.db.update(users).set({ isActive: false }).where(eq(users.id, sender.userId));
+    await due(sent.body.jobId);
+    await env.ctx.jobs.drain();
+    expect(await sentTo(officeId)).toEqual([]);
+    const run = (await api.get(`/api/mailing/runs/${sent.body.jobId}`)).body;
+    expect(run.status).toBe('failed');
+    expect(run.error).toMatch(/Quem agendou esta mala direta não está mais ativo ou perdeu a permissão/);
+    // falha definitiva: uma tentativa só
+    expect((await env.ctx.db.query.jobs.findFirst({ where: eq(jobs.id, sent.body.jobId) }))!.attempts).toBe(1);
+  });
+});
+
+describe('mala direta: tutoriais da procuração e do WhatsApp', () => {
+  it('tutorial da procuração: usa o procurador do cliente ou o padrão do escritório e pula quem não tem', async () => {
+    const { api, officeId } = await registerOffice(env);
+    const ana = await customer(api, 0, { name: 'Ana Lima' });
+    const bruno = await customer(api, 1, { name: 'Bruno Reis' });
+    const body = { type: 'procuration_tutorial', channel: 'email', year: 2026, customerIds: [ana, bruno] };
+
+    // escritório sem procurador: ninguém recebe, e a revisão diz por quê
+    const none = await api.post('/api/mailing/preview', body);
+    expect(none.status).toBe(200);
+    expect(none.body.customers).toBe(0);
+    expect(none.body.skipped).toEqual([expect.objectContaining({ reason: 'no_procurator', count: 2, names: ['Ana Lima', 'Bruno Reis'] })]);
+    expect((await api.post('/api/mailing/send', { ...body, requestId: uuid() })).status).toBe(400);
+
+    // um procurador só no escritório: é o padrão para quem não tem o seu
+    const [office1] = await env.ctx.db.insert(procurators).values({ officeId, name: 'Escritório Ltda', cpfCnpj: '11222333000181' }).returning();
+    const one = await api.post('/api/mailing/preview', { ...body, previewCustomerId: ana });
+    expect(one.body).toMatchObject({ customers: 2, skipped: [] });
+    expect(one.body.sample.html).toContain('11.222.333/0001-81');
+
+    // dois procuradores e nenhum padrão: só quem tem o seu recebe
+    const [personal] = await env.ctx.db.insert(procurators).values({ officeId, name: 'João Contador', cpfCnpj: VALID_CPFS[7] }).returning();
+    await env.ctx.db.update(customers).set({ procuratorId: personal.id }).where(eq(customers.id, ana));
+    const two = await api.post('/api/mailing/preview', body);
+    expect(two.body.customers).toBe(1);
+    expect(two.body.skipped).toEqual([expect.objectContaining({ reason: 'no_procurator', count: 1, names: ['Bruno Reis'] })]);
+
+    // com a integração SERPRO, o procurador dela é o padrão
+    await env.ctx.db.insert(integrations).values({ officeId, provider: 'serpro', publicConfig: { procuratorId: office1.id } });
+    const sent = await api.post('/api/mailing/send', { ...body, requestId: uuid() });
+    expect(sent.status).toBe(202);
+    expect(sent.body).toMatchObject({ customers: 2, skipped: [] });
+    await env.ctx.jobs.drain();
+    const mails = env.providers.sentEmails.filter((e) => e.officeId === officeId);
+    expect(mails).toHaveLength(2);
+    expect(mails.find((m) => m.to === 'c0@ex.com')!.html).toContain('<strong>222.333.444-05</strong>');
+    expect(mails.find((m) => m.to === 'c1@ex.com')!.html).toContain('<strong>11.222.333/0001-81</strong>');
+    expect(mails[0].subject).toBeTruthy();
+    expect((await env.ctx.db.select().from(deliveries).where(eq(deliveries.officeId, officeId))).every((d) => d.templateKey === 'procuration_tutorial')).toBe(true);
+
+    // procurador de outro escritório nunca entra
+    const other = await registerOffice(env);
+    const theirs = await customer(other.api, 2, { name: 'Cliente do Outro' });
+    expect((await other.api.post('/api/mailing/preview', { ...body, customerIds: [theirs] })).body).toMatchObject({ customers: 0, skipped: [expect.objectContaining({ reason: 'no_procurator' })] });
+  });
+
+  it('tutorial do WhatsApp: recusa o envio inteiro sem o número de atendimento nas preferências', async () => {
+    const { api, officeId } = await registerOffice(env);
+    const ana = await customer(api, 0, { name: 'Ana Lima', mobile: '31999990000' });
+    const body = { type: 'whatsapp_tutorial', channel: 'both', year: 2026, customerIds: [ana] };
+    const preview = await api.post('/api/mailing/preview', body);
+    expect(preview.status).toBe(400);
+    expect(preview.body.error).toBe('Informe o WhatsApp de atendimento em Meu escritório › Preferências antes de enviar o tutorial do WhatsApp.');
+    const refused = await api.post('/api/mailing/send', { ...body, requestId: uuid() });
+    expect(refused.status).toBe(400);
+    expect(refused.body.error).toBe(preview.body.error);
+    expect(await env.ctx.db.select({ id: jobs.id }).from(jobs).where(and(eq(jobs.officeId, officeId), eq(jobs.type, 'mailing.plan')))).toHaveLength(0);
+
+    expect((await api.put('/api/office/settings', { whatsappServiceNumber: '(31) 98888-0000' })).status).toBe(200);
+    const ok = await api.post('/api/mailing/preview', body);
+    expect(ok.status).toBe(200);
+    expect(ok.body.sample.html).toContain('<strong>(31) 98888-0000</strong>');
+    expect(ok.body.sample.text).toContain('(31) 98888-0000');
+    const sent = await api.post('/api/mailing/send', { ...body, requestId: uuid() });
+    expect(sent.body).toMatchObject({ customers: 1, deliveries: { email: 1, whatsapp: 1, total: 2 } });
+    await env.ctx.jobs.drain();
+    expect(env.providers.sentEmails.find((e) => e.officeId === officeId)!.html).toContain('(31) 98888-0000');
+    expect(env.providers.sentWhatsApp.find((w) => w.officeId === officeId)!.text).toContain('(31) 98888-0000');
+
+    // agendado e o número apagado até a hora: o envio falha com o motivo, sem mandar mensagem com o número vazio
+    const scheduled = await api.post('/api/mailing/send', { ...body, channel: 'email', requestId: uuid(), runAt: new Date(Date.now() + 3600_000).toISOString() });
+    expect(scheduled.body.status).toBe('scheduled');
+    await api.put('/api/office/settings', { whatsappServiceNumber: '' });
+    await env.ctx.db.update(jobs).set({ runAt: new Date(Date.now() - 1000) }).where(eq(jobs.id, scheduled.body.jobId));
+    await env.ctx.jobs.drain();
+    expect((await api.get(`/api/mailing/runs/${scheduled.body.jobId}`)).body).toMatchObject({ status: 'failed', error: preview.body.error });
+    expect(env.providers.sentEmails.filter((e) => e.officeId === officeId)).toHaveLength(1);
+  });
+
+  it('cada tutorial usa uma permissão de mala direta que já existia', async () => {
+    const { api } = await registerOffice(env);
+    const ana = await customer(api, 0);
+    await api.put('/api/office/settings', { whatsappServiceNumber: '(31) 98888-0000' });
+    const body = { channel: 'email', year: 2026, customerIds: [ana] };
+    const checklist = await createEmployee(env, api, ['mailing.send_checklist_digital', 'customer.list']);
+    const monthly = await createEmployee(env, api, ['mailing.send_monthly', 'customer.list']);
+    expect((await checklist.api.post('/api/mailing/preview', { ...body, type: 'procuration_tutorial' })).status).toBe(200);
+    expect((await checklist.api.post('/api/mailing/preview', { ...body, type: 'whatsapp_tutorial' })).status).toBe(403);
+    expect((await monthly.api.post('/api/mailing/preview', { ...body, type: 'whatsapp_tutorial' })).status).toBe(200);
+    expect((await monthly.api.post('/api/mailing/preview', { ...body, type: 'procuration_tutorial' })).status).toBe(403);
+    const types = (await monthly.api.get('/api/mailing/types')).body;
+    expect(types.find((t: any) => t.key === 'whatsapp_tutorial')).toMatchObject({ allowed: true, templateKey: 'whatsapp_tutorial', attachment: null });
+    expect(types.find((t: any) => t.key === 'procuration_tutorial')).toMatchObject({ allowed: false, templateKey: 'procuration_tutorial' });
   });
 });

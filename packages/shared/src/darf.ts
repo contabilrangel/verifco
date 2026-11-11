@@ -16,8 +16,10 @@
  * - Juros: da 2ª quota em diante, o valor é o principal + Selic acumulada desde o mês seguinte
  *   ao do vencimento da 1ª até o mês anterior ao do pagamento + 1% no mês do pagamento (a 2ª
  *   quota tem só +1%). As quotas geradas guardam o PRINCIPAL; `darfQuotaAmount` calcula o valor
- *   a pagar quando a Selic dos meses envolvidos já foi publicada (SELIC_MONTHLY_PERCENT) e, sem
- *   ela, devolve o principal com o aviso dos juros. Vale sempre o valor da guia da Receita.
+ *   a pagar quando a Selic dos meses envolvidos já foi publicada e, sem ela, devolve o principal
+ *   com o aviso dos juros. A taxa de cada mês vem primeiro da tabela extra informada por quem
+ *   chama (`extraSelic`: na API, os meses buscados no Banco Central e gravados no banco) e depois
+ *   da tabela fixa SELIC_MONTHLY_PERCENT. Vale sempre o valor da guia da Receita.
  */
 export const DARF_MAX_QUOTAS = 8;
 export const DARF_MIN_QUOTA_CENTS = 5_000;
@@ -147,7 +149,9 @@ export function planDarfQuotas(totalCents: number, requestedQuotas: number, firs
  * mesma que a Receita soma nos juros das quotas e dos débitos em atraso. Fonte:
  * https://api.bcb.gov.br/dados/serie/bcdata.sgs.4390/dados?formato=json (conferida em 06/10/2026;
  * janeiro a maio de 2026 conferidos também na tabela de acréscimos legais da Receita).
- * Acrescente cada mês fechado; sem a taxa do mês, o valor da quota fica só com o principal.
+ * A API busca os meses seguintes toda semana (`services/indices.ts`) e os passa em `extraSelic`;
+ * esta tabela fica como reserva (e para a web e os testes). Sem a taxa do mês em nenhuma das
+ * duas, o valor da quota fica só com o principal: nunca se estima uma taxa.
  */
 export const SELIC_MONTHLY_PERCENT: Readonly<Record<string, number>> = {
   '2024-01': 0.97, '2024-02': 0.8, '2024-03': 0.83, '2024-04': 0.89, '2024-05': 0.83, '2024-06': 0.79,
@@ -163,7 +167,7 @@ export interface DarfQuotaAmount {
   principalCents: number;
   /** Meses (AAAA-MM) cuja Selic entra nos juros da quota. */
   selicMonths: string[];
-  /** Meses sem taxa publicada em SELIC_MONTHLY_PERCENT. */
+  /** Meses sem taxa publicada (nem na tabela extra, nem em SELIC_MONTHLY_PERCENT). */
   missingSelicMonths: string[];
   /** Juros em %: Selic acumulada + 1% (0 na 1ª quota). null quando falta a Selic de algum mês. */
   interestPercent: number | null;
@@ -176,12 +180,22 @@ export interface DarfQuotaAmount {
 
 const monthKey = (y: number, m: number) => `${y}-${pad(m)}`;
 
+/** Taxas Selic por mês (`AAAA-MM` → % ao mês). */
+export type SelicTable = Readonly<Record<string, number>>;
+
+/** Taxa do mês: a da tabela extra (quando é um número válido) ou a da tabela base. */
+function selicRate(mk: string, base: SelicTable, extra?: SelicTable): number | undefined {
+  const own = extra?.[mk];
+  return typeof own === 'number' && Number.isFinite(own) ? own : base[mk];
+}
+
 /**
  * Valor a pagar de uma quota até o vencimento (P&R IRPF, pergunta 064): da 2ª em diante,
  * principal + Selic de cada mês entre o vencimento da 1ª quota e o da quota (exclusive) + 1%.
  * O mês de referência é o do vencimento da 1ª quota: `dueDate` menos (quota − 1) meses.
+ * `extraSelic` é consultada antes da tabela (`selic`, por padrão SELIC_MONTHLY_PERCENT).
  */
-export function darfQuotaAmount(input: { quotaNumber: number; principalCents: number; dueDate: string; selic?: Readonly<Record<string, number>> }): DarfQuotaAmount {
+export function darfQuotaAmount(input: { quotaNumber: number; principalCents: number; dueDate: string; selic?: SelicTable; extraSelic?: SelicTable }): DarfQuotaAmount {
   const { quotaNumber, principalCents, dueDate } = input;
   const base = { quotaNumber, principalCents };
   if (quotaNumber <= 1) return { ...base, selicMonths: [], missingSelicMonths: [], interestPercent: 0, interestCents: 0, totalCents: principalCents, note: null };
@@ -193,7 +207,8 @@ export function darfQuotaAmount(input: { quotaNumber: number; principalCents: nu
     const idx = y * 12 + (m - 1) - k;
     months.push(monthKey(Math.floor(idx / 12), (idx % 12) + 1));
   }
-  const missing = months.filter((mk) => selic[mk] === undefined);
+  const rate = (mk: string) => selicRate(mk, selic, input.extraSelic);
+  const missing = months.filter((mk) => rate(mk) === undefined);
   if (missing.length) {
     return {
       ...base,
@@ -205,7 +220,7 @@ export function darfQuotaAmount(input: { quotaNumber: number; principalCents: nu
       note: `Valor principal. A guia soma juros: Selic acumulada de ${listPt(months.map(monthLabel))} + 1%; ${missing.length > 1 ? `as taxas de ${listPt(missing.map(monthLabel))} ainda não foram publicadas` : `a taxa de ${monthLabel(missing[0])} ainda não foi publicada`}. Vale o valor da guia.`,
     };
   }
-  const percent = Math.round((months.reduce((a, mk) => a + selic[mk], 0) + 1) * 100) / 100;
+  const percent = Math.round((months.reduce((a, mk) => a + rate(mk)!, 0) + 1) * 100) / 100;
   const interest = Math.round((principalCents * percent) / 100);
   return {
     ...base,
@@ -233,17 +248,18 @@ export interface DarfPayable {
 
 /**
  * Valor a pagar de uma quota cadastrada. Quotas editadas, manuais ou vindas do eCAC já têm o
- * valor da guia (devolve null); as geradas a partir da 2ª têm só o principal.
+ * valor da guia (devolve null); as geradas a partir da 2ª têm só o principal. `extraSelic`: taxas
+ * consultadas antes da tabela fixa (veja `darfQuotaAmount`).
  */
-export function darfPayable(d: { source?: string | null; quotaNumber: number; valueCents: number; dueDate: string }): DarfPayable | null {
+export function darfPayable(d: { source?: string | null; quotaNumber: number; valueCents: number; dueDate: string }, extraSelic?: SelicTable): DarfPayable | null {
   if (!isDarfPrincipalOnly(d)) return null;
-  const a = darfQuotaAmount({ quotaNumber: d.quotaNumber, principalCents: d.valueCents, dueDate: d.dueDate });
+  const a = darfQuotaAmount({ quotaNumber: d.quotaNumber, principalCents: d.valueCents, dueDate: d.dueDate, extraSelic });
   return { principalCents: a.principalCents, interestPercent: a.interestPercent, totalCents: a.totalCents, note: a.note };
 }
 
 /** Valor da quota em texto para o cliente (e-mail, WhatsApp, PDF), explícito sobre os juros. */
-export function darfValueText(d: { source?: string | null; quotaNumber: number; valueCents: number; dueDate: string }): string {
-  const a = darfPayable(d);
+export function darfValueText(d: { source?: string | null; quotaNumber: number; valueCents: number; dueDate: string }, extraSelic?: SelicTable): string {
+  const a = darfPayable(d, extraSelic);
   if (!a) return money(d.valueCents);
   if (a.totalCents !== null && a.interestPercent !== null) {
     return `${money(a.totalCents)} (principal de ${money(a.principalCents)} + juros de ${formatPercent(a.interestPercent)}: Selic acumulada + 1%)`;

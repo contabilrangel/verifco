@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, asc, eq, exists, gt, inArray, isNull, sql } from 'drizzle-orm';
 import {
   STAGE_SUBSTATUS,
   cashAnalysis,
@@ -11,10 +11,10 @@ import {
 } from '@verifco/shared';
 import type { AuthUser } from '../context';
 import type { DbOrTx } from '../db/client';
-import { backlogs, checklistSections, checklists, customers, declarationItems, declarations } from '../db/schema';
+import { backlogs, checklistSections, checklists, customers, declarationItems, declarations, offices } from '../db/schema';
 import { forbidden, notFound } from '../lib/errors';
 import { can } from '../lib/http';
-import { getOfficeSettings } from './settings';
+import { DEFAULT_SETTINGS, getOfficeSettings } from './settings';
 import { assertDeclarationQuota } from './plan';
 
 export type DeclarationRow = typeof declarations.$inferSelect;
@@ -239,14 +239,19 @@ export async function recomputeTotals(db: DbOrTx, declarationId: string) {
 export async function computeCashAnalysis(ctx: { db: DbOrTx }, declaration: DeclarationRow): Promise<{ result: CashAnalysisResult; itemCount: number }> {
   const items = await listItems(ctx.db, declaration.id);
   const settings = await getOfficeSettings(ctx.db, declaration.officeId);
-  const result = cashAnalysis({
+  const result = cashAnalysisOf(declaration, items, settings.cashAnalysisSimplifiedDiscount);
+  return { result, itemCount: items.length };
+}
+
+/** Análise de caixa da declaração com as linhas e a preferência do escritório já carregadas. */
+function cashAnalysisOf(declaration: DeclarationRow, items: DeclarationItem[], simplifiedDiscountMode: 'standard' | 'proportional'): CashAnalysisResult {
+  return cashAnalysis({
     exerciseYear: declaration.exerciseYear,
     taxation: declaration.taxation === 'complete' || declaration.taxation === 'simplified' ? declaration.taxation : null,
     items,
     otherExpenses: declaration.otherExpenses ?? {},
-    simplifiedDiscountMode: settings.cashAnalysisSimplifiedDiscount,
+    simplifiedDiscountMode,
   });
-  return { result, itemCount: items.length };
 }
 
 /**
@@ -259,4 +264,45 @@ export async function refreshDeclaration(ctx: { db: DbOrTx }, declarationId: str
   const cashBalanceCents = itemCount ? result.balanceCents : null;
   const [updated] = await ctx.db.update(declarations).set({ cashBalanceCents }).where(eq(declarations.id, declarationId)).returning();
   return updated;
+}
+
+/**
+ * Manutenção: recalcula em lote os totais gravados (`totalIncomeCents` e os demais de
+ * `declarationTotals`) e o saldo de caixa das declarações com linhas, com as mesmas contas de
+ * `refreshDeclaration` (`declarationTotals` e a análise de caixa com a preferência do escritório).
+ * Um lote por chamada, em ordem de id a partir de `afterId`: as linhas e as preferências do lote
+ * vêm em uma consulta cada. Só grava a declaração cujo valor mudou e não mexe em `updatedAt` (nada
+ * foi editado). Declaração sem linhas fica como está: os totais dela não vêm das linhas.
+ * Devolve o último id lido (`null` quando acabou).
+ */
+export async function recomputeStoredTotals(db: DbOrTx, opts: { afterId?: string | null; limit?: number } = {}): Promise<{ lastId: string | null; scanned: number; updated: number }> {
+  const withItems = exists(db.select({ one: sql`1` }).from(declarationItems).where(eq(declarationItems.declarationId, declarations.id)));
+  const rows = await db
+    .select()
+    .from(declarations)
+    .where(and(opts.afterId ? gt(declarations.id, opts.afterId) : undefined, withItems))
+    .orderBy(asc(declarations.id))
+    .limit(opts.limit ?? 200);
+  if (!rows.length) return { lastId: null, scanned: 0, updated: 0 };
+  const itemRows = await db.select().from(declarationItems).where(inArray(declarationItems.declarationId, rows.map((d) => d.id)));
+  const itemsOf = new Map<string, DeclarationItem[]>();
+  for (const r of itemRows) {
+    const list = itemsOf.get(r.declarationId) ?? [];
+    list.push({ ...r, kind: r.kind as DeclarationItem['kind'] });
+    itemsOf.set(r.declarationId, list);
+  }
+  const officeRows = await db.select({ id: offices.id, settings: offices.settings }).from(offices).where(inArray(offices.id, [...new Set(rows.map((d) => d.officeId))]));
+  const modeOf = new Map(officeRows.map((o) => [o.id, { ...DEFAULT_SETTINGS, ...(o.settings ?? {}) }.cashAnalysisSimplifiedDiscount]));
+  let updated = 0;
+  for (const d of rows) {
+    const items = itemsOf.get(d.id) ?? [];
+    // a declaração perdeu as linhas depois da seleção: quem as apagou já recalculou
+    if (!items.length) continue;
+    const next = { ...declarationTotals(items), cashBalanceCents: cashAnalysisOf(d, items, modeOf.get(d.officeId) ?? DEFAULT_SETTINGS.cashAnalysisSimplifiedDiscount).balanceCents };
+    const changed = (Object.keys(next) as (keyof typeof next)[]).some((k) => d[k] !== next[k]);
+    if (!changed) continue;
+    await db.update(declarations).set(next).where(eq(declarations.id, d.id));
+    updated += 1;
+  }
+  return { lastId: rows[rows.length - 1].id, scanned: rows.length, updated };
 }

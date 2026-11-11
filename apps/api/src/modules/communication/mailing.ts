@@ -2,9 +2,11 @@ import { and, asc, count, desc, eq, exists, getTableColumns, inArray, isNotNull,
 import { z } from 'zod';
 import {
   MAILING_MAX_RECIPIENTS,
+  MAILING_NO_WHATSAPP_NUMBER,
   MAILING_SKIP_REASONS,
   MAILING_TYPES,
   checklistLock,
+  formatCpfCnpj,
   getMailingType,
   htmlToText,
   renderTemplate,
@@ -14,9 +16,9 @@ import {
   type MailingTypeKey,
 } from '@verifco/shared';
 import type { AppContext, AuthUser } from '../../context';
-import { budgets, customerGroupMembers, customers, declarations, deliveries, jobs, users } from '../../db/schema';
+import { budgets, customerGroupMembers, customers, declarations, deliveries, integrations, jobs, procurators, roles, users } from '../../db/schema';
 import { PermanentJobError, type JobRow } from '../../jobs/queue';
-import { HttpError, notFound } from '../../lib/errors';
+import { HttpError, badRequest, conflict, notFound } from '../../lib/errors';
 import { can, yearSchema } from '../../lib/http';
 import { customerScope, type CustomerRow } from '../../services/customers';
 import type { DeclarationRow } from '../../services/declarations';
@@ -136,6 +138,7 @@ async function planEntries(ctx: AppContext, officeId: string, type: MailingType,
     }
     if (type.key === 'checklist_digital') settings = await getOfficeSettings(ctx.db, officeId);
   }
+  const procuratorDoc = type.key === 'procuration_tutorial' && ids.length ? await procuratorDocs(ctx, officeId) : null;
   const wanted: DeliveryChannel[] = input.channel === 'both' ? ['email', 'whatsapp'] : [input.channel];
   return recipients.map((customer): PlanEntry => {
     const declaration = decls.get(customer.id) ?? null;
@@ -158,6 +161,12 @@ async function planEntries(ctx: AppContext, officeId: string, type: MailingType,
       if (checklistLock(settings!, declaration ?? { substatus: 'not_started', checklistLocked: false }).readOnly) skips.push('checklist_locked');
       else values = { LINK: GENERATED_ON_SEND, CODIGO: GENERATED_ON_SEND };
     }
+    if (type.key === 'procuration_tutorial') {
+      // o procurador do cliente ou, sem ele, o padrão do escritório; sem nenhum, não há o que informar
+      const doc = procuratorDoc?.of(customer.procuratorId);
+      if (doc) values = { CPF_PROCURADOR: formatCpfCnpj(doc) };
+      else skips.push('no_procurator');
+    }
     const channels: DeliveryChannel[] = [];
     if (!skips.length) {
       for (const ch of wanted) {
@@ -170,9 +179,31 @@ async function planEntries(ctx: AppContext, officeId: string, type: MailingType,
   });
 }
 
+/**
+ * CPF/CNPJ do procurador para o tutorial da procuração: o do cliente ou o padrão do escritório
+ * (o procurador da integração SERPRO; sem ela, o único cadastrado). Os procuradores do escritório
+ * são poucos: vêm todos numa consulta.
+ */
+async function procuratorDocs(ctx: AppContext, officeId: string) {
+  const rows = await ctx.db.select({ id: procurators.id, cpfCnpj: procurators.cpfCnpj }).from(procurators).where(eq(procurators.officeId, officeId));
+  const byId = new Map(rows.map((r) => [r.id, r.cpfCnpj]));
+  const serpro = rows.length > 1 ? await ctx.db.query.integrations.findFirst({ where: and(eq(integrations.officeId, officeId), eq(integrations.provider, 'serpro')) }) : null;
+  const fallback = rows.length === 1 ? rows[0].cpfCnpj : (byId.get(String(serpro?.publicConfig?.procuratorId ?? '')) ?? null);
+  return { of: (procuratorId: string | null) => (procuratorId ? byId.get(procuratorId) : null) || fallback || null };
+}
+
+/**
+ * Condições do tipo que valem para o envio inteiro (na revisão, no pedido e de novo na hora de
+ * rodar): o tutorial do WhatsApp exige o número de atendimento nas preferências.
+ */
+export async function assertMailingAllowed(ctx: AppContext, officeId: string, type: MailingType) {
+  if (type.key === 'whatsapp_tutorial' && !hasText((await getOfficeSettings(ctx.db, officeId)).whatsappServiceNumber)) throw badRequest(MAILING_NO_WHATSAPP_NUMBER);
+}
+
 /** Revisão do envio: destinatários (no escopo do usuário) e o plano de cada um. */
 export async function planMailing(ctx: AppContext, user: AuthUser, input: MailingInput) {
   const type = getMailingType(input.type)!;
+  await assertMailingAllowed(ctx, user.officeId, type);
   const recipients = await findRecipients(ctx, user, input);
   const entries = await planEntries(ctx, user.officeId, type, input, recipients.customers);
   return { type, entries, truncated: recipients.truncated, matched: recipients.matched };
@@ -238,6 +269,18 @@ export interface MailingRequestPayload {
   customerIds: string[];
   /** Revisão no momento do pedido (o job refaz o plano com os dados do momento do envio). */
   planned: { customers: number; deliveries: MailingSummary['deliveries']; skipped: MailingSummary['skipped']; truncated: boolean; matched: number };
+  /** Envio agendado: quando roda (ISO). Sem o campo, o envio é imediato. */
+  runAt?: string;
+  /**
+   * Envio agendado: a seleção como foi pedida (clientes escolhidos ou filtros). Os destinatários e
+   * o plano são resolvidos na hora de rodar, no escopo de quem agendou (a carteira pode mudar até
+   * lá); aí `customerIds` e `planned` são regravados e `resolvedAt` marca que já foi feito.
+   */
+  selection?: Pick<MailingInput, 'customerIds' | 'filters'>;
+  resolvedAt?: string;
+  /** Agendamento cancelado antes de começar. */
+  canceledAt?: string;
+  canceledByUserId?: string;
 }
 
 export interface MailingJobResult {
@@ -247,8 +290,8 @@ export interface MailingJobResult {
   failed: { customerId: string; name: string; message: string }[];
 }
 
-/** Colunas do pedido sem a lista de destinatários (até milhares de ids; a tela consulta o andamento a cada segundo e meio). */
-const requestColumns = () => ({ ...getTableColumns(jobs), payload: sql<Record<string, unknown>>`${jobs.payload} - 'customerIds'` });
+/** Colunas do pedido sem as listas de destinatários (até milhares de ids; a tela consulta o andamento a cada segundo e meio). */
+const requestColumns = () => ({ ...getTableColumns(jobs), payload: sql<Record<string, unknown>>`${jobs.payload} - 'customerIds' - 'selection'` });
 
 /** O pedido do escritório, sem a lista de destinatários. */
 export async function findMailingRequest(ctx: AppContext, officeId: string, requestId: string): Promise<JobRow | undefined> {
@@ -263,11 +306,13 @@ export async function findMailingRequest(ctx: AppContext, officeId: string, requ
 /**
  * Registra o pedido: só grava o job `mailing.plan`, que gera link, código, anexos, envios,
  * mensagens e jobs de envio fora da requisição. O mesmo pedido repetido devolve o job já gravado.
+ * Com `runAt`, o job fica agendado para esse horário e guarda a seleção (não os destinatários):
+ * o plano é refeito do zero quando ele rodar.
  */
 export async function requestMailing(
   ctx: AppContext,
   user: AuthUser,
-  input: MailingInput & { requestId: string },
+  input: MailingInput & { requestId: string; runAt?: Date },
   plan: Awaited<ReturnType<typeof planMailing>>,
   summary: MailingSummary,
 ): Promise<JobRow> {
@@ -278,11 +323,12 @@ export async function requestMailing(
     type: input.type,
     channel: input.channel,
     year: input.year,
-    customerIds: plan.entries.filter((e) => e.channels.length).map((e) => e.customer.id),
+    customerIds: input.runAt ? [] : plan.entries.filter((e) => e.channels.length).map((e) => e.customer.id),
     planned: { customers: summary.customers, deliveries: summary.deliveries, skipped: summary.skipped, truncated: plan.truncated, matched: plan.matched },
+    ...(input.runAt ? { runAt: input.runAt.toISOString(), selection: { customerIds: input.customerIds, filters: input.filters } } : {}),
   };
   try {
-    return await ctx.jobs.enqueue(MAILING_JOB, payload, { officeId: user.officeId, idempotencyKey: requestKey(user.officeId, input.requestId), userId: user.userId });
+    return await ctx.jobs.enqueue(MAILING_JOB, payload, { officeId: user.officeId, idempotencyKey: requestKey(user.officeId, input.requestId), userId: user.userId, runAt: input.runAt });
   } catch (err) {
     // dois cliques ao mesmo tempo: a chave única segura o segundo, que segue o primeiro
     const again = await findMailingRequest(ctx, user.officeId, input.requestId);
@@ -315,6 +361,24 @@ async function attachmentProgress(ctx: AppContext, p: MailingRequestPayload) {
   return { total: rows.reduce((a, r) => a + Number(r.n), 0), done: by('done'), failed: by('failed') };
 }
 
+/** Falhas do pedido que a tela mostra como estão (as demais viram a mensagem genérica). */
+const REQUEST_FAILURES = {
+  requester: 'Quem agendou esta mala direta não está mais ativo ou perdeu a permissão deste envio. Faça um novo agendamento.',
+} as const;
+const SHOWN_REQUEST_FAILURES = new Set<string>([...Object.values(REQUEST_FAILURES), MAILING_NO_WHATSAPP_NUMBER]);
+
+export type MailingRunStatus = 'scheduled' | 'canceled' | 'queued' | 'running' | 'done' | 'failed';
+
+/** Agendada: ainda na fila, sem nenhuma tentativa, com o horário marcado no futuro. */
+const isScheduled = (job: JobRow, now = Date.now()) =>
+  job.status === 'queued' && job.attempts === 0 && Boolean((job.payload as MailingRequestPayload).runAt) && job.runAt.getTime() > now;
+
+/** Situação para a tela: a do job, mais "agendada" (antes do horário) e "cancelada". */
+export function mailingRunStatus(job: JobRow): MailingRunStatus {
+  if ((job.payload as MailingRequestPayload).canceledAt) return 'canceled';
+  return isScheduled(job) ? 'scheduled' : (job.status as MailingRunStatus);
+}
+
 /** Situação do pedido sem consultar o banco: o que a revisão planejou e o andamento da preparação. */
 function mailingRequestSummary(job: JobRow) {
   const p = job.payload as MailingRequestPayload;
@@ -324,9 +388,17 @@ function mailingRequestSummary(job: JobRow) {
     type: p.type,
     channel: p.channel,
     year: p.year,
-    status: job.status as 'queued' | 'running' | 'done' | 'failed',
+    status: mailingRunStatus(job),
+    /** Envio agendado: quando roda (até lá, a revisão é a do momento do agendamento). */
+    scheduledFor: p.runAt ?? null,
+    canceledAt: p.canceledAt ?? null,
     progress: job.progress,
-    error: job.status === 'failed' ? 'Não foi possível preparar os envios. Tente de novo: o que já foi preparado não se repete.' : null,
+    error:
+      job.status === 'failed'
+        ? job.error && SHOWN_REQUEST_FAILURES.has(job.error)
+          ? job.error
+          : 'Não foi possível preparar os envios. Tente de novo: o que já foi preparado não se repete.'
+        : null,
     createdAt: job.createdAt,
     finishedAt: job.finishedAt,
     ...p.planned,
@@ -337,7 +409,8 @@ function mailingRequestSummary(job: JobRow) {
 export async function mailingRequestView(ctx: AppContext, job: JobRow) {
   const p = job.payload as MailingRequestPayload;
   const type = getMailingType(p.type);
-  const done = job.status === 'done';
+  // a cancelada termina sem ter preparado nada: não tem resultado nem anexos
+  const done = job.status === 'done' && !p.canceledAt;
   return {
     ...mailingRequestSummary(job),
     result: done ? ((job.result ?? null) as MailingJobResult | null) : null,
@@ -524,6 +597,57 @@ export async function mailingRunDetail(ctx: AppContext, user: AuthUser, jobId: s
   };
 }
 
+/**
+ * Cancela uma mala direta agendada que ainda não começou (dentro do que o usuário acompanha; fora
+ * disso, 404). A troca é feita numa única gravação condicionada a "ainda na fila e sem tentativa":
+ * se o worker pegou o job antes, nada muda e o pedido é recusado.
+ */
+export async function cancelScheduledMailing(ctx: AppContext, user: AuthUser, jobId: string) {
+  const { where } = await runScope(ctx, user);
+  const [row] = await runQuery(ctx).where(and(where, eq(jobs.id, jobId)));
+  if (!row) throw notFound('Mala direta');
+  const p = row.job.payload as MailingRequestPayload;
+  if (p.canceledAt) return mailingRequestView(ctx, row.job);
+  if (!p.runAt) throw conflict('Só uma mala direta agendada pode ser cancelada.');
+  const now = new Date();
+  const mark = { canceledAt: now.toISOString(), canceledByUserId: user.userId };
+  const [canceled] = await ctx.db
+    .update(jobs)
+    .set({ status: 'done', finishedAt: now, result: { canceled: true }, payload: sql`${jobs.payload} || ${JSON.stringify(mark)}::jsonb` })
+    .where(and(eq(jobs.id, jobId), eq(jobs.officeId, user.officeId), eq(jobs.type, MAILING_JOB), eq(jobs.status, 'queued'), eq(jobs.attempts, 0)))
+    .returning(requestColumns());
+  if (!canceled) throw conflict('Esta mala direta já começou a ser preparada e não pode mais ser cancelada.');
+  return mailingRequestView(ctx, canceled);
+}
+
+/** Quem agendou, com as permissões de agora (o job roda fora da requisição); `null` se saiu ou foi desativado. */
+async function requester(ctx: AppContext, officeId: string, userId: string): Promise<AuthUser | null> {
+  const user = await ctx.db.query.users.findFirst({ where: and(eq(users.id, userId), eq(users.officeId, officeId)) });
+  if (!user?.isActive) return null;
+  const role = user.roleId ? await ctx.db.query.roles.findFirst({ where: eq(roles.id, user.roleId) }) : null;
+  return { kind: 'user', userId: user.id, officeId: user.officeId, name: user.name, email: user.email, isOwner: user.isOwner, roleId: user.roleId, permissions: new Set(role?.permissions ?? []) };
+}
+
+/**
+ * Envio agendado na hora de rodar: resolve os destinatários e o plano com os dados de agora, no
+ * escopo e com as permissões atuais de quem agendou, e regrava no job a lista e a revisão (o
+ * detalhe da mala direta e as chaves dos envios saem dali). Feito uma vez: uma nova tentativa do
+ * job continua com a mesma lista.
+ */
+async function resolveScheduled(ctx: AppContext, job: JobRow, p: MailingRequestPayload, type: MailingType): Promise<MailingRequestPayload> {
+  const user = await requester(ctx, p.officeId, p.userId);
+  if (!user || !can(user, type.permission)) throw new PermanentJobError(REQUEST_FAILURES.requester);
+  const plan = await planMailing(ctx, user, { type: p.type, channel: p.channel, year: p.year, customerIds: p.selection?.customerIds, filters: p.selection?.filters });
+  const summary = summarize(plan.entries);
+  const resolved = {
+    customerIds: plan.entries.filter((e) => e.channels.length).map((e) => e.customer.id),
+    planned: { customers: summary.customers, deliveries: summary.deliveries, skipped: summary.skipped, truncated: plan.truncated, matched: plan.matched },
+    resolvedAt: new Date().toISOString(),
+  };
+  await ctx.db.update(jobs).set({ payload: sql`${jobs.payload} || ${JSON.stringify(resolved)}::jsonb` }).where(eq(jobs.id, job.id));
+  return { ...p, ...resolved };
+}
+
 /** Clientes por bloco na execução: acessos, envios e jobs de um bloco são gravados juntos. */
 const EXEC_CHUNK = 200;
 
@@ -531,12 +655,21 @@ const EXEC_CHUNK = 200;
  * Executor do job `mailing.plan`. Refaz o plano com os dados atuais (só os clientes do pedido),
  * carrega template, escritório e responsáveis uma vez e grava em lote, bloco a bloco, com a
  * chave de idempotência de cada envio: repetir o job não duplica nada nem gera outro link ou
- * código para quem já recebeu.
+ * código para quem já recebeu. O envio agendado resolve antes os destinatários (`resolveScheduled`).
  */
 export async function runMailingRequest(ctx: AppContext, job: JobRow, progress: (pct: number) => Promise<void>): Promise<MailingJobResult> {
-  const p = job.payload as MailingRequestPayload;
+  let p = job.payload as MailingRequestPayload;
   const type = getMailingType(p.type);
   if (!type) throw new Error(`Tipo de mala direta desconhecido: ${p.type}`);
+  try {
+    // as condições do tipo valem na hora de rodar (a preferência pode ter mudado desde o pedido)
+    await assertMailingAllowed(ctx, p.officeId, type);
+    if (p.selection && !p.resolvedAt) p = await resolveScheduled(ctx, job, p, type);
+  } catch (err) {
+    // recusa que repetir não resolve: falha na hora, com o motivo na tela
+    if (err instanceof HttpError && err.statusCode < 500) throw new PermanentJobError(err.message);
+    throw err;
+  }
   const ids = Array.isArray(p.customerIds) ? p.customerIds.map(String) : [];
   const recipients = ids.length
     ? await ctx.db

@@ -10,6 +10,7 @@ import { auditLogs, customers, darfs, declarations, ecacRecords, integrations, j
 import type { Providers } from '../src/integrations/providers';
 import { clearSerproTokens } from '../src/integrations/serpro';
 import { DAILY_TRIGGER, nextDailyRun, registerJobs, robotTiming, scheduleEcacAutoSync } from '../src/modules/ecac/jobs';
+import { interpretProcuration } from '../src/modules/ecac/serpro';
 import { VALID_CPFS, createEmployee, createTestEnv, registerOffice, type TestEnv } from './helpers';
 import { sitfisPendingPdf } from './sitfis-helpers';
 
@@ -554,5 +555,77 @@ describe('avisos de mudança do robô', () => {
     const notes = await changes();
     expect(notes).toHaveLength(1);
     expect(notes[0].body).toBe('Caixa postal: 8 mensagem(ns) não lida(s) (antes 6)');
+  });
+});
+
+describe('situação da procuração pela resposta do SERPRO', () => {
+  const TODAY = '2026-11-11';
+
+  it('lê só o que a resposta diz com clareza (respostas sintéticas)', () => {
+    // data de expiração: válida ou vencida, como antes
+    expect(interpretProcuration([{ dtexpiracao: '20301231', nrsistemas: 2 }], TODAY)).toEqual({ status: 'valid', expiresAt: '2030-12-31' });
+    expect(interpretProcuration([{ dtexpiracao: '20200131', nrsistemas: 2 }], TODAY)).toEqual({ status: 'expired', expiresAt: '2020-01-31' });
+    expect(interpretProcuration([{ dtexpiracao: '20301231' }], TODAY)).toEqual({ status: 'valid', expiresAt: '2030-12-31' });
+    // a procuração que vence hoje ainda vale
+    expect(interpretProcuration([{ dtexpiracao: '20261111', nrsistemas: 1 }], TODAY)?.status).toBe('valid');
+
+    // sucesso sem nenhuma procuração listada: inválida (lista, JSON em texto ou envelope { dados })
+    expect(interpretProcuration([], TODAY)).toEqual({ status: 'invalid', expiresAt: null });
+    expect(interpretProcuration('[]', TODAY)).toEqual({ status: 'invalid', expiresAt: null });
+    expect(interpretProcuration({ status: 200, dados: '[]', mensagens: [{ codigo: 'Sucesso-PROCURACOES', texto: 'Requisição efetuada com sucesso.' }] }, TODAY)).toEqual({ status: 'invalid', expiresAt: null });
+
+    // procuração em vigor sem nenhum sistema autorizado (contagem ou lista zerada): sem permissões
+    expect(interpretProcuration([{ dtexpiracao: '20301231', nrsistemas: 0 }], TODAY)).toEqual({ status: 'invalid_permissions', expiresAt: '2030-12-31' });
+    expect(interpretProcuration([{ dtexpiracao: '20301231', nrsistemas: '0' }], TODAY)).toEqual({ status: 'invalid_permissions', expiresAt: '2030-12-31' });
+    expect(interpretProcuration([{ dtexpiracao: '20301231', sistemas: [] }], TODAY)).toEqual({ status: 'invalid_permissions', expiresAt: '2030-12-31' });
+    expect(interpretProcuration([{ nrsistemas: 0 }], TODAY)).toEqual({ status: 'invalid_permissions', expiresAt: null });
+    // basta uma procuração com sistemas para valer; vencida é vencida, com ou sem sistemas
+    expect(interpretProcuration([{ dtexpiracao: '20301231', nrsistemas: 0 }, { dtexpiracao: '20291231', nrsistemas: 3 }], TODAY)).toEqual({ status: 'valid', expiresAt: '2030-12-31' });
+    expect(interpretProcuration([{ dtexpiracao: '20200131', nrsistemas: 0 }], TODAY)).toEqual({ status: 'expired', expiresAt: '2020-01-31' });
+
+    // formas desconhecidas: nada muda
+    expect(interpretProcuration(null, TODAY)).toBeNull();
+    expect(interpretProcuration('', TODAY)).toBeNull();
+    expect(interpretProcuration({}, TODAY)).toBeNull();
+    expect(interpretProcuration({ dados: '' }, TODAY)).toBeNull();
+    expect(interpretProcuration({ algo: 'x' }, TODAY)).toBeNull();
+    expect(interpretProcuration({ procuracoes: [] }, TODAY)).toBeNull();
+    expect(interpretProcuration([{ situacao: 'ATIVA' }], TODAY)).toBeNull();
+    expect(interpretProcuration([{ nrsistemas: -1 }], TODAY)).toBeNull();
+    expect(interpretProcuration([{ nrsistemas: 'muitos' }], TODAY)).toBeNull();
+    expect(interpretProcuration(['texto solto'], TODAY)).toBeNull();
+  });
+
+  it('sem procuração listada o cliente sai de "Aguardando validação" e as consultas bilhetadas não são feitas', async () => {
+    const office = await officeWithSerpro();
+    const none = await office.addCustomer('Nina Sem Procuração', VALID_CPFS[5]);
+    const noSystems = await office.addCustomer('Otto Sem Sistemas', VALID_CPFS[6]);
+    const unknown = await office.addCustomer('Paulo Forma Nova', VALID_CPFS[7]);
+    const before = (await env.ctx.db.query.customers.findFirst({ where: eq(customers.id, unknown) }))!.procurationStatus;
+    const gateway = serproGateway((c) => {
+      if (c.servico === 'OBTERPROCURACAO41') {
+        if (c.contribuinte === VALID_CPFS[5]) return { dados: [] };
+        if (c.contribuinte === VALID_CPFS[6]) return { dados: [{ dtexpiracao: '20301231', nrsistemas: 0, sistemas: [] }] };
+        return { dados: { resultado: 'forma que o Verifco não conhece' } };
+      }
+      if (c.servico === 'INNOVAMSG63') return { dados: { codigo: '00', conteudo: [{ indicadorMensagensNovas: '0' }] } };
+      if (c.servico === 'SOLICITARPROTOCOLO91') return { dados: { tempoEspera: 30000 } };
+      return undefined;
+    });
+    env.providers.fetch = gateway.fn;
+    await office.api.post('/api/robot/sync-office');
+    await env.ctx.jobs.drain();
+
+    const status = async (id: string) => (await env.ctx.db.query.customers.findFirst({ where: eq(customers.id, id) }))!;
+    expect((await status(none)).procurationStatus).toBe('invalid');
+    expect(await status(noSystems)).toMatchObject({ procurationStatus: 'invalid_permissions', procurationExpiresAt: '2030-12-31' });
+    // forma desconhecida: o cadastro fica como estava e a sincronização segue
+    expect((await status(unknown)).procurationStatus).toBe(before);
+    const servicesOf = (cpf: string) => gateway.calls.filter((c) => c.contribuinte === cpf).map((c) => c.servico);
+    expect(servicesOf(VALID_CPFS[5])).toEqual(['OBTERPROCURACAO41', 'INNOVAMSG63']);
+    expect(servicesOf(VALID_CPFS[6])).toEqual(['OBTERPROCURACAO41', 'INNOVAMSG63']);
+    expect(servicesOf(VALID_CPFS[7])).toEqual(['OBTERPROCURACAO41', 'INNOVAMSG63', 'SOLICITARPROTOCOLO91']);
+    const steps = (await office.api.get(`/api/customers/${none}/ecac`)).body;
+    expect(steps.procuration.status).toBe('invalid');
   });
 });

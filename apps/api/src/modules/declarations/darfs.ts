@@ -9,6 +9,7 @@ import { HttpError, badRequest, conflict, notFound } from '../../lib/errors';
 import { audit, dateStr, guard, parse, requireUser, uuidParam } from '../../lib/http';
 import { getCustomerForUser } from '../../services/customers';
 import { queueDelivery } from '../../services/delivery';
+import { selicTable } from '../../services/indices';
 import { getOfficeSettings } from '../../services/settings';
 import { PDF_TYPES, readUploads } from '../../services/uploads';
 import { getDeclarationForUser } from './access';
@@ -52,6 +53,8 @@ export async function darfRoutes(app: FastifyInstance) {
   /** Monta a resposta com a situação calculada, o arquivo e o último envio. */
   const present = async (rows: DarfRow[], customerId: string) => {
     const today = brazilToday();
+    // Selic dos juros: os meses gravados no banco (Banco Central) antes da tabela fixa
+    const selic = await selicTable(db);
     const fileIds = rows.map((r) => r.fileId).filter((x): x is string => Boolean(x));
     const fileRows = fileIds.length ? await db.select({ id: files.id, filename: files.filename, size: files.size }).from(files).where(inArray(files.id, fileIds)) : [];
     const sends = rows.length
@@ -66,7 +69,7 @@ export async function darfRoutes(app: FastifyInstance) {
       const file = fileRows.find((f) => f.id === r.fileId);
       return {
         ...r,
-        amount: darfPayable(r),
+        amount: darfPayable(r, selic),
         status: darfStatus({ status: r.status, paidAt: r.paidAt, dueDate: r.dueDate }, today),
         file: file ? { id: file.id, filename: file.filename, size: file.size } : null,
         sendStatus: last ? (last.status === 'delivered' ? 'sent' : last.status) : r.sendStatus,
@@ -181,7 +184,7 @@ export async function darfRoutes(app: FastifyInstance) {
       customerId: darf.customerId,
       channel,
       templateKey: 'darf',
-      values: { VALOR: darfValueText(darf), VENCIMENTO: formatDate(darf.dueDate), LINK: `${app.ctx.config.WEB_URL}/portal` },
+      values: { VALOR: darfValueText(darf, await selicTable(db)), VENCIMENTO: formatDate(darf.dueDate), LINK: `${app.ctx.config.WEB_URL}/portal` },
       attachments: [{ fileId: darf.fileId!, filename }],
       idempotencyKey,
       userId: user.userId,

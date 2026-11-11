@@ -1,3 +1,4 @@
+import { selicTable } from '../../services/indices';
 import {
   ASSET_GROUPS,
   DARF_STATUS,
@@ -101,7 +102,8 @@ export async function buildKitPdf(ctx: AppContext, declaration: DeclarationRow, 
   if (darfs.length) {
     // quotas geradas guardam o principal: da 2ª em diante, mostra o valor com juros quando a Selic
     // do período já foi publicada; sem ela, o principal com a marca "+ juros"
-    const payable = darfs.map((d) => ({ d, a: darfPayable(d) }));
+    const selic = await selicTable(ctx.db);
+    const payable = darfs.map((d) => ({ d, a: darfPayable(d, selic) }));
     const pending = payable.filter(({ a }) => a && a.totalCents === null);
     const valueCell = ({ d, a }: (typeof payable)[number]): Cell => (!a ? m(d.valueCents) : a.totalCents !== null ? m(a.totalCents) : `${formatMoney(a.principalCents)} + juros`);
     const total = payable.reduce((acc, { d, a }) => acc + (a?.totalCents ?? d.valueCents), 0);

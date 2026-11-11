@@ -125,7 +125,15 @@ async function runCustomerSync(ctx: AppContext, client: SerproClient, customer: 
       ...(procInfo ?? { note: proc.pending ? 'SERPRO ainda processando; tente de novo em instantes.' : 'Resposta registrada sem data de expiração reconhecível; cadastro não alterado.' }),
     },
   });
-  steps.push(procInfo ? `procuração: ${procInfo.status} até ${procInfo.expiresAt}` : 'procuração: resposta registrada (sem validade reconhecida)');
+  steps.push(
+    !procInfo
+      ? 'procuração: resposta registrada (sem validade reconhecida)'
+      : procInfo.status === 'invalid'
+        ? 'procuração: invalid (o SERPRO não listou procuração do cliente para o procurador)'
+        : procInfo.status === 'invalid_permissions'
+          ? `procuração: invalid_permissions (nenhum sistema autorizado${procInfo.expiresAt ? `; validade ${procInfo.expiresAt}` : ''})`
+          : `procuração: ${procInfo.status} até ${procInfo.expiresAt}`,
+  );
 
   const mail = await client.call({ ...SERPRO_SERVICES.mailboxIndicator, contribuinte: customer.cpfCnpj, dados: '' });
   const unread = mail.pending ? null : interpretMailbox(mail.dados);
@@ -146,6 +154,11 @@ async function runCustomerSync(ctx: AppContext, client: SerproClient, customer: 
 
   if (procInfo?.status === 'expired') {
     steps.push('demais consultas não feitas: a procuração eletrônica venceu');
+    return { customerId: customer.id, steps, warnings };
+  }
+  // sem procuração (ou sem nenhum sistema autorizado), as consultas bilhetadas seriam recusadas
+  if (procInfo?.status === 'invalid' || procInfo?.status === 'invalid_permissions') {
+    steps.push(procInfo.status === 'invalid' ? 'demais consultas não feitas: não há procuração eletrônica do cliente para o procurador' : 'demais consultas não feitas: a procuração eletrônica não autoriza nenhum sistema');
     return { customerId: customer.id, steps, warnings };
   }
   const step = async (label: string, fn: () => Promise<string | null>) => {

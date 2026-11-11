@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router';
 import { MAILING_TYPES } from '@verifco/shared';
@@ -43,7 +43,21 @@ const detail = {
   failures: { count: 1, items: [{ customerId: 'c1', name: 'Bia Falhou', channel: 'whatsapp', stage: 'delivery', message: 'Número sem WhatsApp' }] },
 };
 
-const state: { runs: unknown[] } = { runs: [] };
+/** Mala direta agendada para 12/11/2026 às 9h de Brasília, ainda não preparada. */
+const SCHEDULED = '7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f';
+const scheduledItem = { ...runItem, id: SCHEDULED, jobId: SCHEDULED, requestId: 'a1b2c3d4-0d5e-4c1e-9a55-1c2b3d4e5f61', status: 'scheduled', progress: 0, finishedAt: null, scheduledFor: '2026-11-12T12:00:00.000Z', skippedCount: 0 };
+const scheduledDetail = () => ({
+  ...scheduledItem,
+  status: state.canceled ? 'canceled' : 'scheduled',
+  canceledAt: state.canceled ? '2026-11-11T15:00:00.000Z' : null,
+  skipped: [],
+  result: null,
+  attachments: null,
+  sending: { email: { queued: 0, sent: 0, failed: 0, total: 0 }, whatsapp: { queued: 0, sent: 0, failed: 0, total: 0 }, total: { queued: 0, sent: 0, failed: 0, total: 0 } },
+  failures: { count: 0, items: [] },
+});
+
+const state: { runs: unknown[]; canceled: boolean } = { runs: [], canceled: false };
 const calls: string[] = [];
 
 vi.mock('../../lib/api', async (importOriginal) => {
@@ -53,9 +67,18 @@ vi.mock('../../lib/api', async (importOriginal) => {
     if (path === '/mailing/types') return MAILING_TYPES.map((t) => ({ ...t, allowed: true }));
     if (path === '/mailing/runs') return state.runs;
     if (path === `/mailing/runs/${RUN}`) return detail;
+    if (path === `/mailing/runs/${SCHEDULED}`) return scheduledDetail();
     throw new Error(`rota inesperada: ${path}`);
   };
-  return { ...original, api: { ...original.api, get } };
+  const post = async (path: string) => {
+    calls.push(`POST ${path}`);
+    if (path === `/mailing/runs/${SCHEDULED}/cancel`) {
+      state.canceled = true;
+      return scheduledDetail();
+    }
+    throw new Error(`rota inesperada: ${path}`);
+  };
+  return { ...original, api: { ...original.api, get, post } };
 });
 
 afterEach(() => {
@@ -117,5 +140,33 @@ describe('MailingPage: malas diretas recentes', () => {
     // volta para a lista
     fireEvent.click(screen.getByRole('button', { name: 'Malas diretas recentes' }));
     expect(await screen.findByText('Qual envio você quer fazer?')).toBeTruthy();
+  });
+
+  it('mostra a agendada com a data e a hora e cancela o agendamento depois de confirmar', async () => {
+    state.runs = [scheduledItem, runItem];
+    state.canceled = false;
+    renderPage();
+    const row = (await screen.findByText('Agendada')).closest('tr')!;
+    expect(within(row).getByText('Agendado para 12/11/2026 09:00')).toBeTruthy();
+    // agendada não tem barra de andamento: nada está sendo preparado
+    expect(within(row).queryByRole('progressbar')).toBeNull();
+
+    fireEvent.click(within(row).getByRole('button', { name: /Ver E-mail mensal/ }));
+    expect(await screen.findByText('Agendado para 12/11/2026 09:00')).toBeTruthy();
+    expect(screen.getByText(/Os destinatários são calculados de novo na hora do envio/)).toBeTruthy();
+    expect(screen.queryByRole('progressbar')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Acompanhar envios' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancelar agendamento' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText(/Se cancelar, nenhuma mensagem deste envio sai/)).toBeTruthy();
+    // só cancela depois da confirmação
+    expect(calls).not.toContain(`POST /mailing/runs/${SCHEDULED}/cancel`);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Sim, cancelar o agendamento' }));
+    await waitFor(() => expect(calls).toContain(`POST /mailing/runs/${SCHEDULED}/cancel`));
+    expect(await screen.findByText('Agendamento cancelado')).toBeTruthy();
+    expect(screen.getByText('Nenhuma mensagem foi enviada.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Cancelar agendamento' })).toBeNull();
+    expect(screen.getAllByText('Cancelada').length).toBeGreaterThan(0);
   });
 });
